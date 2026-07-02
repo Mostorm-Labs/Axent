@@ -1,0 +1,28 @@
+# Capability Registry
+
+| capabilityId | name | domain | status | type | schema |
+|---:|---|---|---|---|---|
+| `0x0001` | `protocol.payload.control` | protocol | mvp | bool | - |
+| `0x0002` | `protocol.payload.rpc` | protocol | mvp | bool | - |
+| `0x0003` | `protocol.payload.stream` | protocol | mvp | bool | - |
+| `0x0009` | `protocol.reservedRequestIdWidth` | protocol | reserved | reserved | - |
+| `0x0101` | `device.info` | device | draft | object | DeviceInfoCapability |
+| `0x0102` | `device.enrollment` | device | draft | object | DeviceEnrollmentCapability |
+| `0x0401` | `firmware.update` | firmware | draft | object | FirmwareUpdateCapabilities |
+| `0x0801` | `video.stream` | video | draft | object | VideoStreamCapabilities |
+| `0x0901` | `audio.algorithm` | audio | stable | object | AudioAlgorithmCapability |
+| `0x0902` | `audio.stream` | audio | draft | object | AudioStreamCapabilities |
+| `0x0D01` | `signage.playlist` | signage | draft | object | SignagePlaylistCapability |
+| `0x0E01` | `network.interface` | network | draft | object | NetworkInterfaceCapability |
+| `0x0E02` | `network.ip` | network | draft | object | NetworkIpCapability |
+| `0x0E03` | `network.wifi` | network | draft | object | NetworkWifiCapabilities |
+| `0x0E04` | `network.ap` | network | draft | object | NetworkApCapabilities |
+| `0x1601` | `cast.session` | cast | draft | object | CastSessionCapability |
+| `0x1602` | `cast.audio` | cast | draft | object | CastAudioCapability |
+| `0x1603` | `cast.pinCode` | cast | draft | object | CastPinCodeCapability |
+| `0x1604` | `cast.window` | cast | draft | object | CastWindowCapability |
+| `0x1605` | `cast.backend` | cast | draft | object | CastBackendCapability |
+| `0x1606` | `cast.flowControl` | cast | draft | object | CastFlowControlCapability |
+| `0x1607` | `cast.status` | cast | draft | object | CastStatusCapability |
+| `0x1701` | `software.config` | software | draft | object | SoftwareConfigCapability |
+| `0x1702` | `software.updatePolicy` | software | draft | object | SoftwareUpdatePolicyCapability |

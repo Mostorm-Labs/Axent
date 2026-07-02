@@ -1,0 +1,26 @@
+id: handshake.heartbeat
+title: CONTROL HEARTBEAT / HEARTBEAT_ACK
+since: spec/v0.0.2
+level: framed-binary
+profiles:
+  - framed-binary
+
+given:
+  session:
+    control: open
+
+steps:
+  - direction: client_to_server
+    control:
+      type: HEARTBEAT
+      controlId: 3
+
+  - direction: server_to_client
+    expect:
+      control:
+        type: HEARTBEAT_ACK
+        controlId: 3
+        statusCode: SUCCESS
+
+assertions:
+  - heartbeatAck.controlId == heartbeat.controlId

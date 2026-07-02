@@ -1,0 +1,4 @@
+interface:
+  display_name: "20 Draft Business Protocol"
+  short_description: "Stage 20: draft AXTP business protocol proposals"
+  default_prompt: "Draft an AXTP workspace/protocol domain-feature proposal from this product, architecture, or legacy protocol requirement."

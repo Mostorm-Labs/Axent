@@ -1,0 +1,28 @@
+id: error.standard_error_shape
+title: Standard error response shape
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  errorCode: RPC_METHOD_NOT_FOUND
+
+steps:
+  - direction: server_to_client
+    error:
+      requestId: 99
+      code: RPC_METHOD_NOT_FOUND
+
+  - direction: client_observes
+    expect:
+      error:
+        requestId: 99
+        code: RPC_METHOD_NOT_FOUND
+        ok: false
+
+assertions:
+  - error.code != SUCCESS
+  - error.requestId == 99

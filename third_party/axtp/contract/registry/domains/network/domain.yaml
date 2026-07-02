@@ -1,0 +1,1561 @@
+domain: network
+description: Network interface, IP, Wi-Fi station, and Wi-Fi AP control capabilities.
+
+methods:
+  - id: 0x0E10
+    name: network.getInterfaces
+    domain: network
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return visible network interfaces and default interface identifiers.
+    rpc_op: request_response
+    request_schema: NetworkGetInterfacesParams
+    response_schema: NetworkInterfaces
+    recommended_encoding: [json, tlv]
+    capabilities: [network.interface]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E11
+    name: network.getInterfaceInfo
+    domain: network
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Return detailed information for one network interface.
+    rpc_op: request_response
+    request_schema: NetworkGetInterfaceInfoParams
+    response_schema: NetworkInterfaceInfo
+    recommended_encoding: [json, tlv]
+    capabilities: [network.interface]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E02
+    name: network.getIpConfig
+    domain: network
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Return IP configuration for a network interface.
+    rpc_op: request_response
+    request_schema: NetworkGetIpConfigParams
+    response_schema: NetworkIpConfig
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ip]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E03
+    name: network.setIpConfig
+    domain: network
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Set DHCP/static/disabled IP configuration for a network interface.
+    rpc_op: request_response
+    request_schema: NetworkSetIpConfigParams
+    response_schema: NetworkSetIpConfigResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ip]
+    events: [network.ipConfigChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, OUT_OF_RANGE, INVALID_STATE, BUSY, PERMISSION_DENIED]
+
+  - id: 0x0E12
+    name: network.getWifiCapabilities
+    domain: network
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Return Wi-Fi station capability, including security types, bands, scanning, and credential import modes.
+    rpc_op: request_response
+    request_schema: NetworkGetWifiCapabilitiesParams
+    response_schema: NetworkWifiCapabilities
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E04
+    name: network.getWifiConfig
+    domain: network
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Return saved Wi-Fi profile summaries without plaintext credentials.
+    rpc_op: request_response
+    request_schema: NetworkGetWifiConfigParams
+    response_schema: NetworkWifiConfig
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E05
+    name: network.setWifiConfig
+    domain: network
+    status: draft
+    bitOffset: 6
+    since: 1.0.0
+    description: Create or update a Wi-Fi station profile.
+    rpc_op: request_response
+    request_schema: NetworkSetWifiConfigParams
+    response_schema: NetworkSetWifiConfigResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    events: [network.wifiConfigChanged, network.wifiStateChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, OUT_OF_RANGE, INVALID_STATE, BUSY, PERMISSION_DENIED]
+
+  - id: 0x0E06
+    name: network.scanWifi
+    domain: network
+    status: draft
+    bitOffset: 7
+    since: 1.0.0
+    description: Scan visible Wi-Fi access points.
+    rpc_op: request_response
+    request_schema: NetworkScanWifiParams
+    response_schema: NetworkScanWifiResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    events: [network.wifiScanResultReported]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, BUSY, TIMEOUT, UNAVAILABLE]
+
+  - id: 0x0E07
+    name: network.connectWifi
+    domain: network
+    status: draft
+    bitOffset: 8
+    since: 1.0.0
+    description: Connect to a saved Wi-Fi profile or an inline profile.
+    rpc_op: request_response
+    request_schema: NetworkConnectWifiParams
+    response_schema: NetworkWifiActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    events: [network.wifiStateChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, NOT_FOUND, INVALID_STATE, BUSY, TIMEOUT, PERMISSION_DENIED]
+
+  - id: 0x0E08
+    name: network.disconnectWifi
+    domain: network
+    status: draft
+    bitOffset: 9
+    since: 1.0.0
+    description: Disconnect the current Wi-Fi station connection.
+    rpc_op: request_response
+    request_schema: NetworkDisconnectWifiParams
+    response_schema: NetworkWifiActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    events: [network.wifiStateChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, INVALID_STATE, BUSY, PERMISSION_DENIED]
+
+  - id: 0x0E09
+    name: network.getWifiState
+    domain: network
+    status: draft
+    bitOffset: 10
+    since: 1.0.0
+    description: Return current Wi-Fi station association, authentication, and connection state.
+    rpc_op: request_response
+    request_schema: NetworkGetWifiStateParams
+    response_schema: NetworkWifiState
+    recommended_encoding: [json, tlv]
+    capabilities: [network.wifi]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E13
+    name: network.getApCapabilities
+    domain: network
+    status: draft
+    bitOffset: 11
+    since: 1.0.0
+    description: Return Wi-Fi AP capability, including supported bands, security types, channel ranges, and credential export policy.
+    rpc_op: request_response
+    request_schema: NetworkGetApCapabilitiesParams
+    response_schema: NetworkApCapabilities
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E0A
+    name: network.getApConfig
+    domain: network
+    status: draft
+    bitOffset: 12
+    since: 1.0.0
+    description: Return Wi-Fi AP configuration without exposing plaintext credentials unless explicitly allowed by policy.
+    rpc_op: request_response
+    request_schema: NetworkGetApConfigParams
+    response_schema: NetworkApConfig
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E0B
+    name: network.setApConfig
+    domain: network
+    status: draft
+    bitOffset: 13
+    since: 1.0.0
+    description: Partially update Wi-Fi AP configuration.
+    rpc_op: request_response
+    request_schema: NetworkSetApConfigParams
+    response_schema: NetworkSetApConfigResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    events: [network.apConfigChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, OUT_OF_RANGE, INVALID_STATE, BUSY, PERMISSION_DENIED]
+
+  - id: 0x0E0E
+    name: network.getApState
+    domain: network
+    status: draft
+    bitOffset: 14
+    since: 1.0.0
+    description: Return runtime state for the device Wi-Fi AP role.
+    rpc_op: request_response
+    request_schema: NetworkGetApConfigParams
+    response_schema: NetworkApState
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0E0C
+    name: network.startAp
+    domain: network
+    status: draft
+    bitOffset: 15
+    since: 1.0.0
+    description: Start the Wi-Fi AP role.
+    rpc_op: request_response
+    request_schema: NetworkApActionParams
+    response_schema: NetworkApActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    events: [network.apStateChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, INVALID_STATE, BUSY, PERMISSION_DENIED]
+
+  - id: 0x0E0D
+    name: network.stopAp
+    domain: network
+    status: draft
+    bitOffset: 16
+    since: 1.0.0
+    description: Stop the Wi-Fi AP role.
+    rpc_op: request_response
+    request_schema: NetworkApActionParams
+    response_schema: NetworkApActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    events: [network.apStateChanged]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, INVALID_STATE, BUSY, PERMISSION_DENIED]
+
+  - id: 0x0E14
+    name: network.getApClients
+    domain: network
+    status: draft
+    bitOffset: 17
+    since: 1.0.0
+    description: Return clients currently associated with the Wi-Fi AP.
+    rpc_op: request_response
+    request_schema: NetworkGetApConfigParams
+    response_schema: NetworkApClients
+    recommended_encoding: [json, tlv]
+    capabilities: [network.ap]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, PERMISSION_DENIED, UNAVAILABLE]
+
+events:
+  - id: 0x0E01
+    name: network.interfaceStateChanged
+    domain: network
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted when network interface administrative or link state changes.
+    event_schema: NetworkInterfaceStateChangedEvent
+    severity: info
+    trigger: [link state change, admin state change, interface availability change]
+    capabilities: [network.interface]
+
+  - id: 0x0E02
+    name: network.ipConfigChanged
+    domain: network
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Emitted when IP configuration changes for an interface.
+    event_schema: NetworkIpConfigChangedEvent
+    severity: info
+    trigger: [network.setIpConfig, DHCP renew, device policy]
+    capabilities: [network.ip]
+
+  - id: 0x0E03
+    name: network.wifiConfigChanged
+    domain: network
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Emitted when saved Wi-Fi profile configuration changes.
+    event_schema: NetworkWifiConfigChangedEvent
+    severity: info
+    trigger: [network.setWifiConfig, device policy]
+    capabilities: [network.wifi]
+
+  - id: 0x0E04
+    name: network.wifiStateChanged
+    domain: network
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Emitted when Wi-Fi station association, authentication, connection, or failure state changes.
+    event_schema: NetworkWifiStateChangedEvent
+    severity: info
+    trigger: [network.setWifiConfig, network.connectWifi, network.disconnectWifi, local Wi-Fi state change]
+    capabilities: [network.wifi]
+
+  - id: 0x0E05
+    name: network.wifiScanResultReported
+    domain: network
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Emitted for asynchronous Wi-Fi scan results or scan completion.
+    event_schema: NetworkWifiScanResultReportedEvent
+    severity: info
+    trigger: [network.scanWifi]
+    capabilities: [network.wifi]
+
+  - id: 0x0E06
+    name: network.apConfigChanged
+    domain: network
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Emitted when Wi-Fi AP configuration changes.
+    event_schema: NetworkApConfigChangedEvent
+    severity: info
+    trigger: [network.setApConfig, device policy]
+    capabilities: [network.ap]
+
+  - id: 0x0E07
+    name: network.apStateChanged
+    domain: network
+    status: draft
+    bitOffset: 6
+    since: 1.0.0
+    description: Emitted when Wi-Fi AP runtime state changes.
+    event_schema: NetworkApStateChangedEvent
+    severity: info
+    trigger: [network.startAp, network.stopAp, local AP state change]
+    capabilities: [network.ap]
+
+  - id: 0x0E08
+    name: network.apClientChanged
+    domain: network
+    status: draft
+    bitOffset: 7
+    since: 1.0.0
+    description: Emitted when a client joins or leaves the Wi-Fi AP.
+    event_schema: NetworkApClientChangedEvent
+    severity: info
+    trigger: [AP client join, AP client leave]
+    capabilities: [network.ap]
+
+types:
+  NetworkGetInterfacesParams:
+    kind: object
+    description: Selector for network interface enumeration.
+    fields:
+      - id: 0x01
+        name: includeDisabled
+        type: bool
+        required: false
+        default: false
+        description: Whether disabled interfaces should be included.
+
+  NetworkGetInterfaceInfoParams:
+    kind: object
+    description: Selector for one network interface.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: true
+        max_length: 64
+        description: Interface identifier.
+
+  NetworkInterfaces:
+    kind: object
+    description: Network interface enumeration result.
+    fields:
+      - id: 0x01
+        name: interfaces
+        type: array
+        schema: NetworkInterfaceSummary
+        required: true
+        description: Network interface summary objects.
+      - id: 0x02
+        name: defaults
+        type: NetworkDefaultInterfaceIds
+        required: false
+        description: Default interface identifiers for common roles.
+
+  NetworkDefaultInterfaceIds:
+    kind: object
+    description: Default network interface identifiers by role.
+    fields:
+      - id: 0x01
+        name: primary
+        type: string
+        required: false
+        max_length: 64
+        description: Primary interface.
+      - id: 0x02
+        name: wifiSta
+        type: string
+        required: false
+        max_length: 64
+        description: Default Wi-Fi station interface.
+      - id: 0x03
+        name: wifiAp
+        type: string
+        required: false
+        max_length: 64
+        description: Default Wi-Fi AP interface.
+
+  NetworkInterfaceSummary:
+    kind: object
+    description: Summary of one network interface.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: true
+        max_length: 64
+        description: Interface identifier.
+      - id: 0x02
+        name: type
+        type: enum
+        required: true
+        description: Interface type; candidate values include ethernet, wifi, cellular, usb, virtual, and unknown.
+      - id: 0x03
+        name: displayName
+        type: string
+        required: false
+        max_length: 128
+        description: User-visible interface name.
+      - id: 0x04
+        name: state
+        type: NetworkInterfaceState
+        required: false
+        description: Current interface state.
+
+  NetworkInterfaceInfo:
+    kind: object
+    description: Detailed information for one network interface.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: true
+        max_length: 64
+        description: Interface identifier.
+      - id: 0x02
+        name: type
+        type: enum
+        required: true
+        description: Interface type.
+      - id: 0x03
+        name: macAddress
+        type: string
+        required: false
+        max_length: 32
+        description: Interface MAC address, if available and permitted.
+      - id: 0x04
+        name: state
+        type: NetworkInterfaceState
+        required: false
+        description: Current interface state.
+      - id: 0x05
+        name: supportsIpConfig
+        type: bool
+        required: false
+        description: Whether this interface can be used with network.ip.
+
+  NetworkInterfaceState:
+    kind: object
+    description: Network interface administrative and link state.
+    fields:
+      - id: 0x01
+        name: admin
+        type: enum
+        required: false
+        description: Administrative state; candidate values include up, down, disabled, and unknown.
+      - id: 0x02
+        name: link
+        type: enum
+        required: false
+        description: Link state; candidate values include up, down, dormant, unknown.
+      - id: 0x03
+        name: speedMbps
+        type: uint32
+        required: false
+        description: Link speed in Mbps.
+
+  NetworkGetIpConfigParams:
+    kind: object
+    description: Selector for IP configuration.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.primary
+        description: Interface identifier; omitted means default primary interface.
+      - id: 0x02
+        name: family
+        type: enum
+        required: false
+        default: ipv4
+        description: IP family; candidate values include ipv4 and ipv6.
+
+  NetworkSetIpConfigParams:
+    kind: object
+    description: IP configuration update request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.primary
+        description: Interface identifier.
+      - id: 0x02
+        name: family
+        type: enum
+        required: false
+        default: ipv4
+        description: IP family.
+      - id: 0x03
+        name: config
+        type: NetworkIpConfig
+        required: true
+        description: Target IP configuration.
+      - id: 0x04
+        name: applyPolicy
+        type: enum
+        required: false
+        default: immediate
+        description: Apply policy; candidate values include immediate and pending_restart.
+
+  NetworkSetIpConfigResult:
+    kind: object
+    description: Result of setting IP configuration.
+    fields:
+      - id: 0x01
+        name: config
+        type: NetworkIpConfig
+        required: true
+        description: Applied or pending IP configuration.
+      - id: 0x02
+        name: applyState
+        type: enum
+        required: true
+        description: Apply state; candidate values include applied, pending_restart, and failed.
+
+  NetworkIpConfig:
+    kind: object
+    description: IP configuration for one interface and address family.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: true
+        max_length: 64
+        description: Interface identifier.
+      - id: 0x02
+        name: family
+        type: enum
+        required: false
+        default: ipv4
+        description: IP family; candidate values include ipv4 and ipv6.
+      - id: 0x03
+        name: mode
+        type: enum
+        required: true
+        description: IP mode; candidate values include dhcp, static, disabled, link_local, and unknown.
+      - id: 0x04
+        name: address
+        type: string
+        required: false
+        max_length: 64
+        description: IP address.
+      - id: 0x05
+        name: prefixLength
+        type: uint8
+        required: false
+        min: 0
+        max: 128
+        description: Network prefix length.
+      - id: 0x06
+        name: gateway
+        type: string
+        required: false
+        max_length: 64
+        description: Default gateway.
+      - id: 0x07
+        name: dns
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: DNS server addresses.
+
+  NetworkGetWifiCapabilitiesParams:
+    kind: object
+    description: Selector for Wi-Fi station capability.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+
+  NetworkGetWifiConfigParams:
+    kind: object
+    description: Selector for saved Wi-Fi configuration.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: includeProfiles
+        type: bool
+        required: false
+        default: true
+        description: Whether to include saved profile summaries.
+
+  NetworkGetWifiStateParams:
+    kind: object
+    description: Selector for Wi-Fi station runtime state.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+
+  NetworkWifiCapabilities:
+    kind: object
+    description: Wi-Fi station capability descriptor.
+    fields:
+      - id: 0x01
+        name: capability
+        type: string
+        required: true
+        max_length: 32
+        description: Fixed capability name network.wifi.
+      - id: 0x02
+        name: securityTypes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported security type strings.
+      - id: 0x03
+        name: bands
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported Wi-Fi bands.
+      - id: 0x04
+        name: credentialImportModes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported credential import modes such as passphrase, pairing_token, and opaque_ref.
+      - id: 0x05
+        name: savedProfilesSupported
+        type: bool
+        required: true
+        description: Whether saved profiles are supported.
+      - id: 0x06
+        name: scanSupported
+        type: bool
+        required: true
+        description: Whether Wi-Fi scanning is supported.
+      - id: 0x07
+        name: autoConnectSupported
+        type: bool
+        required: false
+        description: Whether profiles can auto-connect.
+
+  NetworkWifiConfig:
+    kind: object
+    description: Saved Wi-Fi profile summary.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: profiles
+        type: array
+        schema: NetworkWifiProfile
+        required: false
+        description: NetworkWifiProfile summaries. Plaintext credentials must not be returned.
+      - id: 0x03
+        name: defaultProfileId
+        type: string
+        required: false
+        max_length: 128
+        description: Default profile identifier.
+
+  NetworkWifiProfile:
+    kind: object
+    description: Wi-Fi profile object used for station connection.
+    fields:
+      - id: 0x01
+        name: profileId
+        type: string
+        required: false
+        max_length: 128
+        description: Profile identifier.
+      - id: 0x02
+        name: ssid
+        type: string
+        required: true
+        max_length: 64
+        description: Wi-Fi SSID.
+      - id: 0x03
+        name: bssid
+        type: string
+        required: false
+        max_length: 32
+        description: Optional AP BSSID.
+      - id: 0x04
+        name: securityType
+        type: enum
+        required: true
+        description: Security type, such as open, wpa2_psk, or wpa3_sae.
+      - id: 0x05
+        name: credential
+        type: NetworkCredential
+        required: false
+        description: Credential descriptor or secret reference. Responses must not expose plaintext secrets.
+      - id: 0x06
+        name: source
+        type: enum
+        required: false
+        description: Profile source; candidate values include manual, pairing, migrated, and device_policy.
+      - id: 0x07
+        name: persist
+        type: bool
+        required: false
+        description: Whether the profile should be persisted. This remains policy-controlled.
+
+  NetworkCredential:
+    kind: object
+    description: Credential descriptor or secret reference.
+    fields:
+      - id: 0x01
+        name: type
+        type: enum
+        required: true
+        description: Credential type; candidate values include passphrase, pairing_token, opaque_ref, and none.
+      - id: 0x02
+        name: secretRef
+        type: string
+        required: false
+        max_length: 256
+        description: Opaque reference to sensitive credential material.
+      - id: 0x03
+        name: expiresInSeconds
+        type: uint32
+        required: false
+        description: Relative validity lifetime for ephemeral credentials.
+
+  NetworkSetWifiConfigParams:
+    kind: object
+    description: Wi-Fi profile create or update request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: profile
+        type: NetworkWifiProfile
+        required: true
+        description: Profile to create or update.
+      - id: 0x03
+        name: replaceExisting
+        type: bool
+        required: false
+        default: false
+        description: Whether an existing matching profile may be replaced.
+      - id: 0x04
+        name: makeDefault
+        type: bool
+        required: false
+        default: false
+        description: Whether to make this the default profile.
+      - id: 0x05
+        name: connectAfterSave
+        type: bool
+        required: false
+        description: Whether to start connection after saving.
+
+  NetworkSetWifiConfigResult:
+    kind: object
+    description: Result of setting Wi-Fi profile configuration.
+    fields:
+      - id: 0x01
+        name: profileId
+        type: string
+        required: true
+        max_length: 128
+        description: Accepted or assigned profile identifier.
+      - id: 0x02
+        name: config
+        type: NetworkWifiConfig
+        required: false
+        description: Updated profile summary.
+      - id: 0x03
+        name: connectStarted
+        type: bool
+        required: false
+        description: Whether connection was started after saving.
+
+  NetworkScanWifiParams:
+    kind: object
+    description: Wi-Fi scan request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: ssidFilter
+        type: string
+        required: false
+        max_length: 64
+        description: Optional SSID filter.
+      - id: 0x03
+        name: timeoutMs
+        type: uint32
+        required: false
+        description: Scan timeout in milliseconds.
+
+  NetworkScanWifiResult:
+    kind: object
+    description: Wi-Fi scan result.
+    fields:
+      - id: 0x01
+        name: scanId
+        type: string
+        required: false
+        max_length: 128
+        description: Asynchronous scan identifier.
+      - id: 0x02
+        name: results
+        type: array
+        schema: NetworkWifiScanResult
+        required: false
+        description: NetworkWifiScanResult objects.
+      - id: 0x03
+        name: complete
+        type: bool
+        required: false
+        description: Whether returned results are complete.
+
+  NetworkConnectWifiParams:
+    kind: object
+    description: Wi-Fi station connect request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: profileId
+        type: string
+        required: false
+        max_length: 128
+        description: Saved profile identifier.
+      - id: 0x03
+        name: profile
+        type: NetworkWifiProfile
+        required: false
+        description: Inline profile to connect with.
+      - id: 0x04
+        name: timeoutMs
+        type: uint32
+        required: false
+        description: Connection timeout in milliseconds.
+
+  NetworkDisconnectWifiParams:
+    kind: object
+    description: Wi-Fi station disconnect request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiSta
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        description: Disconnect reason; candidate values include user_request, profile_changed, shutdown, and unknown.
+
+  NetworkWifiActionResult:
+    kind: object
+    description: Result of a Wi-Fi connect or disconnect action.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the action was accepted.
+      - id: 0x02
+        name: state
+        type: NetworkWifiState
+        required: true
+        description: Current or target Wi-Fi state after accepting the action.
+
+  NetworkWifiState:
+    kind: object
+    description: Wi-Fi station runtime state.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: State; candidate values include disabled, disconnected, scanning, authenticating, associating, connected, failed, and unknown.
+      - id: 0x03
+        name: profileId
+        type: string
+        required: false
+        max_length: 128
+        description: Active profile identifier.
+      - id: 0x04
+        name: ssid
+        type: string
+        required: false
+        max_length: 64
+        description: Active SSID.
+      - id: 0x05
+        name: rssi
+        type: int32
+        required: false
+        description: Received signal strength indicator in dBm.
+      - id: 0x06
+        name: ipReady
+        type: bool
+        required: false
+        description: Whether IP configuration is ready.
+      - id: 0x07
+        name: failureReason
+        type: enum
+        required: false
+        description: Failure reason, if state is failed.
+
+  NetworkWifiScanResult:
+    kind: object
+    description: One Wi-Fi scan result.
+    fields:
+      - id: 0x01
+        name: ssid
+        type: string
+        required: true
+        max_length: 64
+        description: SSID.
+      - id: 0x02
+        name: bssid
+        type: string
+        required: false
+        max_length: 32
+        description: BSSID.
+      - id: 0x03
+        name: band
+        type: enum
+        required: false
+        description: Wi-Fi band.
+      - id: 0x04
+        name: channel
+        type: uint16
+        required: false
+        description: Channel number.
+      - id: 0x05
+        name: rssi
+        type: int32
+        required: false
+        description: RSSI in dBm.
+      - id: 0x06
+        name: securityType
+        type: enum
+        required: false
+        description: Security type.
+
+  NetworkGetApCapabilitiesParams:
+    kind: object
+    description: Selector for Wi-Fi AP capability.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiAp
+        description: Wi-Fi AP interface identifier.
+
+  NetworkGetApConfigParams:
+    kind: object
+    description: Selector for Wi-Fi AP configuration, state, or client list.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiAp
+        description: Wi-Fi AP interface identifier.
+
+  NetworkApCapabilities:
+    kind: object
+    description: Wi-Fi AP capability descriptor.
+    fields:
+      - id: 0x01
+        name: capability
+        type: string
+        required: true
+        max_length: 32
+        description: Fixed capability name network.ap.
+      - id: 0x02
+        name: securityTypes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported security types.
+      - id: 0x03
+        name: bands
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported bands.
+      - id: 0x04
+        name: credentialExportModes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Credential export modes.
+      - id: 0x05
+        name: clientsSupported
+        type: bool
+        required: false
+        description: Whether client list query and client change events are supported.
+
+  NetworkApConfig:
+    kind: object
+    description: Wi-Fi AP configuration.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        description: Wi-Fi AP interface identifier.
+      - id: 0x02
+        name: enabled
+        type: bool
+        required: false
+        description: Whether AP should be enabled by configuration.
+      - id: 0x03
+        name: ssid
+        type: string
+        required: true
+        max_length: 64
+        description: AP SSID.
+      - id: 0x04
+        name: hidden
+        type: bool
+        required: false
+        default: false
+        description: Whether SSID broadcast is hidden.
+      - id: 0x05
+        name: band
+        type: enum
+        required: false
+        description: AP band.
+      - id: 0x06
+        name: channel
+        type: uint16
+        required: false
+        description: AP channel.
+      - id: 0x07
+        name: securityType
+        type: enum
+        required: true
+        description: AP security type.
+      - id: 0x08
+        name: credential
+        type: NetworkCredential
+        required: false
+        description: Credential descriptor; plaintext must not be returned unless policy explicitly allows it.
+      - id: 0x09
+        name: maxClients
+        type: uint16
+        required: false
+        description: Maximum client count.
+
+  NetworkSetApConfigParams:
+    kind: object
+    description: Wi-Fi AP configuration update request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiAp
+        description: Wi-Fi AP interface identifier.
+      - id: 0x02
+        name: config
+        type: NetworkApConfig
+        required: true
+        description: AP configuration patch or target configuration.
+
+  NetworkSetApConfigResult:
+    kind: object
+    description: Result of setting Wi-Fi AP configuration.
+    fields:
+      - id: 0x01
+        name: config
+        type: NetworkApConfig
+        required: true
+        description: Applied or pending AP configuration.
+      - id: 0x02
+        name: applyState
+        type: enum
+        required: true
+        description: Apply state; candidate values include applied, pending_restart, and failed.
+
+  NetworkApState:
+    kind: object
+    description: Wi-Fi AP runtime state.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        description: Wi-Fi AP interface identifier.
+      - id: 0x02
+        name: enabled
+        type: bool
+        required: true
+        description: Whether AP is currently enabled.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        description: AP state; candidate values include disabled, starting, enabled, stopping, failed, and unknown.
+      - id: 0x04
+        name: ssid
+        type: string
+        required: false
+        max_length: 64
+        description: Active AP SSID.
+      - id: 0x05
+        name: clientCount
+        type: uint16
+        required: false
+        description: Current associated client count.
+      - id: 0x06
+        name: failureReason
+        type: enum
+        required: false
+        description: Failure reason when state is failed.
+
+  NetworkApActionParams:
+    kind: object
+    description: Start or stop AP request.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        default: defaults.wifiAp
+        description: Wi-Fi AP interface identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        description: Action reason.
+
+  NetworkApActionResult:
+    kind: object
+    description: Result of starting or stopping AP.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the action was accepted.
+      - id: 0x02
+        name: state
+        type: NetworkApState
+        required: true
+        description: Current or target AP state.
+
+  NetworkApClients:
+    kind: object
+    description: AP client list result.
+    fields:
+      - id: 0x01
+        name: clients
+        type: array
+        schema: NetworkApClientInfo
+        required: true
+        description: NetworkApClientInfo objects.
+
+  NetworkApClientInfo:
+    kind: object
+    description: One AP client summary.
+    fields:
+      - id: 0x01
+        name: clientId
+        type: string
+        required: true
+        max_length: 128
+        description: Client identifier.
+      - id: 0x02
+        name: macAddress
+        type: string
+        required: false
+        max_length: 32
+        description: Client MAC address, if available and permitted.
+      - id: 0x03
+        name: displayName
+        type: string
+        required: false
+        max_length: 128
+        description: Client display name.
+      - id: 0x04
+        name: rssi
+        type: int32
+        required: false
+        description: Client RSSI in dBm.
+      - id: 0x05
+        name: connectedSeconds
+        type: uint32
+        required: false
+        description: Connection age in seconds.
+
+  NetworkInterfaceStateChangedEvent:
+    kind: object
+    description: Event payload for network interface state changes.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: true
+        max_length: 64
+        description: Interface identifier.
+      - id: 0x02
+        name: state
+        type: NetworkInterfaceState
+        required: true
+        description: New interface state.
+      - id: 0x03
+        name: previousState
+        type: NetworkInterfaceState
+        required: false
+        description: Previous interface state.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkIpConfigChangedEvent:
+    kind: object
+    description: Event payload for IP configuration changes.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: true
+        max_length: 64
+        description: Interface identifier.
+      - id: 0x02
+        name: family
+        type: enum
+        required: false
+        description: IP family.
+      - id: 0x03
+        name: config
+        type: NetworkIpConfig
+        required: true
+        description: New IP configuration.
+      - id: 0x04
+        name: previousConfig
+        type: NetworkIpConfig
+        required: false
+        description: Previous IP configuration.
+      - id: 0x05
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkWifiConfigChangedEvent:
+    kind: object
+    description: Event payload for Wi-Fi profile configuration changes.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        description: Wi-Fi station interface identifier.
+      - id: 0x02
+        name: config
+        type: NetworkWifiConfig
+        required: true
+        description: New Wi-Fi configuration summary.
+      - id: 0x03
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Changed field paths.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkWifiStateChangedEvent:
+    kind: object
+    description: Event payload for Wi-Fi station state changes.
+    fields:
+      - id: 0x01
+        name: state
+        type: NetworkWifiState
+        required: true
+        description: New Wi-Fi station state.
+      - id: 0x02
+        name: previousState
+        type: NetworkWifiState
+        required: false
+        description: Previous state.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkWifiScanResultReportedEvent:
+    kind: object
+    description: Event payload for asynchronous Wi-Fi scan results.
+    fields:
+      - id: 0x01
+        name: scanId
+        type: string
+        required: false
+        max_length: 128
+        description: Scan identifier.
+      - id: 0x02
+        name: results
+        type: array
+        schema: NetworkWifiScanResult
+        required: false
+        description: NetworkWifiScanResult objects.
+      - id: 0x03
+        name: complete
+        type: bool
+        required: true
+        description: Whether this event completes the scan.
+
+  NetworkApConfigChangedEvent:
+    kind: object
+    description: Event payload for Wi-Fi AP configuration changes.
+    fields:
+      - id: 0x01
+        name: interfaceId
+        type: string
+        required: false
+        max_length: 64
+        description: Wi-Fi AP interface identifier.
+      - id: 0x02
+        name: config
+        type: NetworkApConfig
+        required: true
+        description: New AP configuration.
+      - id: 0x03
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Changed field paths.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkApStateChangedEvent:
+    kind: object
+    description: Event payload for Wi-Fi AP state changes.
+    fields:
+      - id: 0x01
+        name: state
+        type: NetworkApState
+        required: true
+        description: New AP state.
+      - id: 0x02
+        name: previousState
+        type: NetworkApState
+        required: false
+        description: Previous AP state.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkApClientChangedEvent:
+    kind: object
+    description: Event payload for Wi-Fi AP client changes.
+    fields:
+      - id: 0x01
+        name: change
+        type: enum
+        required: true
+        description: Client change type; candidate values include joined, left, and updated.
+      - id: 0x02
+        name: client
+        type: NetworkApClientInfo
+        required: true
+        description: Client summary.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Change reason.
+
+  NetworkInterfaceCapability:
+    kind: object
+    description: Capability descriptor for network.interface.
+    fields:
+      - id: 0x01
+        name: interfaceTypes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported interface type strings.
+      - id: 0x02
+        name: supportsStateEvent
+        type: bool
+        required: false
+        description: Whether network.interfaceStateChanged is supported.
+
+  NetworkIpCapability:
+    kind: object
+    description: Capability descriptor for network.ip.
+    fields:
+      - id: 0x01
+        name: families
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported IP families.
+      - id: 0x02
+        name: modes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported IP modes.
+      - id: 0x03
+        name: applyPolicies
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported apply policies.
+
+capabilities:
+  - id: 0x0E01
+    name: network.interface
+    domain: network
+    status: draft
+    since: 1.0.0
+    description: Device supports network interface enumeration and state observation.
+    type: object
+    schema: NetworkInterfaceCapability
+
+  - id: 0x0E02
+    name: network.ip
+    domain: network
+    status: draft
+    since: 1.0.0
+    description: Device supports IP configuration query, update, and change notification.
+    type: object
+    schema: NetworkIpCapability
+
+  - id: 0x0E03
+    name: network.wifi
+    domain: network
+    status: draft
+    since: 1.0.0
+    description: Device supports Wi-Fi station profile, scan, connection, and state operations.
+    type: object
+    schema: NetworkWifiCapabilities
+
+  - id: 0x0E04
+    name: network.ap
+    domain: network
+    status: draft
+    since: 1.0.0
+    description: Device supports Wi-Fi AP configuration, runtime state, and client observation.
+    type: object
+    schema: NetworkApCapabilities

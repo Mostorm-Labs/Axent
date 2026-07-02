@@ -1,0 +1,4 @@
+interface:
+  display_name: "40 Amend Adopted Protocol"
+  short_description: "Stage 40: revise adopted AXTP protocol facts"
+  default_prompt: "Use $amend-adopted-protocol to revise an already-adopted AXTP protocol and regenerate artifacts."

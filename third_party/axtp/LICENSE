@@ -1,0 +1,11 @@
+Copyright (c) 2026 Mostorm Labs. All rights reserved.
+
+This repository contains the AXTP specification, registry, generated references,
+conformance materials, release governance, and legacy migration inputs.
+
+No license is granted to copy, modify, distribute, sublicense, or use this
+material except under a separate written agreement with Mostorm Labs.
+
+Authorized AXTP runtime and SDK repositories may consume published spec tags and
+release artifacts only according to their separate agreements and integration
+policies.

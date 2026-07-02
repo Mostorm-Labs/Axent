@@ -1,0 +1,27 @@
+id: handshake.open_accept
+title: CONTROL OPEN / ACCEPT handshake
+since: spec/v0.0.2
+level: framed-binary
+profiles:
+  - framed-binary
+
+given:
+  transport: standard_frame
+
+steps:
+  - direction: client_to_server
+    control:
+      type: OPEN
+      controlId: 1
+      statusCode: SUCCESS
+
+  - direction: server_to_client
+    expect:
+      control:
+        type: ACCEPT
+        controlId: 1
+        statusCode: SUCCESS
+
+assertions:
+  - accept.controlId == open.controlId
+  - accept.statusCode == SUCCESS

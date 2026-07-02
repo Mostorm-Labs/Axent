@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">axdp</string>
+    <string name="tail_connected">接続されています</string>
+    <string name="tail_disconnected">切断されました</string>
+</resources>

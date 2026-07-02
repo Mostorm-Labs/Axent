@@ -1,0 +1,397 @@
+domain: firmware
+description: Firmware information, update, and update-policy capabilities.
+
+methods:
+  - id: 0x0401
+    name: firmware.getUpdateCapabilities
+    domain: firmware
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return P0 firmware update capability and upload constraints.
+    rpc_op: request_response
+    request_schema: Empty
+    response_schema: FirmwareUpdateCapabilities
+    recommended_encoding: [json, tlv]
+    capabilities: [firmware.update]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_STATE, FW_DEVICE_NOT_READY]
+
+  - id: 0x0402
+    name: firmware.beginUpdate
+    domain: firmware
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Create a firmware update session, accept the manifest, and bind file IDs to STREAM streamIds.
+    rpc_op: request_response
+    request_schema: BeginUpdateParams
+    response_schema: BeginUpdateResult
+    recommended_encoding: [json, tlv]
+    capabilities: [firmware.update]
+    events: [firmware.updateStateChanged, firmware.updateProgressReported]
+    errors: [SUCCESS, INVALID_ARGUMENT, BUSY, FW_VERSION_UNSUPPORTED, FW_STORAGE_NOT_ENOUGH, FW_DEVICE_NOT_READY]
+
+  - id: 0x040B
+    name: firmware.finishUpdate
+    domain: firmware
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Tell the device that upload is complete and hand off verification, install, and reboot to the device.
+    rpc_op: request_response
+    request_schema: FinishUpdateParams
+    response_schema: FinishUpdateResult
+    recommended_encoding: [json, tlv]
+    capabilities: [firmware.update]
+    events: [firmware.updateStateChanged, firmware.updateProgressReported]
+    errors: [SUCCESS, INVALID_STATE, STREAM_CHUNK_MISSING, FW_SIZE_MISMATCH, FW_DEVICE_NOT_READY, BUSY]
+
+  - id: 0x0408
+    name: firmware.getUpdateState
+    domain: firmware
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Return current firmware update state for UI refresh, reconnect, or event-loss recovery.
+    rpc_op: request_response
+    request_schema: GetUpdateStateParams
+    response_schema: FirmwareUpdateState
+    recommended_encoding: [json, tlv]
+    capabilities: [firmware.update]
+    errors: [SUCCESS, NOT_FOUND, FW_TRANSFER_NOT_STARTED]
+
+events:
+  - id: 0x0402
+    name: firmware.updateProgressReported
+    domain: firmware
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted when firmware receiving, verification, or install progress changes.
+    event_schema: FirmwareUpdateProgressEvent
+    severity: info
+    trigger: [STREAM upload progress, firmware.finishUpdate, internal verify, internal install]
+    capabilities: [firmware.update]
+
+  - id: 0x0403
+    name: firmware.updateStateChanged
+    domain: firmware
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Emitted when firmware update state changes or fails.
+    event_schema: FirmwareUpdateStateChangedEvent
+    severity: info
+    trigger: [firmware.beginUpdate, firmware.finishUpdate, verify complete, install complete, rebooting, failure]
+    capabilities: [firmware.update]
+
+types:
+  FirmwareUpdateCapabilities:
+    kind: object
+    description: P0 firmware update capability and upload constraints.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether firmware.update P0 is supported.
+      - id: 0x02
+        name: supportsMultiFile
+        type: bool
+        required: true
+        description: Whether manifest may contain multiple files.
+      - id: 0x03
+        name: streamLayout
+        type: enum
+        required: true
+        description: P0 stream layout, currently file.
+      - id: 0x04
+        name: hashAlgorithm
+        type: enum
+        required: true
+        description: P0 hash algorithm, currently md5.
+      - id: 0x05
+        name: autoReboot
+        type: bool
+        required: true
+        description: Whether the device automatically reboots after installation.
+      - id: 0x06
+        name: maxChunkSize
+        type: uint32
+        required: false
+        description: Maximum STREAM data chunk size supported by the device.
+      - id: 0x07
+        name: devicePolicyVersion
+        type: string
+        required: false
+        max_length: 64
+        description: Optional device policy version used by host tooling.
+
+  BeginUpdateParams:
+    kind: object
+    description: Request to begin a firmware update session.
+    fields:
+      - id: 0x01
+        name: manifest
+        type: FirmwareUpdateManifest
+        required: true
+        description: Minimal firmware update manifest.
+
+  BeginUpdateResult:
+    kind: object
+    description: Result of creating a firmware update session.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: State after begin, normally receiving.
+      - id: 0x03
+        name: streams
+        type: array
+        schema: FirmwareUpdateStreamBinding
+        required: true
+        description: Firmware update stream bindings.
+      - id: 0x04
+        name: chunkSize
+        type: uint32
+        required: false
+        description: Recommended STREAM chunk size.
+
+  FinishUpdateParams:
+    kind: object
+    description: Request to finish firmware upload and hand off processing to the device.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+
+  FinishUpdateResult:
+    kind: object
+    description: Result of finishUpdate.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+      - id: 0x02
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the device accepted the finish handoff.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        description: State after finish, normally verifying or failed.
+
+  GetUpdateStateParams:
+    kind: object
+    description: Selector for firmware update state.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+
+  FirmwareUpdateManifest:
+    kind: object
+    description: Minimal firmware update manifest.
+    fields:
+      - id: 0x01
+        name: packageId
+        type: string
+        required: false
+        max_length: 128
+        description: Firmware package identifier.
+      - id: 0x02
+        name: version
+        type: string
+        required: false
+        max_length: 64
+        description: Target firmware version string.
+      - id: 0x03
+        name: files
+        type: array
+        schema: FirmwareUpdateFile
+        required: true
+        description: Firmware update files.
+      - id: 0x04
+        name: devicePolicyVersion
+        type: string
+        required: false
+        max_length: 64
+        description: Optional policy version used to interpret the package.
+
+  FirmwareUpdateFile:
+    kind: object
+    description: One file in the firmware update manifest.
+    fields:
+      - id: 0x01
+        name: fileId
+        type: string
+        required: true
+        max_length: 128
+        description: Manifest-scoped file identifier.
+      - id: 0x02
+        name: target
+        type: string
+        required: false
+        max_length: 128
+        description: Device-defined target component or partition.
+      - id: 0x03
+        name: size
+        type: uint64
+        required: true
+        description: File size in bytes.
+      - id: 0x04
+        name: md5
+        type: string
+        required: true
+        max_length: 32
+        description: File md5 digest as lowercase hexadecimal.
+
+  FirmwareUpdateStreamBinding:
+    kind: object
+    description: Binding between a manifest file and a STREAM streamId.
+    fields:
+      - id: 0x01
+        name: fileId
+        type: string
+        required: true
+        max_length: 128
+        description: Manifest-scoped file identifier.
+      - id: 0x02
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+
+  FirmwareUpdateState:
+    kind: object
+    description: Current firmware update state.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: State, such as idle, receiving, verifying, installing, rebooting, confirmed, or failed.
+      - id: 0x03
+        name: progress
+        type: uint8
+        required: false
+        min: 0
+        max: 100
+        description: Overall progress percentage.
+      - id: 0x04
+        name: currentFileId
+        type: string
+        required: false
+        max_length: 128
+        description: Current file identifier, if file-level progress is available.
+      - id: 0x05
+        name: error
+        type: FirmwareUpdateErrorInfo
+        required: false
+        description: Error details when state is failed.
+
+  FirmwareUpdateErrorInfo:
+    kind: object
+    description: Firmware update error details.
+    fields:
+      - id: 0x01
+        name: error
+        type: enum
+        required: true
+        description: Candidate or adopted error name.
+      - id: 0x02
+        name: message
+        type: string
+        required: false
+        max_length: 256
+        description: Developer-facing error message.
+      - id: 0x03
+        name: fileId
+        type: string
+        required: false
+        max_length: 128
+        description: Related file identifier, if applicable.
+
+  FirmwareUpdateProgressEvent:
+    kind: object
+    description: Event payload for firmware update progress.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Current firmware update state.
+      - id: 0x03
+        name: progress
+        type: uint8
+        required: false
+        min: 0
+        max: 100
+        description: Overall progress percentage.
+      - id: 0x04
+        name: fileId
+        type: string
+        required: false
+        max_length: 128
+        description: Current file identifier.
+
+  FirmwareUpdateStateChangedEvent:
+    kind: object
+    description: Event payload for firmware update state changes.
+    fields:
+      - id: 0x01
+        name: updateSessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Firmware update session identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: New firmware update state.
+      - id: 0x03
+        name: error
+        type: FirmwareUpdateErrorInfo
+        required: false
+        description: Error details when state is failed.
+
+capabilities:
+  - id: 0x0401
+    name: firmware.update
+    domain: firmware
+    status: draft
+    since: 1.0.0
+    description: Device supports P0 STREAM-based firmware update sessions.
+    type: object
+    schema: FirmwareUpdateCapabilities

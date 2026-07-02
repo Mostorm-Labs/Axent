@@ -1,0 +1,33 @@
+id: capability.unsupported_method
+title: Unsupported method uses standard method capability error
+since: spec/v0.0.2
+level: capability
+profiles:
+  - capability
+  - core
+
+given:
+  method: vendor.unsupported
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 4
+      method: vendor.unsupported
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 4
+        statusCode:
+          oneOf:
+            - RPC_METHOD_NOT_FOUND
+            - CAPABILITY_METHOD_UNSUPPORTED
+
+assertions:
+  - response.requestId == request.requestId
+  - response.statusCode != SUCCESS

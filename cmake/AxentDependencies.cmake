@@ -1,0 +1,29 @@
+set(AXENT_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+
+set(AXTP_CPP_RUNTIME_BUILD_SDK ON CACHE BOOL "" FORCE)
+set(AXTP_CPP_RUNTIME_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(AXTP_CPP_RUNTIME_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(AXTP_CPP_RUNTIME_BUILD_CONFORMANCE OFF CACHE BOOL "" FORCE)
+set(AXTP_CPP_RUNTIME_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(AXTP_BUILD_JSON_RPC ON CACHE BOOL "" FORCE)
+set(AXTP_BUILD_OPTIONAL_TRANSPORTS ON CACHE BOOL "" FORCE)
+
+if(EXISTS "${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime/CMakeLists.txt")
+    add_subdirectory(third_party/axtp-cpp-runtime)
+else()
+    message(FATAL_ERROR "Missing third_party/axtp-cpp-runtime. Run git submodule update --init --recursive.")
+endif()
+
+set(AXENT_AXDP_ROOT "${AXENT_THIRD_PARTY_DIR}/axdp" CACHE PATH "AXDP source root")
+set(AXENT_AXTP_SPEC_ROOT "${AXENT_THIRD_PARTY_DIR}/axtp" CACHE PATH "AXTP spec root")
+set(AXENT_TEA_MACOS_ROOT "${AXENT_THIRD_PARTY_DIR}/tea/macos/TeaSdkMacOS_1.0.0.36" CACHE PATH "TEA macOS SDK root")
+
+set(AXENT_HAS_AXDP_HEADERS OFF)
+if(EXISTS "${AXENT_AXDP_ROOT}/include/axdp_api.h")
+    set(AXENT_HAS_AXDP_HEADERS ON)
+endif()
+
+set(AXENT_HAS_TEA_MACOS_SDK OFF)
+if(EXISTS "${AXENT_TEA_MACOS_ROOT}/include/tea_inside_api.h")
+    set(AXENT_HAS_TEA_MACOS_SDK ON)
+endif()

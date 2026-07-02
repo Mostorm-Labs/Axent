@@ -1,0 +1,29 @@
+id: capability.get_all
+title: Generated registry exposes current adopted methods
+since: spec/v0.0.2
+level: capability
+profiles:
+  - capability
+  - core
+
+given:
+  registry: generated
+
+steps:
+  - direction: runtime_local
+    registry_lookup:
+      methods:
+        - audio.getAlgorithmCapabilities
+        - audio.getAlgorithmConfig
+        - audio.setAlgorithmConfig
+        - audio.resetAlgorithmConfig
+
+  - direction: runtime_local
+    expect:
+      methods:
+        count:
+          gte: 4
+
+assertions:
+  - registry.method("audio.getAlgorithmConfig").id == 0x0901
+  - registry.method("audio.getAlgorithmCapabilities").id == 0x090D

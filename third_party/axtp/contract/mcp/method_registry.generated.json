@@ -1,0 +1,2086 @@
+{
+  "methods": [
+    {
+      "id": 257,
+      "bitOffset": 0,
+      "name": "device.getInfo",
+      "domain": "device",
+      "status": "draft",
+      "description": "Return the current endpoint main device identity, product, hardware, OS, software, AXTP runtime, and optional capability summary.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "GetDeviceInfoParams",
+      "responseSchema": "DeviceInfo",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "device.info"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0101"
+    },
+    {
+      "id": 258,
+      "bitOffset": 1,
+      "name": "device.getPairingCode",
+      "domain": "device",
+      "status": "draft",
+      "description": "Return a pairing code for on-site or backend-claimed device enrollment. With refresh=false (default) the current valid code is returned; with refresh=true the server generates a new code and invalidates the previous one.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "DeviceGetPairingCodeParams",
+      "responseSchema": "DevicePairingCodeInfo",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "device.enrollment"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "PERMISSION_DENIED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0102"
+    },
+    {
+      "id": 259,
+      "bitOffset": 2,
+      "name": "device.getEnrollmentState",
+      "domain": "device",
+      "status": "draft",
+      "description": "Query whether the device is enrolled and return the associated backend object summary when enrolled.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "DeviceGetEnrollmentStateParams",
+      "responseSchema": "DeviceEnrollmentInfo",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "device.enrollment"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED"
+      ],
+      "idHex": "0x0103"
+    },
+    {
+      "id": 260,
+      "bitOffset": 3,
+      "name": "device.setEnrollmentState",
+      "domain": "device",
+      "status": "draft",
+      "description": "Set the enrollment state (bind success, unbind, clear failure, or sync server claim). State transitions must follow the enrollment state machine; an invalid transition returns INVALID_STATE. Emitted after the state actually changes by the device.enrollmentStateChanged event.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "DeviceSetEnrollmentStateParams",
+      "responseSchema": "DeviceSetEnrollmentStateResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "device.enrollment"
+      ],
+      "events": [
+        "device.enrollmentStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0104"
+    },
+    {
+      "id": 1025,
+      "bitOffset": 0,
+      "name": "firmware.getUpdateCapabilities",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Return P0 firmware update capability and upload constraints.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "Empty",
+      "responseSchema": "FirmwareUpdateCapabilities",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "firmware.update"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_STATE",
+        "FW_DEVICE_NOT_READY"
+      ],
+      "idHex": "0x0401"
+    },
+    {
+      "id": 1026,
+      "bitOffset": 1,
+      "name": "firmware.beginUpdate",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Create a firmware update session, accept the manifest, and bind file IDs to STREAM streamIds.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "BeginUpdateParams",
+      "responseSchema": "BeginUpdateResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "firmware.update"
+      ],
+      "events": [
+        "firmware.updateStateChanged",
+        "firmware.updateProgressReported"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "BUSY",
+        "FW_VERSION_UNSUPPORTED",
+        "FW_STORAGE_NOT_ENOUGH",
+        "FW_DEVICE_NOT_READY"
+      ],
+      "idHex": "0x0402"
+    },
+    {
+      "id": 1032,
+      "bitOffset": 3,
+      "name": "firmware.getUpdateState",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Return current firmware update state for UI refresh, reconnect, or event-loss recovery.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "GetUpdateStateParams",
+      "responseSchema": "FirmwareUpdateState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "firmware.update"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_FOUND",
+        "FW_TRANSFER_NOT_STARTED"
+      ],
+      "idHex": "0x0408"
+    },
+    {
+      "id": 1035,
+      "bitOffset": 2,
+      "name": "firmware.finishUpdate",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Tell the device that upload is complete and hand off verification, install, and reboot to the device.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "FinishUpdateParams",
+      "responseSchema": "FinishUpdateResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "firmware.update"
+      ],
+      "events": [
+        "firmware.updateStateChanged",
+        "firmware.updateProgressReported"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_STATE",
+        "STREAM_CHUNK_MISSING",
+        "FW_SIZE_MISMATCH",
+        "FW_DEVICE_NOT_READY",
+        "BUSY"
+      ],
+      "idHex": "0x040B"
+    },
+    {
+      "id": 2059,
+      "bitOffset": 1,
+      "name": "video.openStream",
+      "domain": "video",
+      "status": "draft",
+      "description": "Open a real-time video STREAM and return the negotiated streamId and media metadata.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "VideoOpenStreamParams",
+      "responseSchema": "VideoOpenStreamResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "events": [
+        "video.streamStateChanged",
+        "video.streamSourceStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "BUSY",
+        "RESOURCE_EXHAUSTED",
+        "MEDIA_SOURCE_NOT_FOUND",
+        "MEDIA_SOURCE_UNAVAILABLE",
+        "MEDIA_CODEC_UNSUPPORTED",
+        "MEDIA_RESOLUTION_UNSUPPORTED",
+        "MEDIA_FRAMERATE_UNSUPPORTED",
+        "MEDIA_STREAM_START_FAILED"
+      ],
+      "idHex": "0x080B"
+    },
+    {
+      "id": 2060,
+      "bitOffset": 2,
+      "name": "video.closeStream",
+      "domain": "video",
+      "status": "draft",
+      "description": "Close a previously opened video STREAM.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "VideoCloseStreamParams",
+      "responseSchema": "VideoCloseStreamResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "events": [
+        "video.streamStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "STREAM_NOT_FOUND",
+        "STREAM_CLOSED",
+        "INVALID_STATE",
+        "MEDIA_STREAM_STOP_FAILED"
+      ],
+      "idHex": "0x080C"
+    },
+    {
+      "id": 2061,
+      "bitOffset": 3,
+      "name": "video.getStreamState",
+      "domain": "video",
+      "status": "draft",
+      "description": "Return runtime state for an opened video stream.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "VideoGetStreamStateParams",
+      "responseSchema": "VideoStreamState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "STREAM_NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x080D"
+    },
+    {
+      "id": 2066,
+      "bitOffset": 0,
+      "name": "video.getStreamCapabilities",
+      "domain": "video",
+      "status": "draft",
+      "description": "Return video stream sources, codecs, profiles, and open-mode support.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "VideoGetStreamCapabilitiesParams",
+      "responseSchema": "VideoStreamCapabilities",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0812"
+    },
+    {
+      "id": 2067,
+      "bitOffset": 4,
+      "name": "video.getStreamSourceState",
+      "domain": "video",
+      "status": "draft",
+      "description": "Return availability and receiving state for a video stream source.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "VideoGetStreamSourceStateParams",
+      "responseSchema": "VideoStreamSourceState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "MEDIA_SOURCE_NOT_FOUND",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0813"
+    },
+    {
+      "id": 2068,
+      "bitOffset": 5,
+      "name": "video.requestKeyFrame",
+      "domain": "video",
+      "status": "draft",
+      "description": "Request an encoder key frame for an active video stream.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "VideoRequestKeyFrameParams",
+      "responseSchema": "VideoRequestKeyFrameResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "events": [
+        "video.streamStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "STREAM_NOT_FOUND",
+        "INVALID_STATE",
+        "MEDIA_STREAM_START_FAILED",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0814"
+    },
+    {
+      "id": 2305,
+      "bitOffset": 1,
+      "name": "audio.getAlgorithmConfig",
+      "domain": "audio",
+      "status": "stable",
+      "description": "Return the current effective configuration for supported audio algorithm objects.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioGetAlgorithmConfigRequest",
+      "responseSchema": "AudioAlgorithmConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.algorithm"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0901"
+    },
+    {
+      "id": 2306,
+      "bitOffset": 2,
+      "name": "audio.setAlgorithmConfig",
+      "domain": "audio",
+      "status": "stable",
+      "description": "Partially update one or more audio algorithm configuration objects atomically.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioSetAlgorithmConfigRequest",
+      "responseSchema": "AudioSetAlgorithmConfigResponse",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.algorithm"
+      ],
+      "events": [
+        "audio.algorithmConfigChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0902"
+    },
+    {
+      "id": 2317,
+      "bitOffset": 0,
+      "name": "audio.getAlgorithmCapabilities",
+      "domain": "audio",
+      "status": "stable",
+      "description": "Return supported audio algorithm objects, fields, defaults, ranges, units, and update policy.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioGetAlgorithmCapabilitiesRequest",
+      "responseSchema": "AudioGetAlgorithmCapabilitiesResponse",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.algorithm"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x090D"
+    },
+    {
+      "id": 2318,
+      "bitOffset": 3,
+      "name": "audio.resetAlgorithmConfig",
+      "domain": "audio",
+      "status": "stable",
+      "description": "Reset all, selected, or selected-field audio algorithm configuration to declared default values.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioResetAlgorithmConfigRequest",
+      "responseSchema": "AudioSetAlgorithmConfigResponse",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.algorithm"
+      ],
+      "events": [
+        "audio.algorithmConfigChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x090E"
+    },
+    {
+      "id": 2319,
+      "bitOffset": 4,
+      "name": "audio.getStreamCapabilities",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Return real-time audio stream sources, codecs, stream profiles, and open-mode support.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioGetStreamCapabilitiesParams",
+      "responseSchema": "AudioStreamCapabilities",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x090F"
+    },
+    {
+      "id": 2320,
+      "bitOffset": 5,
+      "name": "audio.openStream",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Open a real-time audio STREAM and return the negotiated streamId and media metadata.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioOpenStreamParams",
+      "responseSchema": "AudioOpenStreamResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "events": [
+        "audio.streamStateChanged",
+        "audio.streamSourceStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "BUSY",
+        "RESOURCE_EXHAUSTED",
+        "MEDIA_SOURCE_NOT_FOUND",
+        "MEDIA_SOURCE_UNAVAILABLE",
+        "MEDIA_CODEC_UNSUPPORTED",
+        "MEDIA_STREAM_START_FAILED"
+      ],
+      "idHex": "0x0910"
+    },
+    {
+      "id": 2321,
+      "bitOffset": 6,
+      "name": "audio.closeStream",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Close a previously opened audio STREAM.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioCloseStreamParams",
+      "responseSchema": "AudioCloseStreamResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "events": [
+        "audio.streamStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "STREAM_NOT_FOUND",
+        "STREAM_CLOSED",
+        "INVALID_STATE",
+        "MEDIA_STREAM_STOP_FAILED"
+      ],
+      "idHex": "0x0911"
+    },
+    {
+      "id": 2322,
+      "bitOffset": 7,
+      "name": "audio.getStreamState",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Return runtime state for an opened audio stream.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioGetStreamStateParams",
+      "responseSchema": "AudioStreamState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "STREAM_NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0912"
+    },
+    {
+      "id": 2323,
+      "bitOffset": 8,
+      "name": "audio.getStreamSourceState",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Return availability and receiving state for an audio stream source.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "AudioGetStreamSourceStateParams",
+      "responseSchema": "AudioStreamSourceState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "MEDIA_SOURCE_NOT_FOUND",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0913"
+    },
+    {
+      "id": 3329,
+      "bitOffset": 0,
+      "name": "signage.getPlaylistCapabilities",
+      "domain": "signage",
+      "status": "draft",
+      "description": "Return the signage.playlist capability scope, including supported playlist item types, quantity limits, and feature toggles.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SignageGetPlaylistCapabilitiesParams",
+      "responseSchema": "SignagePlaylistCapabilitiesResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "signage.playlist"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0D01"
+    },
+    {
+      "id": 3330,
+      "bitOffset": 1,
+      "name": "signage.getPlaylistConfig",
+      "domain": "signage",
+      "status": "draft",
+      "description": "Return the current playlist configuration held by the device as the complete playlists array.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SignageGetPlaylistConfigParams",
+      "responseSchema": "SignagePlaylistConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "signage.playlist"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0D02"
+    },
+    {
+      "id": 3331,
+      "bitOffset": 2,
+      "name": "signage.setPlaylistConfig",
+      "domain": "signage",
+      "status": "draft",
+      "description": "Fully replace the playlist configuration. The server is the single source of truth; a second full sync removes playlist items absent from the new payload.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SignageSetPlaylistConfigParams",
+      "responseSchema": "SignageSetPlaylistConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "signage.playlist"
+      ],
+      "events": [
+        "signage.playlistConfigChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "NOT_SUPPORTED",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0D03"
+    },
+    {
+      "id": 3332,
+      "bitOffset": 3,
+      "name": "signage.resetPlaylistConfig",
+      "domain": "signage",
+      "status": "draft",
+      "description": "Restore the playlist configuration to the factory default state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SignageResetPlaylistConfigParams",
+      "responseSchema": "SignagePlaylistConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "signage.playlist"
+      ],
+      "events": [
+        "signage.playlistConfigChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0D04"
+    },
+    {
+      "id": 3333,
+      "bitOffset": 4,
+      "name": "signage.getPlaylistItemUrl",
+      "domain": "signage",
+      "status": "draft",
+      "description": "Fetch the latest resource URL for a playlist item by itemId (URL refresh). The device calls this proactively when an item URL is about to expire. Clock items have no URL resource and return NOT_SUPPORTED.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SignageGetPlaylistItemUrlParams",
+      "responseSchema": "SignageGetPlaylistItemUrlResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "signage.playlist"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "NOT_FOUND",
+        "INTERNAL_ERROR"
+      ],
+      "idHex": "0x0D05"
+    },
+    {
+      "id": 3586,
+      "bitOffset": 2,
+      "name": "network.getIpConfig",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return IP configuration for a network interface.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetIpConfigParams",
+      "responseSchema": "NetworkIpConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ip"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E02"
+    },
+    {
+      "id": 3587,
+      "bitOffset": 3,
+      "name": "network.setIpConfig",
+      "domain": "network",
+      "status": "draft",
+      "description": "Set DHCP/static/disabled IP configuration for a network interface.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkSetIpConfigParams",
+      "responseSchema": "NetworkSetIpConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ip"
+      ],
+      "events": [
+        "network.ipConfigChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E03"
+    },
+    {
+      "id": 3588,
+      "bitOffset": 5,
+      "name": "network.getWifiConfig",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return saved Wi-Fi profile summaries without plaintext credentials.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetWifiConfigParams",
+      "responseSchema": "NetworkWifiConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E04"
+    },
+    {
+      "id": 3589,
+      "bitOffset": 6,
+      "name": "network.setWifiConfig",
+      "domain": "network",
+      "status": "draft",
+      "description": "Create or update a Wi-Fi station profile.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkSetWifiConfigParams",
+      "responseSchema": "NetworkSetWifiConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [
+        "network.wifiConfigChanged",
+        "network.wifiStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E05"
+    },
+    {
+      "id": 3590,
+      "bitOffset": 7,
+      "name": "network.scanWifi",
+      "domain": "network",
+      "status": "draft",
+      "description": "Scan visible Wi-Fi access points.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkScanWifiParams",
+      "responseSchema": "NetworkScanWifiResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [
+        "network.wifiScanResultReported"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "BUSY",
+        "TIMEOUT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E06"
+    },
+    {
+      "id": 3591,
+      "bitOffset": 8,
+      "name": "network.connectWifi",
+      "domain": "network",
+      "status": "draft",
+      "description": "Connect to a saved Wi-Fi profile or an inline profile.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkConnectWifiParams",
+      "responseSchema": "NetworkWifiActionResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [
+        "network.wifiStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "INVALID_STATE",
+        "BUSY",
+        "TIMEOUT",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E07"
+    },
+    {
+      "id": 3592,
+      "bitOffset": 9,
+      "name": "network.disconnectWifi",
+      "domain": "network",
+      "status": "draft",
+      "description": "Disconnect the current Wi-Fi station connection.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkDisconnectWifiParams",
+      "responseSchema": "NetworkWifiActionResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [
+        "network.wifiStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E08"
+    },
+    {
+      "id": 3593,
+      "bitOffset": 10,
+      "name": "network.getWifiState",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return current Wi-Fi station association, authentication, and connection state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetWifiStateParams",
+      "responseSchema": "NetworkWifiState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E09"
+    },
+    {
+      "id": 3594,
+      "bitOffset": 12,
+      "name": "network.getApConfig",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return Wi-Fi AP configuration without exposing plaintext credentials unless explicitly allowed by policy.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetApConfigParams",
+      "responseSchema": "NetworkApConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E0A"
+    },
+    {
+      "id": 3595,
+      "bitOffset": 13,
+      "name": "network.setApConfig",
+      "domain": "network",
+      "status": "draft",
+      "description": "Partially update Wi-Fi AP configuration.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkSetApConfigParams",
+      "responseSchema": "NetworkSetApConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [
+        "network.apConfigChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E0B"
+    },
+    {
+      "id": 3596,
+      "bitOffset": 15,
+      "name": "network.startAp",
+      "domain": "network",
+      "status": "draft",
+      "description": "Start the Wi-Fi AP role.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkApActionParams",
+      "responseSchema": "NetworkApActionResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [
+        "network.apStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E0C"
+    },
+    {
+      "id": 3597,
+      "bitOffset": 16,
+      "name": "network.stopAp",
+      "domain": "network",
+      "status": "draft",
+      "description": "Stop the Wi-Fi AP role.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkApActionParams",
+      "responseSchema": "NetworkApActionResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [
+        "network.apStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "BUSY",
+        "PERMISSION_DENIED"
+      ],
+      "idHex": "0x0E0D"
+    },
+    {
+      "id": 3598,
+      "bitOffset": 14,
+      "name": "network.getApState",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return runtime state for the device Wi-Fi AP role.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetApConfigParams",
+      "responseSchema": "NetworkApState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E0E"
+    },
+    {
+      "id": 3600,
+      "bitOffset": 0,
+      "name": "network.getInterfaces",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return visible network interfaces and default interface identifiers.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetInterfacesParams",
+      "responseSchema": "NetworkInterfaces",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.interface"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E10"
+    },
+    {
+      "id": 3601,
+      "bitOffset": 1,
+      "name": "network.getInterfaceInfo",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return detailed information for one network interface.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetInterfaceInfoParams",
+      "responseSchema": "NetworkInterfaceInfo",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.interface"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E11"
+    },
+    {
+      "id": 3602,
+      "bitOffset": 4,
+      "name": "network.getWifiCapabilities",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return Wi-Fi station capability, including security types, bands, scanning, and credential import modes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetWifiCapabilitiesParams",
+      "responseSchema": "NetworkWifiCapabilities",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E12"
+    },
+    {
+      "id": 3603,
+      "bitOffset": 11,
+      "name": "network.getApCapabilities",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return Wi-Fi AP capability, including supported bands, security types, channel ranges, and credential export policy.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetApCapabilitiesParams",
+      "responseSchema": "NetworkApCapabilities",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E13"
+    },
+    {
+      "id": 3604,
+      "bitOffset": 17,
+      "name": "network.getApClients",
+      "domain": "network",
+      "status": "draft",
+      "description": "Return clients currently associated with the Wi-Fi AP.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "NetworkGetApConfigParams",
+      "responseSchema": "NetworkApClients",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x0E14"
+    },
+    {
+      "id": 5633,
+      "bitOffset": 0,
+      "name": "cast.getSession",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return the current cast receiver phase and active session summary.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastGetSessionParams",
+      "responseSchema": "CastSessionState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1601"
+    },
+    {
+      "id": 5634,
+      "bitOffset": 1,
+      "name": "cast.stopSession",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Stop the current cast session when one is active.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastStopSessionParams",
+      "responseSchema": "CastStopSessionResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "events": [
+        "cast.sessionStateChanged",
+        "cast.sessionStopped"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1602"
+    },
+    {
+      "id": 5635,
+      "bitOffset": 2,
+      "name": "cast.getAirPlayName",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return the AirPlay receiver display name and publish state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "Empty",
+      "responseSchema": "CastAirPlayNameState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1603"
+    },
+    {
+      "id": 5636,
+      "bitOffset": 3,
+      "name": "cast.setAirPlayName",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Set the AirPlay receiver display name and request service rediscovery.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetAirPlayNameParams",
+      "responseSchema": "CastAirPlayNameState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "events": [
+        "cast.sessionStateChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1604"
+    },
+    {
+      "id": 5637,
+      "bitOffset": 4,
+      "name": "cast.getAudio",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return local cast audio playback and mute state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastGetAudioParams",
+      "responseSchema": "CastAudioState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.audio"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1605"
+    },
+    {
+      "id": 5638,
+      "bitOffset": 5,
+      "name": "cast.setAudio",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Enable or disable local playback of received cast audio.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetAudioParams",
+      "responseSchema": "CastAudioState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.audio"
+      ],
+      "events": [
+        "cast.audioChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1606"
+    },
+    {
+      "id": 5639,
+      "bitOffset": 6,
+      "name": "cast.setMuted",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Mute or unmute local cast audio output.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetMutedParams",
+      "responseSchema": "CastAudioState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.audio"
+      ],
+      "events": [
+        "cast.audioChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1607"
+    },
+    {
+      "id": 5640,
+      "bitOffset": 7,
+      "name": "cast.getPinCodeConfig",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return cast PIN protection state, visibility, and optional secret material.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastGetPinCodeConfigParams",
+      "responseSchema": "CastPinCodeConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.pinCode"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1608"
+    },
+    {
+      "id": 5641,
+      "bitOffset": 8,
+      "name": "cast.setPinCodeConfig",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Enable or disable cast PIN protection and update display policy.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetPinCodeConfigParams",
+      "responseSchema": "CastPinCodeConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.pinCode"
+      ],
+      "events": [
+        "cast.pinCodeChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1609"
+    },
+    {
+      "id": 5642,
+      "bitOffset": 9,
+      "name": "cast.setPinCode",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Set the current cast PIN value according to receiver policy.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetPinCodeParams",
+      "responseSchema": "CastPinCodeConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.pinCode"
+      ],
+      "events": [
+        "cast.pinCodeChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x160A"
+    },
+    {
+      "id": 5643,
+      "bitOffset": 10,
+      "name": "cast.getWindowState",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return cast window visibility, mode, and bounds summary.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "Empty",
+      "responseSchema": "CastWindowState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.window"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x160B"
+    },
+    {
+      "id": 5644,
+      "bitOffset": 11,
+      "name": "cast.setWindowState",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Set cast window mode, fullscreen state, or always-on-top state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetWindowStateParams",
+      "responseSchema": "CastWindowState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.window"
+      ],
+      "events": [
+        "cast.windowChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "INVALID_STATE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x160C"
+    },
+    {
+      "id": 5645,
+      "bitOffset": 12,
+      "name": "cast.getBackendStatus",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return cast backend process, discoverability, and last-error state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastGetBackendStatusParams",
+      "responseSchema": "CastBackendStatus",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.backend"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x160D"
+    },
+    {
+      "id": 5646,
+      "bitOffset": 13,
+      "name": "cast.restartBackend",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Restart the cast backend without restarting the receiver application or device.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastRestartBackendParams",
+      "responseSchema": "CastRestartBackendResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.backend"
+      ],
+      "events": [
+        "cast.backendChanged",
+        "cast.sessionStopped"
+      ],
+      "errors": [
+        "SUCCESS",
+        "BUSY",
+        "INVALID_STATE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x160E"
+    },
+    {
+      "id": 5647,
+      "bitOffset": 14,
+      "name": "cast.getFlowControlState",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return local cast render fps, queue policy, and low-frequency diagnostics.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastGetFlowControlStateParams",
+      "responseSchema": "CastFlowControlState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.flowControl"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x160F"
+    },
+    {
+      "id": 5648,
+      "bitOffset": 15,
+      "name": "cast.setRenderFps",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Set the receiver-local target render fps for cast media.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetRenderFpsParams",
+      "responseSchema": "CastFlowControlState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.flowControl"
+      ],
+      "events": [
+        "cast.flowControlChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1610"
+    },
+    {
+      "id": 5649,
+      "bitOffset": 16,
+      "name": "cast.setFlowPolicy",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Set receiver-local cast queue, late-frame, drop, and overlay policy.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastSetFlowPolicyParams",
+      "responseSchema": "CastFlowControlState",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.flowControl"
+      ],
+      "events": [
+        "cast.flowControlChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1611"
+    },
+    {
+      "id": 5650,
+      "bitOffset": 17,
+      "name": "cast.getStatus",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Return a current cast receiver snapshot for UI reload, reconnect, or event-loss recovery.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "CastGetStatusParams",
+      "responseSchema": "CastStatus",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "cast.status"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "INVALID_ARGUMENT",
+        "UNAVAILABLE"
+      ],
+      "idHex": "0x1612"
+    },
+    {
+      "id": 5889,
+      "bitOffset": 0,
+      "name": "software.getConfig",
+      "domain": "software",
+      "status": "draft",
+      "description": "Read the current runtime configuration of a software object identified by target.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SoftwareGetConfigParams",
+      "responseSchema": "SoftwareConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "software.config"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT"
+      ],
+      "idHex": "0x1701"
+    },
+    {
+      "id": 5890,
+      "bitOffset": 1,
+      "name": "software.setConfig",
+      "domain": "software",
+      "status": "draft",
+      "description": "Set a configuration fragment of a software object using partial update semantics; fields absent from the payload are left unchanged.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SoftwareSetConfigParams",
+      "responseSchema": "SoftwareSetConfigResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "software.config"
+      ],
+      "events": [
+        "software.configChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "INVALID_STATE"
+      ],
+      "idHex": "0x1702"
+    },
+    {
+      "id": 5891,
+      "bitOffset": 2,
+      "name": "software.resetConfig",
+      "domain": "software",
+      "status": "draft",
+      "description": "Restore the runtime configuration of a software object to the current-version defaults for the given target. Only resets the specified software object; system-level factory reset is handled by system.restoreFactorySettings and does not trigger a device reboot.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SoftwareResetConfigParams",
+      "responseSchema": "SoftwareConfig",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "software.config"
+      ],
+      "events": [
+        "software.configChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "PERMISSION_DENIED",
+        "INVALID_STATE"
+      ],
+      "idHex": "0x1703"
+    },
+    {
+      "id": 5892,
+      "bitOffset": 3,
+      "name": "software.getUpdatePolicy",
+      "domain": "software",
+      "status": "draft",
+      "description": "Read the current automatic update policy of a software object identified by target.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SoftwareGetUpdatePolicyParams",
+      "responseSchema": "SoftwareUpdatePolicy",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "software.updatePolicy"
+      ],
+      "events": [],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED"
+      ],
+      "idHex": "0x1704"
+    },
+    {
+      "id": 5893,
+      "bitOffset": 4,
+      "name": "software.setUpdatePolicy",
+      "domain": "software",
+      "status": "draft",
+      "description": "Set an update policy fragment of a software object using partial update semantics; fields absent from the payload are left unchanged.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SoftwareSetUpdatePolicyParams",
+      "responseSchema": "SoftwareSetUpdatePolicyResult",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "software.updatePolicy"
+      ],
+      "events": [
+        "software.updatePolicyChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "INVALID_STATE"
+      ],
+      "idHex": "0x1705"
+    },
+    {
+      "id": 5894,
+      "bitOffset": 5,
+      "name": "software.resetUpdatePolicy",
+      "domain": "software",
+      "status": "draft",
+      "description": "Restore the update policy of a software object to the current-version defaults for the given target. Only resets the update policy; it does not trigger a software or device reboot. System-level factory reset is handled by system.restoreFactorySettings.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "rpcOp": "request_response",
+      "requestSchema": "SoftwareResetUpdatePolicyParams",
+      "responseSchema": "SoftwareUpdatePolicy",
+      "recommendedEncoding": [
+        "json",
+        "tlv"
+      ],
+      "capabilities": [
+        "software.updatePolicy"
+      ],
+      "events": [
+        "software.updatePolicyChanged"
+      ],
+      "errors": [
+        "SUCCESS",
+        "NOT_SUPPORTED",
+        "PERMISSION_DENIED",
+        "INVALID_STATE"
+      ],
+      "idHex": "0x1706"
+    }
+  ]
+}

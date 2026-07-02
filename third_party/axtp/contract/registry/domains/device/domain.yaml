@@ -1,0 +1,643 @@
+domain: device
+description: Device identity, inventory, enrollment, and local hardware control capabilities.
+
+methods:
+  - id: 0x0101
+    name: device.getInfo
+    domain: device
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return the current endpoint main device identity, product, hardware, OS, software, AXTP runtime, and optional capability summary.
+    rpc_op: request_response
+    request_schema: GetDeviceInfoParams
+    response_schema: DeviceInfo
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - device.info
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - PERMISSION_DENIED
+      - INTERNAL_ERROR
+
+  - id: 0x0102
+    name: device.getPairingCode
+    domain: device
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Return a pairing code for on-site or backend-claimed device enrollment. With refresh=false (default) the current valid code is returned; with refresh=true the server generates a new code and invalidates the previous one.
+    rpc_op: request_response
+    request_schema: DeviceGetPairingCodeParams
+    response_schema: DevicePairingCodeInfo
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - device.enrollment
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - PERMISSION_DENIED
+      - INTERNAL_ERROR
+
+  - id: 0x0103
+    name: device.getEnrollmentState
+    domain: device
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Query whether the device is enrolled and return the associated backend object summary when enrolled.
+    rpc_op: request_response
+    request_schema: DeviceGetEnrollmentStateParams
+    response_schema: DeviceEnrollmentInfo
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - device.enrollment
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+
+  - id: 0x0104
+    name: device.setEnrollmentState
+    domain: device
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Set the enrollment state (bind success, unbind, clear failure, or sync server claim). State transitions must follow the enrollment state machine; an invalid transition returns INVALID_STATE. Emitted after the state actually changes by the device.enrollmentStateChanged event.
+    rpc_op: request_response
+    request_schema: DeviceSetEnrollmentStateParams
+    response_schema: DeviceSetEnrollmentStateResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - device.enrollment
+    events:
+      - device.enrollmentStateChanged
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - INVALID_STATE
+      - PERMISSION_DENIED
+
+events:
+  - id: 0x0102
+    name: device.enrollmentStateChanged
+    domain: device
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted after device.setEnrollmentState actually changes the enrollment state, or after a device-internal policy modifies it (e.g. pairing code expiry fallback, server-side revoke).
+    event_schema: DeviceEnrollmentStateChangedEvent
+    severity: info
+    trigger:
+      - device.setEnrollmentState
+    capabilities:
+      - device.enrollment
+
+types:
+  GetDeviceInfoParams:
+    kind: object
+    description: Optional selector for the read-only device information snapshot.
+    fields:
+      - id: 0x01
+        name: includeCapabilitySummary
+        type: bool
+        required: false
+        default: true
+        description: Whether to include the lightweight DeviceCapabilitySummary block.
+
+  DeviceInfo:
+    kind: object
+    description: Read-only information snapshot for the current AXTP endpoint main device.
+    fields:
+      - id: 0x01
+        name: identity
+        type: DeviceIdentity
+        required: true
+        description: Stable device identity fields.
+      - id: 0x02
+        name: product
+        type: DeviceProduct
+        required: true
+        description: Brand, product type, model, and display information.
+      - id: 0x03
+        name: hardware
+        type: DeviceHardware
+        required: false
+        description: Hardware summary.
+      - id: 0x04
+        name: os
+        type: DeviceOs
+        required: false
+        description: Operating system summary.
+      - id: 0x05
+        name: software
+        type: DeviceSoftware
+        required: false
+        description: Installed or hosted software component summary.
+      - id: 0x06
+        name: runtime
+        type: DeviceAxtpRuntime
+        required: false
+        description: AXTP runtime summary.
+      - id: 0x07
+        name: capability
+        type: DeviceCapabilitySummary
+        required: false
+        description: Lightweight modeling summary; not a complete capability registry.
+
+  DeviceIdentity:
+    kind: object
+    description: Stable identity fields for the current main device.
+    fields:
+      - id: 0x01
+        name: deviceId
+        type: string
+        required: true
+        max_length: 128
+        description: Stable AXTP or business device identifier.
+      - id: 0x02
+        name: serialNumber
+        type: string
+        required: false
+        max_length: 128
+        description: Vendor serial number; may be omitted by permission policy.
+      - id: 0x03
+        name: vendorId
+        type: string
+        required: false
+        max_length: 64
+        description: Vendor identifier.
+      - id: 0x04
+        name: productId
+        type: string
+        required: false
+        max_length: 64
+        description: Product identifier.
+
+  DeviceProduct:
+    kind: object
+    description: Product and user-visible model information.
+    fields:
+      - id: 0x01
+        name: brand
+        type: string
+        required: false
+        max_length: 64
+        description: Product brand.
+      - id: 0x02
+        name: productType
+        type: enum
+        required: true
+        description: Product type; candidate values include windowsDevice, androidDevice, embeddedDevice, rtosDevice, cameraDevice, displayDevice, and unknown.
+      - id: 0x03
+        name: model
+        type: string
+        required: true
+        max_length: 128
+        description: Hardware or whole-product model.
+      - id: 0x04
+        name: displayName
+        type: string
+        required: false
+        max_length: 128
+        description: User-visible display name; this feature exposes it as read-only.
+
+  DeviceHardware:
+    kind: object
+    description: Hardware summary.
+    fields:
+      - id: 0x01
+        name: revision
+        type: string
+        required: false
+        max_length: 32
+        description: Hardware revision.
+      - id: 0x02
+        name: cpuArch
+        type: enum
+        required: false
+        description: CPU architecture; candidate values include x86_64, arm64, armv7, riscv64, and unknown.
+      - id: 0x03
+        name: memoryBytes
+        type: uint64
+        required: false
+        description: Physical memory capacity in bytes.
+
+  DeviceOs:
+    kind: object
+    description: Operating system summary.
+    fields:
+      - id: 0x01
+        name: type
+        type: enum
+        required: true
+        description: OS type; candidate values include windows, android, linux, rtos, and unknown.
+      - id: 0x02
+        name: name
+        type: string
+        required: false
+        max_length: 128
+        description: OS display name.
+      - id: 0x03
+        name: version
+        type: string
+        required: false
+        max_length: 64
+        description: OS version string.
+      - id: 0x04
+        name: arch
+        type: enum
+        required: false
+        description: OS architecture; candidate values include x86_64, arm64, armv7, riscv64, and unknown.
+
+  DeviceSoftware:
+    kind: object
+    description: Software component summary.
+    fields:
+      - id: 0x01
+        name: components
+        type: array
+        schema: SoftwareComponent
+        required: false
+        description: Software component objects.
+
+  SoftwareComponent:
+    kind: object
+    description: One software component running on or hosted by the device.
+    fields:
+      - id: 0x01
+        name: id
+        type: string
+        required: true
+        max_length: 64
+        description: Component identifier.
+      - id: 0x02
+        name: name
+        type: string
+        required: false
+        max_length: 128
+        description: Component display name.
+      - id: 0x03
+        name: version
+        type: string
+        required: false
+        max_length: 64
+        description: Component version.
+      - id: 0x04
+        name: role
+        type: enum
+        required: false
+        description: Component role, such as axtpHost, launcher, signagePlayer, agent, or unknown.
+
+  DeviceAxtpRuntime:
+    kind: object
+    description: AXTP runtime summary.
+    fields:
+      - id: 0x01
+        name: axtpRuntime
+        type: string
+        required: false
+        max_length: 128
+        description: AXTP runtime implementation name.
+      - id: 0x02
+        name: axtpRuntimeVersion
+        type: string
+        required: false
+        max_length: 64
+        description: AXTP runtime implementation version.
+      - id: 0x03
+        name: hostAppId
+        type: string
+        required: false
+        max_length: 64
+        description: Host application identifier.
+
+  DeviceCapabilitySummary:
+    kind: object
+    description: Lightweight capability modeling summary returned by device.getInfo.
+    fields:
+      - id: 0x01
+        name: domains
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Domain names represented by the device.
+      - id: 0x02
+        name: features
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Domain.feature names represented by the device.
+      - id: 0x03
+        name: profiles
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Profile names or product profile hints.
+
+  DeviceInfoCapability:
+    kind: object
+    description: Capability descriptor for device.info.
+    fields:
+      - id: 0x01
+        name: readOnly
+        type: bool
+        required: true
+        default: true
+        description: device.info currently exposes only read-only information.
+      - id: 0x02
+        name: supportsCapabilitySummary
+        type: bool
+        required: false
+        default: true
+        description: Whether device.getInfo can include DeviceCapabilitySummary.
+      - id: 0x03
+        name: identityMerged
+        type: bool
+        required: false
+        default: true
+        description: Whether device.identity has been merged into device.info.
+
+  DeviceGetPairingCodeParams:
+    kind: object
+    description: Request for device.getPairingCode; selects refresh behavior and the pairing code purpose.
+    fields:
+      - id: 0x01
+        name: refresh
+        type: bool
+        required: false
+        default: false
+        description: Whether to force a fresh pairing code. false (default) returns the current valid code; true generates a new code and invalidates the previous one.
+      - id: 0x02
+        name: purpose
+        type: enum
+        required: false
+        description: Pairing code usage scenario; candidate values include initial_enrollment (first-time enrollment of a new device, default), re_enrollment (re-enrollment such as workspace migration), and service_repair (service/repair pairing, may have a different TTL or permission). Unsupported purpose returns NOT_SUPPORTED.
+
+  DevicePairingCodeInfo:
+    kind: object
+    description: Pairing code snapshot returned by device.getPairingCode. The code field carries a displayable or inputtable code; expiresAt is the authoritative absolute expiry while expiresInSeconds is retained for legacy device-sdk compatibility.
+    fields:
+      - id: 0x01
+        name: code
+        type: string
+        required: true
+        max_length: 8
+        description: Displayable pairing code, 6-8 uppercase alphanumeric characters excluding confusable characters (0/O, 1/I/L); MUST match the regex ^[A-HJ-NP-Z2-9]{6,8}$.
+      - id: 0x02
+        name: expiresAt
+        type: string
+        required: false
+        description: Absolute expiry time as an RFC 3339 timestamp. Authoritative when present. Legacy GetBindCode returned a Unix timestamp integer here; the adapter MUST convert integer to RFC 3339 string.
+      - id: 0x03
+        name: expiresInSeconds
+        type: uint32
+        required: false
+        min: 1
+        description: Relative expiry in seconds, retained for legacy device-sdk compatibility (observed value 1800). MUST be greater than 0 when present.
+      - id: 0x04
+        name: state
+        type: enum
+        required: false
+        description: Pairing code lifecycle state; candidate values include available (default), expired (TTL reached), used (consumed by the cloud), and disabled (revoked by the server).
+
+  DeviceGetEnrollmentStateParams:
+    kind: object
+    description: Request for device.getEnrollmentState; controls whether the post-enrollment endpoint summary is returned.
+    fields:
+      - id: 0x01
+        name: includeEndpoint
+        type: bool
+        required: false
+        default: true
+        description: Whether to include the post-enrollment endpoint summary. Defaults to true since the most common caller (the cloud management backend) needs endpoint info; set to false for lightweight polling or when the endpoint is already cached.
+
+  DeviceEnrollmentInfo:
+    kind: object
+    description: Enrollment state snapshot. Shared by the device.getEnrollmentState result, DeviceSetEnrollmentStateResult.state, and DeviceEnrollmentStateChangedEvent.state. workspaceId, endpoint, and enrolledAt are populated only when state is enrolled or unenrolling.
+    fields:
+      - id: 0x01
+        name: state
+        type: enum
+        required: true
+        description: Current enrollment state; candidate values include unmanaged, pairing_available, pending, enrolled, failed, and unenrolling. Valid transitions follow the enrollment state machine; invalid transitions return INVALID_STATE.
+      - id: 0x02
+        name: deviceId
+        type: string
+        required: false
+        max_length: 128
+        description: Server-assigned device identifier, stable across sessions.
+      - id: 0x03
+        name: workspaceId
+        type: string
+        required: false
+        max_length: 128
+        description: Enrolled workspace identifier. Populated only when state is enrolled or unenrolling. Privacy-sensitive; exposure policy to be confirmed. [REVIEW-ADOPTED-SCOPED] 待确认后走 amend
+      - id: 0x04
+        name: endpoint
+        type: DeviceEnrollmentEndpointSummary
+        required: false
+        description: Post-enrollment backend endpoint. Populated only when state is enrolled or unenrolling and subject to includeEndpoint.
+      - id: 0x05
+        name: enrolledAt
+        type: string
+        required: false
+        description: RFC 3339 timestamp of when the state became enrolled. Present only when state is enrolled or unenrolling. [REVIEW-ADOPTED-SCOPED]
+      - id: 0x06
+        name: updatedAt
+        type: string
+        required: false
+        description: RFC 3339 timestamp of the most recent state update.
+      - id: 0x07
+        name: message
+        type: string
+        required: false
+        max_length: 512
+        description: Human-readable detail, populated when state is failed or pending, optional when unenrolling.
+
+  DeviceEnrollmentEndpointSummary:
+    kind: object
+    description: Backend endpoint summary associated with enrollment. Nested in DeviceEnrollmentInfo and DeviceSetEnrollmentStateParams. When type is room, profileId is required.
+    fields:
+      - id: 0x01
+        name: endpointId
+        type: string
+        required: true
+        max_length: 128
+        description: Backend endpoint identifier.
+      - id: 0x02
+        name: type
+        type: enum
+        required: true
+        description: Endpoint type; candidate values include room, device, and asset. Operations such as room.setName only allow type=room.
+      - id: 0x03
+        name: displayName
+        type: string
+        required: false
+        max_length: 128
+        description: Endpoint display name, non-empty and trimmed. Max length aligned with device.info product.displayName (128) as a scoped default. [REVIEW-ADOPTED-SCOPED] 待产品确认后走 amend
+      - id: 0x04
+        name: profileId
+        type: string
+        required: false
+        max_length: 128
+        description: Room profile or business profile identifier. MUST be present when type is room; other types allow omission.
+      - id: 0x05
+        name: workspaceId
+        type: string
+        required: false
+        max_length: 128
+        description: Endpoint workspace identifier. Takes precedence over the parent DeviceEnrollmentInfo.workspaceId when both are present. [REVIEW-ADOPTED-SCOPED]
+
+  DeviceSetEnrollmentStateParams:
+    kind: object
+    description: Request for device.setEnrollmentState. Validation rules follow the enrollment state machine. For desiredState enrolled, only reachable from pending, endpoint and reason required, and endpoint.profileId required when endpoint.type is room. For desiredState unmanaged, reachable from enrolled/failed/pairing_available, reason recommended. For desiredState failed, only reachable from pending, message required. For desiredState pending, reachable from failed (retry) or pairing_available (code submitted). Transitions must follow the state machine; violations return INVALID_STATE.
+    fields:
+      - id: 0x01
+        name: desiredState
+        type: enum
+        required: true
+        description: Target state; candidate values include enrolled, unmanaged, failed, and pending.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        description: Change reason; candidate values include pairing_code_used, server_claimed, user_unenrolled, admin_reset, and unknown (default).
+      - id: 0x03
+        name: endpoint
+        type: DeviceEnrollmentEndpointSummary
+        required: false
+        description: Endpoint summary associated with a successful enrollment. Required when desiredState is enrolled.
+      - id: 0x04
+        name: message
+        type: string
+        required: false
+        max_length: 512
+        description: Failure, unbind, or repair detail. Required when desiredState is failed.
+
+  DeviceSetEnrollmentStateResult:
+    kind: object
+    description: Result of device.setEnrollmentState; carries the post-operation enrollment snapshot.
+    fields:
+      - id: 0x01
+        name: state
+        type: DeviceEnrollmentInfo
+        required: true
+        description: Enrollment state after the operation.
+      - id: 0x02
+        name: disconnectExpected
+        type: bool
+        required: false
+        default: false
+        description: Whether the unbind or reset is expected to cause a connection change. true only when desiredState is unmanaged and the device needs to close the management session; false for all other transitions.
+
+  DeviceEnrollmentStateChangedEvent:
+    kind: object
+    description: Event payload emitted when the enrollment state changes.
+    fields:
+      - id: 0x01
+        name: state
+        type: DeviceEnrollmentInfo
+        required: true
+        description: Enrollment state after the change.
+      - id: 0x02
+        name: previousState
+        type: enum
+        required: false
+        description: State enum value (not a full object) before the change; candidate values are the same DeviceEnrollmentInfo.state set.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Change reason; candidate values include pairing_code_used, server_claimed, user_unenrolled, admin_reset, and unknown (default).
+      - id: 0x04
+        name: triggerMethod
+        type: enum
+        required: false
+        description: Operation type that triggered the change; candidate values include setEnrollmentState (explicit call), getPairingCode (indirect, for code-expiry fallback), and server_sync (device-internal such as code-expiry rollback or server-side revoke). triggerId MUST be omitted when triggerMethod is server_sync. [REVIEW-ADOPTED-SCOPED]
+      - id: 0x05
+        name: triggerId
+        type: string
+        required: false
+        max_length: 64
+        description: RPC request id of the triggering operation. Omitted when triggerMethod is server_sync. [REVIEW-ADOPTED-SCOPED]
+
+  DeviceEnrollmentCapability:
+    kind: object
+    description: Capability descriptor for device.enrollment.
+    fields:
+      - id: 0x01
+        name: supportsPairingCode
+        type: bool
+        required: false
+        description: Whether pairing code is supported.
+      - id: 0x02
+        name: pairingCodeTtlSeconds
+        type: uint32
+        required: false
+        description: Default code TTL in seconds; MUST be greater than 0.
+      - id: 0x03
+        name: supportsUnenroll
+        type: bool
+        required: false
+        description: Whether remote unbind or enrollment state clear is supported.
+      - id: 0x04
+        name: endpointTypes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Endpoint type strings that enrollment may produce; candidate values include room, device, and asset. P0 only requires room. [REVIEW-ADOPTED-SCOPED]
+      - id: 0x05
+        name: supportedPurposes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported pairing code purpose strings; candidate values include initial_enrollment, re_enrollment, and service_repair. Omission means only initial_enrollment is supported. [REVIEW-ADOPTED-SCOPED]
+      - id: 0x06
+        name: maxActivePairingCodes
+        type: uint32
+        required: false
+        default: 1
+        description: Maximum number of simultaneously valid pairing codes. Default 1. [REVIEW-ADOPTED-SCOPED]
+      - id: 0x07
+        name: pairingCodeLength
+        type: uint32
+        required: false
+        min: 6
+        max: 8
+        default: 6
+        description: Pairing code character length. Default 6. [REVIEW-ADOPTED-SCOPED]
+
+capabilities:
+  - id: 0x0101
+    name: device.info
+    domain: device
+    status: draft
+    since: 1.0.0
+    description: Device supports read-only device information discovery.
+    type: object
+    schema: DeviceInfoCapability
+
+  - id: 0x0102
+    name: device.enrollment
+    domain: device
+    status: draft
+    since: 1.0.0
+    description: Device supports pairing-code-based enrollment into backend management, enrollment state query and change, and enrollment state change notifications.
+    type: object
+    schema: DeviceEnrollmentCapability

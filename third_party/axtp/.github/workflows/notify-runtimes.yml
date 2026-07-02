@@ -1,0 +1,58 @@
+name: Notify Runtime Repositories
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec_tag:
+        description: AXTP Spec tag, for example spec/v0.3.0
+        required: true
+        type: string
+      spec_version:
+        description: AXTP Spec version, for example 0.3.0
+        required: true
+        type: string
+      dry_run:
+        description: Print dispatch payloads without calling the GitHub API
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout AXTP spec
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Dispatch runtime upgrade workflows
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SPEC_TAG: ${{ github.event.inputs.spec_tag || '' }}
+          DISPATCH_SPEC_VERSION: ${{ github.event.inputs.spec_version || '' }}
+          DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          AXTP_RUNTIME_DISPATCH_TOKEN: ${{ secrets.AXTP_RUNTIME_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          spec_tag="$DISPATCH_SPEC_TAG"
+          spec_version="$DISPATCH_SPEC_VERSION"
+          dry_run="$DISPATCH_DRY_RUN"
+
+          args=(
+            "--spec-tag" "$spec_tag"
+            "--spec-version" "$spec_version"
+          )
+          if [[ "$dry_run" == "true" ]]; then
+            args+=("--dry-run")
+          fi
+
+          node tooling/scripts/dispatch-runtime-updates.mjs "${args[@]}"

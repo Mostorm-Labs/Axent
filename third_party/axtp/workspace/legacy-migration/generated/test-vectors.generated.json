@@ -1,0 +1,121 @@
+{
+  "metadata": {
+    "name": "AXTP legacy adapter migration test vectors",
+    "version": "generated",
+    "frame_header_policy": "unchanged",
+    "payload_types": [
+      "CONTROL",
+      "RPC",
+      "STREAM"
+    ]
+  },
+  "vectors": [
+    {
+      "id": "axdp-beta-device-info-existing",
+      "source": "contract/registry/legacy/legacy_mapping.yaml",
+      "legacy": {
+        "protocol": "axdp_hid",
+        "cmdValue": "0x000B0002",
+        "name": "BetaDeviceInfo",
+        "payloadHex": ""
+      },
+      "expect": {
+        "targetKind": "rpc_method",
+        "method": "device.getInfo",
+        "requestSchema": "DeviceGetInfoRequest",
+        "responseSchema": "DeviceGetInfoResponse",
+        "error": "SUCCESS"
+      }
+    },
+    {
+      "id": "axdp-beta-brightness-existing",
+      "source": "contract/registry/legacy/legacy_mapping.yaml",
+      "legacy": {
+        "protocol": "axdp_hid",
+        "cmdValue": "0x000B0042",
+        "name": "BetaBrightnessSet",
+        "payloadHex": "32"
+      },
+      "expect": {
+        "targetKind": "rpc_method",
+        "method": "display.setBrightness",
+        "request": {
+          "value": 50
+        },
+        "error": "SUCCESS"
+      }
+    },
+    {
+      "id": "legacy-unmapped-command",
+      "legacy": {
+        "protocol": "axdp_hid",
+        "cmdValue": "0xDEADBEEF",
+        "payloadHex": ""
+      },
+      "expect": {
+        "reject": true,
+        "error": "LEGACY_CMD_UNMAPPED"
+      }
+    },
+    {
+      "id": "legacy-payload-too-short",
+      "legacy": {
+        "protocol": "axdp_hid",
+        "cmdValue": "0x000B0042",
+        "payloadHex": ""
+      },
+      "expect": {
+        "reject": true,
+        "error": "LEGACY_PAYLOAD_TOO_SHORT"
+      }
+    },
+    {
+      "id": "legacy-status-busy",
+      "legacy": {
+        "protocol": "axdp_hid",
+        "cmdValue": "0x000B0042",
+        "status": "0x02"
+      },
+      "expect": {
+        "mappedError": "BUSY",
+        "retryable": true
+      }
+    },
+    {
+      "id": "firmware-bulk-uses-stream",
+      "legacy": {
+        "protocol": "axdp_hid",
+        "cmdValue": "0xB0006",
+        "name": "BetaUpgradeData",
+        "payloadHex": "0011223344556677"
+      },
+      "expect": {
+        "targetKind": "stream",
+        "streamProfile": "firmware.ota",
+        "payloadType": "STREAM",
+        "rpcBodyCarriesChunk": false
+      }
+    },
+    {
+      "id": "log-upload-uses-stream",
+      "legacy": {
+        "protocol": "signage_sdk",
+        "command": "RequestLogUpload",
+        "params": {
+          "url": "https://oss.example/logs.tgz"
+        }
+      },
+      "expect": {
+        "method": "log.requestUpload",
+        "streamProfile": "log.file",
+        "payloadType": "STREAM"
+      }
+    }
+  ],
+  "coverage": {
+    "total_generated_mappings": 266,
+    "stream_mappings": 10,
+    "event_mappings": 4,
+    "capability_mappings": 0
+  }
+}

@@ -1,0 +1,27 @@
+id: event.unsubscribe_event
+title: Reidentify can clear event subscription intent
+since: spec/v0.0.2
+level: event
+profiles:
+  - event
+  - websocket-jsonrpc
+
+given:
+  event: audio.algorithmConfigChanged
+  session:
+    state: identified
+
+steps:
+  - direction: client_to_server
+    jsonrpc:
+      op: REIDENTIFY
+      d:
+        eventMasks: ""
+
+  - direction: server_to_client
+    expect:
+      jsonrpc:
+        op: IDENTIFIED
+
+assertions:
+  - identified.op == IDENTIFIED

@@ -1,0 +1,7 @@
+spec:
+  name: AXTP
+  version: 1.0.0
+  registry_version: 1.0.0
+  schema_version: 1.0.0
+  wire_version: 1
+  status: mvp

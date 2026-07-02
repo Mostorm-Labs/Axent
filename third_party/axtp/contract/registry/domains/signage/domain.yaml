@@ -1,0 +1,482 @@
+domain: signage
+description: Digital signage playlist synchronization, query, reset, and playlist item URL refresh capabilities.
+
+methods:
+  - id: 0x0D01
+    name: signage.getPlaylistCapabilities
+    domain: signage
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return the signage.playlist capability scope, including supported playlist item types, quantity limits, and feature toggles.
+    rpc_op: request_response
+    request_schema: SignageGetPlaylistCapabilitiesParams
+    response_schema: SignagePlaylistCapabilitiesResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - signage.playlist
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INTERNAL_ERROR
+
+  - id: 0x0D02
+    name: signage.getPlaylistConfig
+    domain: signage
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Return the current playlist configuration held by the device as the complete playlists array.
+    rpc_op: request_response
+    request_schema: SignageGetPlaylistConfigParams
+    response_schema: SignagePlaylistConfigResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - signage.playlist
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INTERNAL_ERROR
+
+  - id: 0x0D03
+    name: signage.setPlaylistConfig
+    domain: signage
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Fully replace the playlist configuration. The server is the single source of truth; a second full sync removes playlist items absent from the new payload.
+    rpc_op: request_response
+    request_schema: SignageSetPlaylistConfigParams
+    response_schema: SignageSetPlaylistConfigResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - signage.playlist
+    events:
+      - signage.playlistConfigChanged
+    errors:
+      - SUCCESS
+      - INVALID_ARGUMENT
+      - NOT_SUPPORTED
+      - PERMISSION_DENIED
+
+  - id: 0x0D04
+    name: signage.resetPlaylistConfig
+    domain: signage
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Restore the playlist configuration to the factory default state.
+    rpc_op: request_response
+    request_schema: SignageResetPlaylistConfigParams
+    response_schema: SignagePlaylistConfigResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - signage.playlist
+    events:
+      - signage.playlistConfigChanged
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INTERNAL_ERROR
+
+  - id: 0x0D05
+    name: signage.getPlaylistItemUrl
+    domain: signage
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Fetch the latest resource URL for a playlist item by itemId (URL refresh). The device calls this proactively when an item URL is about to expire. Clock items have no URL resource and return NOT_SUPPORTED.
+    rpc_op: request_response
+    request_schema: SignageGetPlaylistItemUrlParams
+    response_schema: SignageGetPlaylistItemUrlResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - signage.playlist
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - NOT_FOUND
+      - INTERNAL_ERROR
+
+events:
+  - id: 0x0D01
+    name: signage.playlistConfigChanged
+    domain: signage
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted after setPlaylistConfig or resetPlaylistConfig successfully changes the playlist configuration.
+    event_schema: SignagePlaylistConfigChangedEvent
+    severity: info
+    trigger:
+      - signage.setPlaylistConfig
+      - signage.resetPlaylistConfig
+    capabilities:
+      - signage.playlist
+
+types:
+  SignageGetPlaylistCapabilitiesParams:
+    kind: object
+    description: Empty request for signage.getPlaylistCapabilities; reads the full capability scope.
+    fields: []
+
+  SignageGetPlaylistConfigParams:
+    kind: object
+    description: Empty request for signage.getPlaylistConfig; reads the full configuration.
+    fields: []
+
+  SignageResetPlaylistConfigParams:
+    kind: object
+    description: Empty request for signage.resetPlaylistConfig; restores the full default configuration.
+    fields: []
+
+  SignageSetPlaylistConfigResult:
+    kind: object
+    description: Empty success result for signage.setPlaylistConfig; carries only the standard success status. Callers confirm landing via getPlaylistConfig or the playlistConfigChanged event.
+    fields: []
+
+  SignagePlaylistCapabilitiesResult:
+    kind: object
+    description: Capability scope for signage.playlist.
+    fields:
+      - id: 0x01
+        name: supportedItemTypes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported playlist item type strings; candidate values include image, website, video, clock, and unsplash.
+      - id: 0x02
+        name: maxPlaylists
+        type: uint32
+        required: false
+        description: Maximum number of playlists; product-defined.
+      - id: 0x03
+        name: maxItemsPerPlaylist
+        type: uint32
+        required: false
+        description: Maximum number of playlist items per playlist; product-defined.
+      - id: 0x04
+        name: supportsScheduledPlaylist
+        type: bool
+        required: true
+        description: Whether scheduled playlists are supported.
+      - id: 0x05
+        name: supportsUrlRefresh
+        type: bool
+        required: true
+        description: Whether playlist item URL refresh (getPlaylistItemUrl) is supported.
+      - id: 0x06
+        name: supportsReset
+        type: bool
+        required: true
+        description: Whether resetting the playlist to default (resetPlaylistConfig) is supported.
+
+  SignagePlaylistConfigResult:
+    kind: object
+    description: Current playlist configuration snapshot.
+    fields:
+      - id: 0x01
+        name: playlists
+        type: array
+        schema: SignagePlaylist
+        required: true
+        description: Playlist objects. An empty array means no playlist is configured and is not an error.
+
+  SignageSetPlaylistConfigParams:
+    kind: object
+    description: Full replacement payload for signage.setPlaylistConfig.
+    fields:
+      - id: 0x01
+        name: playlists
+        type: array
+        schema: SignagePlaylist
+        required: true
+        description: Playlist objects. MUST be non-empty; an empty array returns INVALID_ARGUMENT.
+
+  SignageGetPlaylistItemUrlParams:
+    kind: object
+    description: Request to refresh a playlist item URL by itemId.
+    fields:
+      - id: 0x01
+        name: itemId
+        type: string
+        required: true
+        max_length: 64
+        description: Playlist item unique identifier (UUID).
+
+  SignageGetPlaylistItemUrlResult:
+    kind: object
+    description: Refreshed playlist item URL result. The internal structure of settings depends on type.
+    fields:
+      - id: 0x01
+        name: type
+        type: enum
+        required: true
+        description: Playlist item type used to discriminate the settings structure; candidate values include image, video, website, and unsplash. Clock is excluded from URL refresh.
+      - id: 0x02
+        name: settings
+        type: SignagePlaylistItemSettings
+        required: true
+        description: Refreshed complete settings; the device may replace the locally cached settings with this value.
+
+  SignagePlaylistConfigChangedEvent:
+    kind: object
+    description: Event payload emitted when the playlist configuration changes.
+    fields:
+      - id: 0x01
+        name: reason
+        type: enum
+        required: true
+        description: Change reason; candidate values include set_config (triggered by setPlaylistConfig) and reset_config (triggered by resetPlaylistConfig).
+      - id: 0x02
+        name: playlists
+        type: array
+        schema: SignagePlaylist
+        required: false
+        description: Optional playlist objects representing the full post-change configuration. The device MAY omit it to shrink the payload; when omitted the client MUST call signage.getPlaylistConfig to reconcile.
+
+  SignagePlaylist:
+    kind: object
+    description: One playlist definition.
+    fields:
+      - id: 0x01
+        name: id
+        type: string
+        required: true
+        max_length: 64
+        description: Playlist unique identifier (UUID).
+      - id: 0x02
+        name: type
+        type: enum
+        required: true
+        description: Playlist type; candidate values include default (always-on default playlist) and scheduled (time-windowed playlist).
+      - id: 0x03
+        name: startDate
+        type: string
+        required: false
+        max_length: 16
+        description: Start date (YYYY-MM-DD). Required only when type is scheduled; MUST satisfy startDate <= endDate.
+      - id: 0x04
+        name: endDate
+        type: string
+        required: false
+        max_length: 16
+        description: End date (YYYY-MM-DD). Required only when type is scheduled; MUST satisfy startDate <= endDate.
+      - id: 0x05
+        name: startTime
+        type: string
+        required: false
+        max_length: 16
+        description: Start time (HH:mm:ss). Required only when type is scheduled. When startDate equals endDate, startTime MUST be <= endTime; when startDate < endDate, crossing midnight is allowed (startTime > endTime means D-day startTime to D+1 endTime).
+      - id: 0x06
+        name: endTime
+        type: string
+        required: false
+        max_length: 16
+        description: End time (HH:mm:ss). Required only when type is scheduled; see startTime for the cross-midnight rule.
+      - id: 0x07
+        name: days
+        type: array
+        array:
+          item_type: uint8
+        required: false
+        description: Optional active weekday numbers (1-7, 1=Monday). Required only when type is scheduled and MUST be non-empty.
+      - id: 0x08
+        name: items
+        type: array
+        schema: SignagePlaylistItem
+        required: true
+        description: Playlist item objects. MUST be non-empty; an empty items array returns INVALID_ARGUMENT.
+
+  SignagePlaylistItem:
+    kind: object
+    description: One playlist item.
+    fields:
+      - id: 0x01
+        name: id
+        type: string
+        required: true
+        max_length: 64
+        description: Playlist item unique identifier (UUID).
+      - id: 0x02
+        name: type
+        type: enum
+        required: true
+        description: Playlist item type; candidate values include image, website, video, clock, and unsplash.
+      - id: 0x03
+        name: duration
+        type: uint32
+        required: true
+        min: 1
+        max: 86400
+        default: 60
+        description: Single playback duration in seconds; MUST be greater than 0.
+      - id: 0x04
+        name: sort
+        type: uint32
+        required: true
+        default: 0
+        description: Playback order, ascending by sort. The sort value MUST be unique within the same playlist; duplicate sort values return INVALID_ARGUMENT.
+      - id: 0x05
+        name: settings
+        type: SignagePlaylistItemSettings
+        required: true
+        description: Playlist item settings; structure varies by type.
+
+  SignagePlaylistItemSettings:
+    kind: object
+    description: Aggregated playlist item settings spanning all item types. Only the subset matching the enclosing item type is meaningful; see the per-type rules in the signage.playlist draft.
+    fields:
+      - id: 0x01
+        name: urls
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: "image type: non-empty image URLs."
+      - id: 0x02
+        name: delaySeconds
+        type: uint32
+        required: false
+        min: 1
+        default: 5
+        description: "image and unsplash types: per-image display interval in seconds."
+      - id: 0x03
+        name: expiresAt
+        type: uint64
+        required: false
+        description: "image, video, and unsplash types: Unix timestamp URL expiry. 0 or absent means never expires."
+      - id: 0x04
+        name: url
+        type: string
+        required: false
+        max_length: 2048
+        description: "video and website types: media or page URL."
+      - id: 0x05
+        name: muted
+        type: bool
+        required: false
+        default: false
+        description: "video type: whether to play muted."
+      - id: 0x06
+        name: ignoreCertificateError
+        type: bool
+        required: false
+        default: false
+        description: "website type: whether to ignore TLS certificate errors. Enabling bypasses certificate validation and carries MITM risk; the default policy and caller permission requirements are product-defined."
+      - id: 0x07
+        name: refreshIntervalSecs
+        type: uint32
+        required: false
+        min: 1
+        description: "website type: page refresh interval in seconds. 0 or absent means no refresh."
+      - id: 0x08
+        name: clocks
+        type: array
+        schema: SignagePlaylistClockEntry
+        required: false
+        description: "clock type: non-empty playlist clock entry objects."
+      - id: 0x09
+        name: photos
+        type: array
+        schema: SignagePlaylistUnsplashPhoto
+        required: false
+        description: "unsplash type: non-empty playlist unsplash photo objects."
+
+  SignagePlaylistClockEntry:
+    kind: object
+    description: One clock entry for the clock item type.
+    fields:
+      - id: 0x01
+        name: timezone
+        type: string
+        required: true
+        max_length: 64
+        description: IANA timezone identifier.
+      - id: 0x02
+        name: label
+        type: string
+        required: true
+        max_length: 64
+        description: City label for the clock.
+
+  SignagePlaylistUnsplashPhoto:
+    kind: object
+    description: One Unsplash photo entry, including photographer attribution.
+    fields:
+      - id: 0x01
+        name: url
+        type: string
+        required: true
+        max_length: 2048
+        description: Photo URL.
+      - id: 0x02
+        name: userName
+        type: string
+        required: true
+        max_length: 128
+        description: Photographer name.
+      - id: 0x03
+        name: userLink
+        type: string
+        required: true
+        max_length: 2048
+        description: Photographer Unsplash profile link.
+
+  SignagePlaylistCapability:
+    kind: object
+    description: Capability descriptor for signage.playlist.
+    fields:
+      - id: 0x01
+        name: supportedItemTypes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported playlist item type strings; candidate values include image, website, video, clock, and unsplash.
+      - id: 0x02
+        name: maxPlaylists
+        type: uint32
+        required: false
+        description: Maximum number of playlists; product-defined.
+      - id: 0x03
+        name: maxItemsPerPlaylist
+        type: uint32
+        required: false
+        description: Maximum number of playlist items per playlist; product-defined.
+      - id: 0x04
+        name: supportsScheduledPlaylist
+        type: bool
+        required: true
+        description: Whether scheduled playlists are supported.
+      - id: 0x05
+        name: supportsUrlRefresh
+        type: bool
+        required: true
+        description: Whether playlist item URL refresh is supported.
+      - id: 0x06
+        name: supportsReset
+        type: bool
+        required: true
+        description: Whether resetting the playlist to default is supported.
+
+capabilities:
+  - id: 0x0D01
+    name: signage.playlist
+    domain: signage
+    status: draft
+    since: 1.0.0
+    description: Device supports digital signage playlist full sync, query, reset, playlist item URL refresh, and playlist config change notification.
+    type: object
+    schema: SignagePlaylistCapability

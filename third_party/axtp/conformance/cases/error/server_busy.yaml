@@ -1,0 +1,33 @@
+id: error.server_busy
+title: Busy server uses retryable BUSY error
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  server:
+    state: busy
+
+steps:
+  - direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 101
+      method: audio.setAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 101
+        statusCode:
+          oneOf:
+            - BUSY
+            - DEVICE_RESOURCE_BUSY
+
+assertions:
+  - response.statusCode != SUCCESS

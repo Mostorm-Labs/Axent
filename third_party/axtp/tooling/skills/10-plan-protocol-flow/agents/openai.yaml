@@ -1,0 +1,4 @@
+interface:
+  display_name: "10 Plan Protocol Flow"
+  short_description: "Stage 10: map business stories to AXTP protocol flows"
+  default_prompt: "Create a workspace/flows protocol interaction plan from this business scenario, UI prototype, or user story, and identify existing AXTP coverage and protocol gaps."

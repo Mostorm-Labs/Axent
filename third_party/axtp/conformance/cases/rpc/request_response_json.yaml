@@ -1,0 +1,35 @@
+id: rpc.request_response_json
+title: JSON RPC request response
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  device_profile: minimal_device
+  method: audio.getAlgorithmConfig
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 1
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        encoding: json
+        op: REQUEST_RESPONSE
+        requestId: 1
+        statusCode: SUCCESS
+        result:
+          type: object
+
+assertions:
+  - response.requestId == request.requestId
+  - response.statusCode == SUCCESS

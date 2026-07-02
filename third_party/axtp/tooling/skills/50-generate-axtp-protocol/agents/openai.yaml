@@ -1,0 +1,4 @@
+interface:
+  display_name: "50 Generate AXTP Protocol"
+  short_description: "Stage 50: generate AXTP protocol artifacts"
+  default_prompt: "Generate AXTP protocol artifacts from accepted registry YAML facts and run validation."

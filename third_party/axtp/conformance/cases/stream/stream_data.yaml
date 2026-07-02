@@ -1,0 +1,38 @@
+id: stream.stream_data
+title: Media STREAM data header carries streamId, seqId, and cursor
+since: spec/v0.0.2
+level: stream
+profiles:
+  - stream
+  - framed-binary
+
+given:
+  stream:
+    streamId: 9
+    state: open
+    profile: media.video
+
+steps:
+  - direction: server_to_client
+    stream:
+      streamId: 9
+      seqId: 1
+      cursor: 1000000
+      data: "AABBCC"
+
+  - direction: client_observes
+    expect:
+      stream:
+        streamId: 9
+        seqId: 1
+        cursor: 1000000
+        data: "AABBCC"
+      wire:
+        byteOrder: big-endian
+        streamHeaderHex: "000000090000000100000000000F4240"
+
+assertions:
+  - observed.streamId == stream.streamId
+  - observed.seqId == stream.seqId
+  - observed.cursor == stream.cursor
+  - wire.streamHeaderHex startsWith "000000090000000100000000000F4240"

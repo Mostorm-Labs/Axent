@@ -1,0 +1,703 @@
+{
+  "events": [
+    {
+      "id": 258,
+      "bitOffset": 0,
+      "name": "device.enrollmentStateChanged",
+      "domain": "device",
+      "status": "draft",
+      "description": "Emitted after device.setEnrollmentState actually changes the enrollment state, or after a device-internal policy modifies it (e.g. pairing code expiry fallback, server-side revoke).",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "DeviceEnrollmentStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "device.setEnrollmentState"
+      ],
+      "capabilities": [
+        "device.enrollment"
+      ],
+      "idHex": "0x0102"
+    },
+    {
+      "id": 1026,
+      "bitOffset": 0,
+      "name": "firmware.updateProgressReported",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Emitted when firmware receiving, verification, or install progress changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "FirmwareUpdateProgressEvent",
+      "severity": "info",
+      "trigger": [
+        "STREAM upload progress",
+        "firmware.finishUpdate",
+        "internal verify",
+        "internal install"
+      ],
+      "capabilities": [
+        "firmware.update"
+      ],
+      "idHex": "0x0402"
+    },
+    {
+      "id": 1027,
+      "bitOffset": 1,
+      "name": "firmware.updateStateChanged",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Emitted when firmware update state changes or fails.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "FirmwareUpdateStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "firmware.beginUpdate",
+        "firmware.finishUpdate",
+        "verify complete",
+        "install complete",
+        "rebooting",
+        "failure"
+      ],
+      "capabilities": [
+        "firmware.update"
+      ],
+      "idHex": "0x0403"
+    },
+    {
+      "id": 2054,
+      "bitOffset": 0,
+      "name": "video.streamStateChanged",
+      "domain": "video",
+      "status": "draft",
+      "description": "Emitted when a video stream enters opening, streaming, closed, failed, or keyframe-related state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "VideoStreamStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "video.openStream",
+        "video.closeStream",
+        "video.requestKeyFrame",
+        "source disconnected",
+        "stream failure"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "idHex": "0x0806"
+    },
+    {
+      "id": 2055,
+      "bitOffset": 1,
+      "name": "video.streamSourceStateChanged",
+      "domain": "video",
+      "status": "draft",
+      "description": "Emitted when a video stream source availability or receiving state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "VideoStreamSourceStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "source available",
+        "source receiving",
+        "source stopped"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "idHex": "0x0807"
+    },
+    {
+      "id": 2056,
+      "bitOffset": 2,
+      "name": "video.streamStatsReported",
+      "domain": "video",
+      "status": "draft",
+      "description": "Emitted with bounded runtime statistics for a video stream.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "VideoStreamStatsReportedEvent",
+      "severity": "info",
+      "trigger": [
+        "stream statistics interval",
+        "diagnostic sampling"
+      ],
+      "capabilities": [
+        "video.stream"
+      ],
+      "idHex": "0x0808"
+    },
+    {
+      "id": 2305,
+      "bitOffset": 0,
+      "name": "audio.algorithmConfigChanged",
+      "domain": "audio",
+      "status": "stable",
+      "description": "Emitted when audio algorithm configuration changes after set, reset, profile, restore, factory reset, or device policy changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "AudioAlgorithmConfigChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "audio.setAlgorithmConfig",
+        "audio.resetAlgorithmConfig",
+        "profile changed",
+        "factory reset",
+        "restore config",
+        "device policy"
+      ],
+      "capabilities": [
+        "audio.algorithm"
+      ],
+      "idHex": "0x0901"
+    },
+    {
+      "id": 2306,
+      "bitOffset": 1,
+      "name": "audio.streamStateChanged",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Emitted when an audio stream enters opening, streaming, closed, or failed state.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "AudioStreamStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "audio.openStream",
+        "audio.closeStream",
+        "source disconnected",
+        "stream failure"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "idHex": "0x0902"
+    },
+    {
+      "id": 2307,
+      "bitOffset": 2,
+      "name": "audio.streamSourceStateChanged",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Emitted when an audio stream source availability or receiving state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "AudioStreamSourceStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "upstream source available",
+        "upstream source receiving",
+        "upstream source stopped"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "idHex": "0x0903"
+    },
+    {
+      "id": 2308,
+      "bitOffset": 3,
+      "name": "audio.streamStatsReported",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Emitted with bounded runtime statistics for an audio stream.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "AudioStreamStatsReportedEvent",
+      "severity": "info",
+      "trigger": [
+        "stream statistics interval",
+        "diagnostic sampling"
+      ],
+      "capabilities": [
+        "audio.stream"
+      ],
+      "idHex": "0x0904"
+    },
+    {
+      "id": 3329,
+      "bitOffset": 0,
+      "name": "signage.playlistConfigChanged",
+      "domain": "signage",
+      "status": "draft",
+      "description": "Emitted after setPlaylistConfig or resetPlaylistConfig successfully changes the playlist configuration.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "SignagePlaylistConfigChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "signage.setPlaylistConfig",
+        "signage.resetPlaylistConfig"
+      ],
+      "capabilities": [
+        "signage.playlist"
+      ],
+      "idHex": "0x0D01"
+    },
+    {
+      "id": 3585,
+      "bitOffset": 0,
+      "name": "network.interfaceStateChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when network interface administrative or link state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkInterfaceStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "link state change",
+        "admin state change",
+        "interface availability change"
+      ],
+      "capabilities": [
+        "network.interface"
+      ],
+      "idHex": "0x0E01"
+    },
+    {
+      "id": 3586,
+      "bitOffset": 1,
+      "name": "network.ipConfigChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when IP configuration changes for an interface.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkIpConfigChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "network.setIpConfig",
+        "DHCP renew",
+        "device policy"
+      ],
+      "capabilities": [
+        "network.ip"
+      ],
+      "idHex": "0x0E02"
+    },
+    {
+      "id": 3587,
+      "bitOffset": 2,
+      "name": "network.wifiConfigChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when saved Wi-Fi profile configuration changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkWifiConfigChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "network.setWifiConfig",
+        "device policy"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "idHex": "0x0E03"
+    },
+    {
+      "id": 3588,
+      "bitOffset": 3,
+      "name": "network.wifiStateChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when Wi-Fi station association, authentication, connection, or failure state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkWifiStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "network.setWifiConfig",
+        "network.connectWifi",
+        "network.disconnectWifi",
+        "local Wi-Fi state change"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "idHex": "0x0E04"
+    },
+    {
+      "id": 3589,
+      "bitOffset": 4,
+      "name": "network.wifiScanResultReported",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted for asynchronous Wi-Fi scan results or scan completion.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkWifiScanResultReportedEvent",
+      "severity": "info",
+      "trigger": [
+        "network.scanWifi"
+      ],
+      "capabilities": [
+        "network.wifi"
+      ],
+      "idHex": "0x0E05"
+    },
+    {
+      "id": 3590,
+      "bitOffset": 5,
+      "name": "network.apConfigChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when Wi-Fi AP configuration changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkApConfigChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "network.setApConfig",
+        "device policy"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "idHex": "0x0E06"
+    },
+    {
+      "id": 3591,
+      "bitOffset": 6,
+      "name": "network.apStateChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when Wi-Fi AP runtime state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkApStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "network.startAp",
+        "network.stopAp",
+        "local AP state change"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "idHex": "0x0E07"
+    },
+    {
+      "id": 3592,
+      "bitOffset": 7,
+      "name": "network.apClientChanged",
+      "domain": "network",
+      "status": "draft",
+      "description": "Emitted when a client joins or leaves the Wi-Fi AP.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "NetworkApClientChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "AP client join",
+        "AP client leave"
+      ],
+      "capabilities": [
+        "network.ap"
+      ],
+      "idHex": "0x0E08"
+    },
+    {
+      "id": 5633,
+      "bitOffset": 0,
+      "name": "cast.sessionIncoming",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when a cast source initiates a receiver session.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastSessionIncomingEvent",
+      "severity": "info",
+      "trigger": [
+        "source connected",
+        "backend incoming session"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "idHex": "0x1601"
+    },
+    {
+      "id": 5634,
+      "bitOffset": 1,
+      "name": "cast.sessionStateChanged",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when receiver phase, protocol state, or low-frequency session media state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastSessionStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "incoming session",
+        "authentication",
+        "stream starting",
+        "media flow started",
+        "interruption",
+        "stopping"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "idHex": "0x1602"
+    },
+    {
+      "id": 5635,
+      "bitOffset": 2,
+      "name": "cast.sessionStarted",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when a cast session becomes user-visible after first frame or local playback starts.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastSessionStartedEvent",
+      "severity": "info",
+      "trigger": [
+        "first frame rendered",
+        "local playback started"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "idHex": "0x1603"
+    },
+    {
+      "id": 5636,
+      "bitOffset": 3,
+      "name": "cast.sessionStopped",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when a cast session ends normally or is forced to stop.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastSessionStoppedEvent",
+      "severity": "info",
+      "trigger": [
+        "cast.stopSession",
+        "source closed",
+        "backend restart",
+        "backend exited"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "idHex": "0x1604"
+    },
+    {
+      "id": 5637,
+      "bitOffset": 4,
+      "name": "cast.sessionFailed",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when cast connection, authentication, negotiation, or backend handling fails.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastSessionFailedEvent",
+      "severity": "error",
+      "trigger": [
+        "connection failed",
+        "authentication failed",
+        "media negotiation failed",
+        "backend failed"
+      ],
+      "capabilities": [
+        "cast.session"
+      ],
+      "idHex": "0x1605"
+    },
+    {
+      "id": 5638,
+      "bitOffset": 5,
+      "name": "cast.audioChanged",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when local cast audio playback or mute state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastAudioChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "cast.setAudio",
+        "cast.setMuted",
+        "local UI",
+        "session started",
+        "session stopped"
+      ],
+      "capabilities": [
+        "cast.audio"
+      ],
+      "idHex": "0x1606"
+    },
+    {
+      "id": 5639,
+      "bitOffset": 6,
+      "name": "cast.pinCodeChanged",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when cast PIN protection configuration or current PIN state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastPinCodeChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "cast.setPinCodeConfig",
+        "cast.setPinCode",
+        "generated PIN changed"
+      ],
+      "capabilities": [
+        "cast.pinCode"
+      ],
+      "idHex": "0x1607"
+    },
+    {
+      "id": 5640,
+      "bitOffset": 7,
+      "name": "cast.pinCodeRequired",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when a cast source is waiting for PIN authentication.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastPinCodeRequiredEvent",
+      "severity": "info",
+      "trigger": [
+        "incoming session requires PIN"
+      ],
+      "capabilities": [
+        "cast.pinCode"
+      ],
+      "idHex": "0x1608"
+    },
+    {
+      "id": 5641,
+      "bitOffset": 8,
+      "name": "cast.pinCodeAuthFailed",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when PIN authentication fails, times out, or is cancelled.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastPinCodeAuthFailedEvent",
+      "severity": "warning",
+      "trigger": [
+        "wrong PIN",
+        "authentication timeout",
+        "authentication cancelled",
+        "too many attempts"
+      ],
+      "capabilities": [
+        "cast.pinCode"
+      ],
+      "idHex": "0x1609"
+    },
+    {
+      "id": 5642,
+      "bitOffset": 9,
+      "name": "cast.windowChanged",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when cast window visibility, mode, topmost state, or bounds changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastWindowChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "cast.setWindowState",
+        "local UI",
+        "session started",
+        "session stopped"
+      ],
+      "capabilities": [
+        "cast.window"
+      ],
+      "idHex": "0x160A"
+    },
+    {
+      "id": 5643,
+      "bitOffset": 10,
+      "name": "cast.backendChanged",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when cast backend ready, restart, exit, failed, or discoverable state changes.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastBackendChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "backend started",
+        "backend restarting",
+        "backend exited",
+        "backend failed",
+        "discovery changed"
+      ],
+      "capabilities": [
+        "cast.backend"
+      ],
+      "idHex": "0x160B"
+    },
+    {
+      "id": 5644,
+      "bitOffset": 11,
+      "name": "cast.flowControlChanged",
+      "domain": "cast",
+      "status": "draft",
+      "description": "Emitted when receiver-local cast flow policy or low-frequency flow statistics change.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "CastFlowControlChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "cast.setRenderFps",
+        "cast.setFlowPolicy",
+        "diagnostics sample"
+      ],
+      "capabilities": [
+        "cast.flowControl"
+      ],
+      "idHex": "0x160C"
+    },
+    {
+      "id": 5889,
+      "bitOffset": 0,
+      "name": "software.configChanged",
+      "domain": "software",
+      "status": "draft",
+      "description": "Emitted after software.setConfig or software.resetConfig successfully changes a software object configuration, or after a device-internal policy modifies it.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "SoftwareConfigChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "software.setConfig",
+        "software.resetConfig"
+      ],
+      "capabilities": [
+        "software.config"
+      ],
+      "idHex": "0x1701"
+    },
+    {
+      "id": 5890,
+      "bitOffset": 1,
+      "name": "software.updatePolicyChanged",
+      "domain": "software",
+      "status": "draft",
+      "description": "Emitted after software.setUpdatePolicy or software.resetUpdatePolicy successfully changes a software object update policy, or after a device-internal policy modifies it.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "SoftwareUpdatePolicyChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "software.setUpdatePolicy",
+        "software.resetUpdatePolicy"
+      ],
+      "capabilities": [
+        "software.updatePolicy"
+      ],
+      "idHex": "0x1702"
+    }
+  ]
+}

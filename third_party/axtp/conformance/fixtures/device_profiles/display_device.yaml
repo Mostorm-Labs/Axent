@@ -1,0 +1,6 @@
+id: display_device
+name: AXTP Display Placeholder Device
+capabilities: []
+methods: {}
+notes:
+  - Placeholder only. No display methods are adopted in spec/v0.0.2.

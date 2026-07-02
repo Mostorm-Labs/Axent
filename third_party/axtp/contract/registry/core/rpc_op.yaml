@@ -1,0 +1,66 @@
+rpc_ops:
+  - id: 0x00
+    name: HELLO
+    domain: rpc
+    status: mvp
+    description: Server hello with AXTP version and optional authentication challenge.
+  - id: 0x01
+    name: HELLO_ACK
+    domain: rpc
+    status: reserved
+    description: Reserved for old-protocol alignment; not used by AXTP v1.
+  - id: 0x02
+    name: IDENTIFY
+    domain: rpc
+    status: mvp
+    description: Client identity, randomSeed uint32, subscriptions and optional authentication response.
+  - id: 0x03
+    name: IDENTIFIED
+    domain: rpc
+    status: mvp
+    description: Server identity confirmation and sid assignment.
+  - id: 0x04
+    name: REIDENTIFY
+    domain: rpc
+    status: draft
+    description: Update subscriptions or application session options.
+  - id: 0x05
+    name: SUBSCRIBE
+    domain: rpc
+    status: reserved
+    description: Reserved for old-protocol alignment; subscriptions use Identify/Reidentify.
+  - id: 0x06
+    name: EVENT
+    domain: rpc
+    status: mvp
+    description: RPC event.
+  - id: 0x07
+    name: REQUEST
+    domain: rpc
+    status: mvp
+    description: RPC request.
+  - id: 0x08
+    name: REQUEST_RESPONSE
+    domain: rpc
+    status: mvp
+    description: RPC request response.
+  - id: 0x09
+    name: REQUEST_BATCH
+    domain: rpc
+    status: draft
+    description: Batch RPC request.
+  - id: 0x0A
+    name: REQUEST_BATCH_RESPONSE
+    domain: rpc
+    status: draft
+    description: Batch RPC response.
+  - id: 0x0E
+    name: BYE
+    domain: rpc
+    status: draft
+    description: Application-level graceful close.
+  - id: 0x0F
+    name: BYE_ACK
+    domain: rpc
+    status: draft
+    description: Application-level close acknowledgement.

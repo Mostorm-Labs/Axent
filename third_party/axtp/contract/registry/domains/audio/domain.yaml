@@ -1,0 +1,1618 @@
+domain: audio
+description: Audio control methods, events, and capabilities.
+
+methods:
+  - id: 0x090D
+    name: audio.getAlgorithmCapabilities
+    domain: audio
+    status: stable
+    bitOffset: 0
+    since: 1.0.0
+    description: Return supported audio algorithm objects, fields, defaults, ranges, units, and update policy.
+    rpc_op: request_response
+    request_schema: AudioGetAlgorithmCapabilitiesRequest
+    response_schema: AudioGetAlgorithmCapabilitiesResponse
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.algorithm
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - INTERNAL_ERROR
+
+  - id: 0x0901
+    name: audio.getAlgorithmConfig
+    domain: audio
+    status: stable
+    bitOffset: 1
+    since: 1.0.0
+    description: Return the current effective configuration for supported audio algorithm objects.
+    rpc_op: request_response
+    request_schema: AudioGetAlgorithmConfigRequest
+    response_schema: AudioAlgorithmConfig
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.algorithm
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - INTERNAL_ERROR
+
+  - id: 0x0902
+    name: audio.setAlgorithmConfig
+    domain: audio
+    status: stable
+    bitOffset: 2
+    since: 1.0.0
+    description: Partially update one or more audio algorithm configuration objects atomically.
+    rpc_op: request_response
+    request_schema: AudioSetAlgorithmConfigRequest
+    response_schema: AudioSetAlgorithmConfigResponse
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.algorithm
+    events:
+      - audio.algorithmConfigChanged
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - OUT_OF_RANGE
+      - INVALID_STATE
+      - BUSY
+      - PERMISSION_DENIED
+      - INTERNAL_ERROR
+
+  - id: 0x090E
+    name: audio.resetAlgorithmConfig
+    domain: audio
+    status: stable
+    bitOffset: 3
+    since: 1.0.0
+    description: Reset all, selected, or selected-field audio algorithm configuration to declared default values.
+    rpc_op: request_response
+    request_schema: AudioResetAlgorithmConfigRequest
+    response_schema: AudioSetAlgorithmConfigResponse
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.algorithm
+    events:
+      - audio.algorithmConfigChanged
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - OUT_OF_RANGE
+      - INVALID_STATE
+      - BUSY
+      - PERMISSION_DENIED
+      - INTERNAL_ERROR
+
+  - id: 0x090F
+    name: audio.getStreamCapabilities
+    domain: audio
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Return real-time audio stream sources, codecs, stream profiles, and open-mode support.
+    rpc_op: request_response
+    request_schema: AudioGetStreamCapabilitiesParams
+    response_schema: AudioStreamCapabilities
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.stream
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - PERMISSION_DENIED
+      - UNAVAILABLE
+
+  - id: 0x0910
+    name: audio.openStream
+    domain: audio
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Open a real-time audio STREAM and return the negotiated streamId and media metadata.
+    rpc_op: request_response
+    request_schema: AudioOpenStreamParams
+    response_schema: AudioOpenStreamResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.stream
+    events:
+      - audio.streamStateChanged
+      - audio.streamSourceStateChanged
+    errors:
+      - SUCCESS
+      - INVALID_ARGUMENT
+      - BUSY
+      - RESOURCE_EXHAUSTED
+      - MEDIA_SOURCE_NOT_FOUND
+      - MEDIA_SOURCE_UNAVAILABLE
+      - MEDIA_CODEC_UNSUPPORTED
+      - MEDIA_STREAM_START_FAILED
+
+  - id: 0x0911
+    name: audio.closeStream
+    domain: audio
+    status: draft
+    bitOffset: 6
+    since: 1.0.0
+    description: Close a previously opened audio STREAM.
+    rpc_op: request_response
+    request_schema: AudioCloseStreamParams
+    response_schema: AudioCloseStreamResult
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.stream
+    events:
+      - audio.streamStateChanged
+    errors:
+      - SUCCESS
+      - STREAM_NOT_FOUND
+      - STREAM_CLOSED
+      - INVALID_STATE
+      - MEDIA_STREAM_STOP_FAILED
+
+  - id: 0x0912
+    name: audio.getStreamState
+    domain: audio
+    status: draft
+    bitOffset: 7
+    since: 1.0.0
+    description: Return runtime state for an opened audio stream.
+    rpc_op: request_response
+    request_schema: AudioGetStreamStateParams
+    response_schema: AudioStreamState
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.stream
+    errors:
+      - SUCCESS
+      - STREAM_NOT_FOUND
+      - PERMISSION_DENIED
+      - UNAVAILABLE
+
+  - id: 0x0913
+    name: audio.getStreamSourceState
+    domain: audio
+    status: draft
+    bitOffset: 8
+    since: 1.0.0
+    description: Return availability and receiving state for an audio stream source.
+    rpc_op: request_response
+    request_schema: AudioGetStreamSourceStateParams
+    response_schema: AudioStreamSourceState
+    recommended_encoding:
+      - json
+      - tlv
+    capabilities:
+      - audio.stream
+    errors:
+      - SUCCESS
+      - NOT_SUPPORTED
+      - INVALID_ARGUMENT
+      - MEDIA_SOURCE_NOT_FOUND
+      - UNAVAILABLE
+
+events:
+  - id: 0x0901
+    name: audio.algorithmConfigChanged
+    domain: audio
+    status: stable
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted when audio algorithm configuration changes after set, reset, profile, restore, factory reset, or device policy changes.
+    event_schema: AudioAlgorithmConfigChangedEvent
+    severity: info
+    trigger:
+      - audio.setAlgorithmConfig
+      - audio.resetAlgorithmConfig
+      - profile changed
+      - factory reset
+      - restore config
+      - device policy
+    capabilities:
+      - audio.algorithm
+
+  - id: 0x0902
+    name: audio.streamStateChanged
+    domain: audio
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Emitted when an audio stream enters opening, streaming, closed, or failed state.
+    event_schema: AudioStreamStateChangedEvent
+    severity: info
+    trigger:
+      - audio.openStream
+      - audio.closeStream
+      - source disconnected
+      - stream failure
+    capabilities:
+      - audio.stream
+
+  - id: 0x0903
+    name: audio.streamSourceStateChanged
+    domain: audio
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Emitted when an audio stream source availability or receiving state changes.
+    event_schema: AudioStreamSourceStateChangedEvent
+    severity: info
+    trigger:
+      - upstream source available
+      - upstream source receiving
+      - upstream source stopped
+    capabilities:
+      - audio.stream
+
+  - id: 0x0904
+    name: audio.streamStatsReported
+    domain: audio
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Emitted with bounded runtime statistics for an audio stream.
+    event_schema: AudioStreamStatsReportedEvent
+    severity: info
+    trigger:
+      - stream statistics interval
+      - diagnostic sampling
+    capabilities:
+      - audio.stream
+
+types:
+  AudioAlgorithmCapability:
+    kind: object
+    description: Device-level audio.algorithm capability summary.
+    fields:
+      - id: 0x01
+        name: configSchemaVersion
+        type: string
+        required: false
+        max_length: 16
+        description: Version of the audio algorithm configuration schema exposed by the device.
+      - id: 0x02
+        name: updatePolicy
+        type: AudioAlgorithmUpdatePolicy
+        required: true
+        description: Update and atomicity policy for set and reset operations.
+      - id: 0x03
+        name: supportedAlgorithms
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional compact list of supported algorithm object names.
+
+  AudioGetAlgorithmCapabilitiesRequest:
+    kind: object
+    description: Optional selector for querying audio algorithm capabilities.
+    fields:
+      - id: 0x01
+        name: items
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional algorithm object names; omit to query all supported algorithms.
+
+  AudioGetAlgorithmConfigRequest:
+    kind: object
+    description: Optional selector for querying current audio algorithm configuration.
+    fields:
+      - id: 0x01
+        name: items
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional algorithm object names; omit to query all supported algorithms.
+
+  AudioSetAlgorithmConfigRequest:
+    kind: object
+    description: Partial audio algorithm configuration update.
+    fields:
+      - id: 0x01
+        name: config
+        type: AudioAlgorithmConfig
+        required: true
+        description: Partial configuration keyed by algorithm object name.
+
+  AudioResetAlgorithmConfigRequest:
+    kind: object
+    description: Selector for resetting audio algorithm configuration to defaults.
+    fields:
+      - id: 0x01
+        name: items
+        type: bytes
+        required: true
+        max_length: 256
+        description: "JSON reset selector: the string all, an array of algorithm object names, or a map from algorithm names to field-name arrays."
+
+  AudioSetAlgorithmConfigResponse:
+    kind: object
+    description: Result of a successful set or reset operation.
+    fields:
+      - id: 0x01
+        name: applyState
+        type: enum
+        required: true
+        description: Apply state; values are applied or pending_restart.
+      - id: 0x02
+        name: requiresAudioRestart
+        type: bool
+        required: true
+        description: Whether the change requires restarting the audio link or rebuilding the audio pipeline.
+      - id: 0x03
+        name: config
+        type: AudioAlgorithmConfig
+        required: true
+        description: Final effective configuration for the algorithms affected by this operation.
+
+  AudioAlgorithmConfigChangedEvent:
+    kind: object
+    description: Payload emitted when audio algorithm configuration changes.
+    fields:
+      - id: 0x01
+        name: reason
+        type: enum
+        required: true
+        description: Change reason; values include user_request, reset_to_default, factory_reset, profile_changed, device_policy, restore_config, and unknown.
+      - id: 0x02
+        name: applyState
+        type: enum
+        required: true
+        description: Apply state; values are applied or pending_restart.
+      - id: 0x03
+        name: requiresAudioRestart
+        type: bool
+        required: true
+        description: Whether the change requires restarting the audio link or rebuilding the audio pipeline.
+      - id: 0x04
+        name: config
+        type: AudioAlgorithmConfig
+        required: true
+        description: Changed or affected algorithm configuration values.
+      - id: 0x05
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional changed field paths such as noiseSuppression.level.
+
+  AudioGetAlgorithmCapabilitiesResponse:
+    kind: object
+    description: Supported algorithm objects, fields, defaults, ranges, units, and update policy.
+    fields:
+      - id: 0x01
+        name: capability
+        type: string
+        required: true
+        max_length: 32
+        description: Fixed capability name audio.algorithm.
+      - id: 0x02
+        name: updatePolicy
+        type: AudioAlgorithmUpdatePolicy
+        required: true
+        description: Update and atomicity policy for set and reset operations.
+      - id: 0x03
+        name: algorithms
+        type: AudioAlgorithmCapabilities
+        required: true
+        description: Capability descriptors keyed by algorithm object name.
+
+  AudioAlgorithmUpdatePolicy:
+    kind: object
+    description: Audio algorithm update and atomicity policy.
+    fields:
+      - id: 0x01
+        name: partialUpdateSupported
+        type: bool
+        required: true
+        description: Whether clients may send only the fields they want to modify.
+      - id: 0x02
+        name: multiAlgorithmUpdateSupported
+        type: bool
+        required: true
+        description: Whether one request may update multiple algorithm objects.
+      - id: 0x03
+        name: atomicUpdateSupported
+        type: bool
+        required: true
+        description: Whether set and reset operations are applied atomically.
+
+  AudioAlgorithmCapabilities:
+    kind: object
+    description: Capability descriptors for audio algorithm objects.
+    fields:
+      - id: 0x01
+        name: noiseSuppression
+        type: AudioNoiseSuppressionCapabilities
+        required: false
+        description: Noise suppression capability descriptor.
+      - id: 0x02
+        name: echoCancellation
+        type: AudioEchoCancellationCapabilities
+        required: false
+        description: Echo cancellation capability descriptor.
+      - id: 0x03
+        name: autoGainControl
+        type: AudioAutoGainControlCapabilities
+        required: false
+        description: Automatic gain control capability descriptor.
+      - id: 0x04
+        name: beamforming
+        type: AudioBeamformingCapabilities
+        required: false
+        description: Beamforming capability descriptor.
+      - id: 0x05
+        name: dereverberation
+        type: AudioDereverberationCapabilities
+        required: false
+        description: Dereverberation capability descriptor.
+      - id: 0x06
+        name: voiceActivityDetection
+        type: AudioVoiceActivityDetectionCapabilities
+        required: false
+        description: Voice activity detection capability descriptor.
+      - id: 0x07
+        name: directionOfArrival
+        type: AudioDirectionOfArrivalCapabilities
+        required: false
+        description: Direction of arrival capability descriptor.
+      - id: 0x08
+        name: howlingSuppression
+        type: AudioHowlingSuppressionCapabilities
+        required: false
+        description: Howling suppression capability descriptor.
+
+  AudioAlgorithmPropertyCapability:
+    kind: object
+    description: Descriptor for one algorithm configuration property.
+    fields:
+      - id: 0x01
+        name: type
+        type: enum
+        required: true
+        description: Property type; values include boolean, enum, uint8, uint16, uint32, int32, float, string, object, and array.
+      - id: 0x02
+        name: defaultBool
+        type: bool
+        required: false
+        description: Boolean default value when type is boolean.
+      - id: 0x03
+        name: defaultEnum
+        type: string
+        required: false
+        max_length: 32
+        description: Enum default value when type is enum.
+      - id: 0x04
+        name: defaultInt32
+        type: int32
+        required: false
+        description: Numeric default value for integer-backed properties.
+      - id: 0x05
+        name: min
+        type: int32
+        required: false
+        description: Inclusive numeric minimum.
+      - id: 0x06
+        name: max
+        type: int32
+        required: false
+        description: Inclusive numeric maximum.
+      - id: 0x07
+        name: step
+        type: int32
+        required: false
+        description: Numeric step size.
+      - id: 0x08
+        name: values
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional enum values.
+      - id: 0x09
+        name: unit
+        type: string
+        required: false
+        max_length: 16
+        description: Unit such as ms, dB, or degree.
+      - id: 0x0A
+        name: requiresAudioRestart
+        type: bool
+        required: false
+        description: Whether modifying this field requires restarting the audio link or rebuilding the audio pipeline.
+
+  AudioNoiseSuppressionCapabilities:
+    kind: object
+    description: Noise suppression supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports noiseSuppression.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x05
+        name: level
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: level property descriptor.
+
+  AudioEchoCancellationCapabilities:
+    kind: object
+    description: Echo cancellation supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports echoCancellation.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x05
+        name: tailLengthMs
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: tailLengthMs property descriptor.
+      - id: 0x06
+        name: nlpLevel
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: nlpLevel property descriptor.
+
+  AudioAutoGainControlCapabilities:
+    kind: object
+    description: Automatic gain control supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports autoGainControl.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x04
+        name: targetLevelDb
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: targetLevelDb property descriptor.
+      - id: 0x05
+        name: maxGainDb
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: maxGainDb property descriptor.
+      - id: 0x06
+        name: attackTimeMs
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: attackTimeMs property descriptor.
+      - id: 0x07
+        name: releaseTimeMs
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: releaseTimeMs property descriptor.
+
+  AudioBeamformingCapabilities:
+    kind: object
+    description: Beamforming supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports beamforming.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x05
+        name: lookDirectionDeg
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: lookDirectionDeg property descriptor.
+      - id: 0x06
+        name: beamWidthDeg
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: beamWidthDeg property descriptor.
+
+  AudioDereverberationCapabilities:
+    kind: object
+    description: Dereverberation supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports dereverberation.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x05
+        name: level
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: level property descriptor.
+
+  AudioVoiceActivityDetectionCapabilities:
+    kind: object
+    description: Voice activity detection supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports voiceActivityDetection.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x04
+        name: sensitivity
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: sensitivity property descriptor.
+      - id: 0x05
+        name: hangoverMs
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: hangoverMs property descriptor.
+
+  AudioDirectionOfArrivalCapabilities:
+    kind: object
+    description: Direction of arrival supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports directionOfArrival.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x04
+        name: reportingEnabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: reportingEnabled property descriptor.
+      - id: 0x05
+        name: reportIntervalMs
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: reportIntervalMs property descriptor.
+      - id: 0x06
+        name: smoothingMs
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: smoothingMs property descriptor.
+
+  AudioHowlingSuppressionCapabilities:
+    kind: object
+    description: Howling suppression supported fields.
+    fields:
+      - id: 0x01
+        name: supported
+        type: bool
+        required: true
+        description: Whether the device supports howlingSuppression.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 64
+        description: UI-readable display name.
+      - id: 0x03
+        name: enabled
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: enabled property descriptor.
+      - id: 0x05
+        name: level
+        type: AudioAlgorithmPropertyCapability
+        required: false
+        description: level property descriptor.
+
+  AudioAlgorithmConfig:
+    kind: object
+    description: Audio algorithm configuration keyed by algorithm object name.
+    fields:
+      - id: 0x01
+        name: noiseSuppression
+        type: AudioNoiseSuppressionConfig
+        required: false
+        description: Noise suppression configuration.
+      - id: 0x02
+        name: echoCancellation
+        type: AudioEchoCancellationConfig
+        required: false
+        description: Echo cancellation configuration.
+      - id: 0x03
+        name: autoGainControl
+        type: AudioAutoGainControlConfig
+        required: false
+        description: Automatic gain control configuration.
+      - id: 0x04
+        name: beamforming
+        type: AudioBeamformingConfig
+        required: false
+        description: Beamforming configuration.
+      - id: 0x05
+        name: dereverberation
+        type: AudioDereverberationConfig
+        required: false
+        description: Dereverberation configuration.
+      - id: 0x06
+        name: voiceActivityDetection
+        type: AudioVoiceActivityDetectionConfig
+        required: false
+        description: Voice activity detection configuration.
+      - id: 0x07
+        name: directionOfArrival
+        type: AudioDirectionOfArrivalConfig
+        required: false
+        description: Direction of arrival configuration.
+      - id: 0x08
+        name: howlingSuppression
+        type: AudioHowlingSuppressionConfig
+        required: false
+        description: Howling suppression configuration.
+
+  AudioNoiseSuppressionConfig:
+    kind: object
+    description: Noise suppression configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether noise suppression is enabled.
+      - id: 0x03
+        name: level
+        type: uint8
+        required: false
+        min: 0
+        max: 3
+        description: Suppression strength.
+
+  AudioEchoCancellationConfig:
+    kind: object
+    description: Echo cancellation configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether echo cancellation is enabled.
+      - id: 0x03
+        name: tailLengthMs
+        type: uint32
+        required: false
+        min: 64
+        max: 512
+        description: Echo tail length in milliseconds; modifying it may require restarting the audio link.
+      - id: 0x04
+        name: nlpLevel
+        type: uint8
+        required: false
+        min: 0
+        max: 3
+        description: Non-linear processing strength.
+
+  AudioAutoGainControlConfig:
+    kind: object
+    description: Automatic gain control configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether automatic gain control is enabled.
+      - id: 0x02
+        name: targetLevelDb
+        type: int32
+        required: false
+        min: -36
+        max: -6
+        description: Target output level in dB.
+      - id: 0x03
+        name: maxGainDb
+        type: uint8
+        required: false
+        min: 0
+        max: 36
+        description: Maximum gain in dB.
+      - id: 0x04
+        name: attackTimeMs
+        type: uint32
+        required: false
+        min: 1
+        max: 1000
+        description: Gain attack time in milliseconds.
+      - id: 0x05
+        name: releaseTimeMs
+        type: uint32
+        required: false
+        min: 10
+        max: 5000
+        description: Gain release time in milliseconds.
+
+  AudioBeamformingConfig:
+    kind: object
+    description: Beamforming configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether beamforming is enabled.
+      - id: 0x03
+        name: lookDirectionDeg
+        type: int32
+        required: false
+        min: -180
+        max: 180
+        description: Fixed beam look direction in degrees.
+      - id: 0x04
+        name: beamWidthDeg
+        type: uint32
+        required: false
+        min: 10
+        max: 180
+        description: Beam width in degrees.
+
+  AudioDereverberationConfig:
+    kind: object
+    description: Dereverberation configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether dereverberation is enabled.
+      - id: 0x03
+        name: level
+        type: uint8
+        required: false
+        min: 0
+        max: 3
+        description: Dereverberation strength.
+
+  AudioVoiceActivityDetectionConfig:
+    kind: object
+    description: Voice activity detection configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether voice activity detection is enabled.
+      - id: 0x02
+        name: sensitivity
+        type: uint8
+        required: false
+        min: 0
+        max: 3
+        description: Detection sensitivity.
+      - id: 0x03
+        name: hangoverMs
+        type: uint32
+        required: false
+        min: 0
+        max: 2000
+        description: Speech-end hangover time in milliseconds.
+
+  AudioDirectionOfArrivalConfig:
+    kind: object
+    description: Direction of arrival configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether direction of arrival estimation is enabled.
+      - id: 0x02
+        name: reportingEnabled
+        type: bool
+        required: false
+        description: Whether DOA or beam result reporting is enabled by this configuration.
+      - id: 0x03
+        name: reportIntervalMs
+        type: uint32
+        required: false
+        min: 20
+        max: 5000
+        description: Result report interval in milliseconds.
+      - id: 0x04
+        name: smoothingMs
+        type: uint32
+        required: false
+        min: 0
+        max: 5000
+        description: Smoothing window in milliseconds.
+
+  AudioHowlingSuppressionConfig:
+    kind: object
+    description: Howling suppression configuration object.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether howling suppression is enabled.
+      - id: 0x03
+        name: level
+        type: uint8
+        required: false
+        min: 0
+        max: 3
+        description: Howling suppression strength.
+
+  AudioGetStreamCapabilitiesParams:
+    kind: object
+    description: Selector for real-time audio stream capability.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: false
+        max_length: 128
+        description: Optional audio source identifier; omit to query all visible sources.
+      - id: 0x02
+        name: includeRuntimeState
+        type: bool
+        required: false
+        default: false
+        description: Whether to include current source runtime state.
+
+  AudioStreamCapabilities:
+    kind: object
+    description: Device-level audio.stream capability summary.
+    fields:
+      - id: 0x01
+        name: capability
+        type: string
+        required: true
+        max_length: 32
+        description: Fixed capability name audio.stream.
+      - id: 0x02
+        name: sources
+        type: array
+        schema: AudioStreamSource
+        required: true
+        description: Audio stream source objects.
+      - id: 0x03
+        name: streamProfiles
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported stream profiles, normally media.audio.
+      - id: 0x04
+        name: openModes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported open modes, such as producer_open and receiver_pull.
+      - id: 0x05
+        name: peerRoles
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Peer roles, such as receiver and transmitter.
+      - id: 0x06
+        name: supportsSourceStateEvent
+        type: bool
+        required: true
+        description: Whether audio.streamSourceStateChanged is supported.
+      - id: 0x07
+        name: supportsSyncGroup
+        type: bool
+        required: true
+        description: Whether audio streams can share a synchronization group with video streams.
+      - id: 0x08
+        name: flowControlManagedByRuntime
+        type: bool
+        required: true
+        description: Whether normal applications can rely on runtime-managed STREAM flow control.
+      - id: 0x09
+        name: aacTransportFormats
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional AAC transport format strings; exact supported set remains product-confirmed.
+
+  AudioStreamSource:
+    kind: object
+    description: One real-time audio stream source.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Source identifier such as wireless_cast_audio.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 128
+        description: User-visible source name.
+      - id: 0x03
+        name: codecs
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported audio codecs.
+      - id: 0x04
+        name: sampleRates
+        type: array
+        array:
+          item_type: uint32
+        required: false
+        description: Supported sample rates in Hz.
+      - id: 0x05
+        name: channels
+        type: array
+        array:
+          item_type: uint8
+        required: false
+        description: Supported channel counts.
+      - id: 0x06
+        name: state
+        type: enum
+        required: false
+        description: Runtime source state, such as available, receiving, stopped, or unavailable.
+
+  AudioOpenStreamParams:
+    kind: object
+    description: Request to open a real-time audio stream.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Audio source identifier.
+      - id: 0x02
+        name: peerRole
+        type: enum
+        required: true
+        description: Requested peer media role; values include receiver and transmitter.
+      - id: 0x03
+        name: codec
+        type: enum
+        required: true
+        description: Requested audio codec, such as aac, opus, or pcm.
+      - id: 0x04
+        name: transportFormat
+        type: enum
+        required: false
+        description: Optional codec transport format, such as adts, latm, or raw_aac.
+      - id: 0x05
+        name: sampleRate
+        type: uint32
+        required: false
+        description: Requested sample rate in Hz.
+      - id: 0x06
+        name: channels
+        type: uint8
+        required: false
+        description: Requested channel count.
+      - id: 0x07
+        name: sampleFormat
+        type: enum
+        required: false
+        description: Requested sample format.
+      - id: 0x08
+        name: chunkDurationMs
+        type: uint32
+        required: false
+        description: Preferred chunk duration in milliseconds.
+      - id: 0x09
+        name: streamProfile
+        type: string
+        required: false
+        max_length: 64
+        default: media.audio
+        description: STREAM profile name.
+      - id: 0x0A
+        name: cursorUnit
+        type: enum
+        required: false
+        description: STREAM cursor unit, such as timestampUs or sampleIndex.
+      - id: 0x0B
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional synchronization group identifier.
+      - id: 0x0C
+        name: castSessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional cast session identifier.
+      - id: 0x0D
+        name: clockDomain
+        type: string
+        required: false
+        max_length: 128
+        description: Source media clock domain.
+      - id: 0x0E
+        name: receiverClockDomain
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver clock domain.
+      - id: 0x0F
+        name: maxDataSize
+        type: uint32
+        required: false
+        description: Preferred maximum STREAM payload data size.
+
+  AudioOpenStreamResult:
+    kind: object
+    description: Result of opening a real-time audio stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Initial state, normally opening or streaming.
+      - id: 0x03
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Bound source identifier.
+      - id: 0x04
+        name: peerRole
+        type: enum
+        required: true
+        description: Confirmed peer media role.
+      - id: 0x05
+        name: codec
+        type: enum
+        required: true
+        description: Negotiated codec.
+      - id: 0x06
+        name: transportFormat
+        type: enum
+        required: false
+        description: Negotiated transport format.
+      - id: 0x07
+        name: sampleRate
+        type: uint32
+        required: true
+        description: Negotiated sample rate in Hz.
+      - id: 0x08
+        name: channels
+        type: uint8
+        required: true
+        description: Negotiated channel count.
+      - id: 0x09
+        name: sampleFormat
+        type: enum
+        required: false
+        description: Negotiated sample format.
+      - id: 0x0A
+        name: streamProfile
+        type: string
+        required: true
+        max_length: 64
+        description: Normalized stream profile.
+      - id: 0x0B
+        name: cursorUnit
+        type: enum
+        required: true
+        description: STREAM cursor unit.
+      - id: 0x0C
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Synchronization group identifier.
+      - id: 0x0D
+        name: castSessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Cast session identifier.
+      - id: 0x0E
+        name: clockDomain
+        type: string
+        required: false
+        max_length: 128
+        description: Source media clock domain.
+      - id: 0x0F
+        name: receiverClockDomain
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver clock domain.
+      - id: 0x10
+        name: maxDataSize
+        type: uint32
+        required: false
+        description: Negotiated maximum STREAM payload data size.
+
+  AudioCloseStreamParams:
+    kind: object
+    description: Request to close an audio stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: peerRole
+        type: enum
+        required: false
+        description: Peer role in this stream.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Close reason.
+      - id: 0x04
+        name: finalCursor
+        type: uint64
+        required: false
+        description: Last processed cursor value.
+
+  AudioCloseStreamResult:
+    kind: object
+    description: Result of closing an audio stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: Closed stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Close state, such as closing, closed, or failed.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Final close reason.
+      - id: 0x04
+        name: alreadyClosed
+        type: bool
+        required: false
+        default: false
+        description: Whether the stream was already terminal before this request.
+
+  AudioGetStreamStateParams:
+    kind: object
+    description: Selector for an audio stream state query.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+
+  AudioStreamState:
+    kind: object
+    description: Runtime state of one audio stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Stream state, such as opening, streaming, closing, closed, or failed.
+      - id: 0x03
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Bound audio source.
+      - id: 0x04
+        name: peerRole
+        type: enum
+        required: false
+        description: Peer media role.
+      - id: 0x05
+        name: codec
+        type: enum
+        required: false
+        description: Negotiated audio codec.
+      - id: 0x06
+        name: streamProfile
+        type: string
+        required: false
+        max_length: 64
+        description: Stream profile.
+      - id: 0x07
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Synchronization group identifier.
+      - id: 0x08
+        name: cursorUnit
+        type: enum
+        required: false
+        description: STREAM cursor unit.
+      - id: 0x09
+        name: lastCursor
+        type: uint64
+        required: false
+        description: Last known cursor value.
+      - id: 0x0A
+        name: failureReason
+        type: enum
+        required: false
+        description: Failure reason when state is failed.
+
+  AudioGetStreamSourceStateParams:
+    kind: object
+    description: Selector for audio source runtime state.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Audio source identifier.
+
+  AudioStreamSourceState:
+    kind: object
+    description: Runtime state of an audio stream source.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Audio source identifier.
+      - id: 0x02
+        name: mediaKind
+        type: enum
+        required: false
+        description: Media kind, normally audio.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        description: Source state, such as unavailable, available, receiving, stopped, or failed.
+      - id: 0x04
+        name: available
+        type: bool
+        required: false
+        description: Whether the source is available for openStream.
+      - id: 0x05
+        name: activeStreamId
+        type: uint32
+        required: false
+        description: Active downstream stream id, if any.
+      - id: 0x06
+        name: lastOpenRejectedReason
+        type: enum
+        required: false
+        description: Last open rejection reason.
+
+  AudioStreamStateChangedEvent:
+    kind: object
+    description: Event payload for audio stream state changes.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: New stream state.
+      - id: 0x03
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Bound audio source.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: State change reason.
+      - id: 0x05
+        name: stats
+        type: AudioStreamStats
+        required: false
+        description: Optional bounded stream statistics.
+
+  AudioStreamSourceStateChangedEvent:
+    kind: object
+    description: Event payload for audio stream source state changes.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Audio source identifier.
+      - id: 0x02
+        name: mediaKind
+        type: enum
+        required: false
+        description: Media kind, normally audio.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        description: New source state.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: Source state change reason.
+      - id: 0x05
+        name: activeStreamId
+        type: uint32
+        required: false
+        description: Active downstream stream id, if any.
+
+  AudioStreamStatsReportedEvent:
+    kind: object
+    description: Event payload for audio stream statistics reports.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: stats
+        type: AudioStreamStats
+        required: true
+        description: Bounded stream statistics.
+
+  AudioStreamStats:
+    kind: object
+    description: Bounded runtime statistics for an audio stream.
+    fields:
+      - id: 0x01
+        name: packets
+        type: uint64
+        required: false
+        description: Number of STREAM packets observed.
+      - id: 0x02
+        name: bytes
+        type: uint64
+        required: false
+        description: Number of STREAM payload bytes observed.
+      - id: 0x03
+        name: droppedPackets
+        type: uint64
+        required: false
+        description: Number of dropped packets.
+      - id: 0x04
+        name: jitterMs
+        type: uint32
+        required: false
+        description: Estimated jitter in milliseconds.
+
+capabilities:
+  - id: 0x0901
+    name: audio.algorithm
+    domain: audio
+    status: stable
+    since: 1.0.0
+    description: Device supports runtime audio algorithm capability discovery, configuration, reset, and change notification.
+    type: object
+    schema: AudioAlgorithmCapability
+
+  - id: 0x0902
+    name: audio.stream
+    domain: audio
+    status: draft
+    since: 1.0.0
+    description: Device supports real-time audio STREAM setup, close, state, source state, and stats events.
+    type: object
+    schema: AudioStreamCapabilities

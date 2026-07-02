@@ -1,0 +1,30 @@
+id: rpc.request_id_match
+title: RPC response matches requestId
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  method: audio.getAlgorithmConfig
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 55
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 55
+
+assertions:
+  - response.requestId == 55
+  - response.requestId == request.requestId
