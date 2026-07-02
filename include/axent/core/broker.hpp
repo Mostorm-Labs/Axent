@@ -14,13 +14,15 @@ class Broker {
 public:
     Broker(RouteManager& routes, Middleware& middleware, FlowControl& flow_control);
 
-    void register_adapter(Adapter* adapter);
+    void register_adapter(Adapter& adapter);
+    void unregister_adapter(const std::string& name);
     ControlResult dispatch(const ControlCommand& command);
 
 private:
     RouteManager& routes_;
     Middleware& middleware_;
     FlowControl& flow_control_;
+    // Registered adapters are non-owning and must outlive their broker registration.
     std::map<std::string, Adapter*> adapters_;
 };
 
