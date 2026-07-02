@@ -16,6 +16,10 @@ add_library(libaxent
     src/core/session_manager.cpp
     src/core/capability_registry.cpp
     src/core/adapter_registry.cpp
+    src/core/route_manager.cpp
+    src/core/middleware.cpp
+    src/core/flow_control.cpp
+    src/core/broker.cpp
     src/config/config.cpp
     src/diagnostics/diagnostics.cpp
     src/firmware/firmware_task.cpp
@@ -52,4 +56,9 @@ if(BUILD_TESTING)
     target_link_libraries(diagnostics_config_test PRIVATE axent::libaxent)
     axent_enable_warnings(diagnostics_config_test)
     add_test(NAME diagnostics_config_test COMMAND diagnostics_config_test)
+
+    add_executable(broker_flow_test tests/broker_flow_test.cpp)
+    target_link_libraries(broker_flow_test PRIVATE axent::libaxent)
+    axent_enable_warnings(broker_flow_test)
+    add_test(NAME broker_flow_test COMMAND broker_flow_test)
 endif()
