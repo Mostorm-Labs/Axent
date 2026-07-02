@@ -3,6 +3,32 @@
 #include <utility>
 
 namespace axent {
+namespace {
+
+int percent_of(std::uint64_t transferred, std::uint64_t total)
+{
+    if (total == 0) {
+        return 0;
+    }
+    if (transferred >= total) {
+        return 100;
+    }
+
+    int percent = 0;
+    std::uint64_t remainder = 0;
+    for (int step = 0; step < 100; ++step) {
+        const auto room = total - remainder;
+        if (transferred >= room) {
+            ++percent;
+            remainder = transferred - room;
+        } else {
+            remainder += transferred;
+        }
+    }
+    return percent;
+}
+
+} // namespace
 
 FirmwareTask::FirmwareTask(std::string task_id, std::string device_id, std::string file_path)
     : task_id_(std::move(task_id)), device_id_(std::move(device_id)), file_path_(std::move(file_path))
@@ -47,13 +73,7 @@ void FirmwareTask::mark_transferring(std::uint64_t transferred, std::uint64_t to
     progress_.stage = "transferring";
     progress_.transferred_bytes = transferred;
     progress_.total_bytes = total;
-    if (total == 0) {
-        progress_.percent = 0;
-    } else if (transferred >= total) {
-        progress_.percent = 100;
-    } else {
-        progress_.percent = static_cast<int>((static_cast<unsigned __int128>(transferred) * 100U) / total);
-    }
+    progress_.percent = percent_of(transferred, total);
 }
 
 void FirmwareTask::mark_succeeded()
