@@ -16,6 +16,7 @@ add_library(libaxent
     src/core/session_manager.cpp
     src/core/capability_registry.cpp
     src/core/adapter_registry.cpp
+    src/adapters/mock_adapter.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
@@ -37,4 +38,9 @@ if(BUILD_TESTING)
     target_link_libraries(manager_registry_test PRIVATE axent::libaxent)
     axent_enable_warnings(manager_registry_test)
     add_test(NAME manager_registry_test COMMAND manager_registry_test)
+
+    add_executable(mock_adapter_test tests/mock_adapter_test.cpp)
+    target_link_libraries(mock_adapter_test PRIVATE axent::libaxent)
+    axent_enable_warnings(mock_adapter_test)
+    add_test(NAME mock_adapter_test COMMAND mock_adapter_test)
 endif()
