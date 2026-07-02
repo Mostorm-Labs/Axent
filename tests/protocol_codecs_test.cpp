@@ -91,6 +91,15 @@ int main()
     require(json_response.at("id") == "jr-1", "json-rpc response id mismatch");
     require(json_response.at("result").at("devices").is_array(), "json-rpc response result mismatch");
 
+    const auto numeric_id_json_rpc = axent::decode_control_message({
+        {"jsonrpc", "2.0"},
+        {"id", 7},
+        {"method", "status.get"},
+        {"params", {{"deviceId", "mock-device-001"}}}
+    });
+    const auto numeric_id_response = axent::encode_control_response(numeric_id_json_rpc, result);
+    require(numeric_id_response.at("id") == 7, "json-rpc numeric response id mismatch");
+
     axent::ControlResult error;
     error.status = axent::ControlStatus::InvalidArgument;
     error.body = {{"detail", "bad params"}};
@@ -115,7 +124,7 @@ int main()
         });
         require(malformed_json_rpc.command.source == axent::ProtocolSource::JsonRpc,
                 "malformed json-rpc source mismatch");
-        require(malformed_json_rpc.command.request_id.empty(), "malformed json-rpc id should default empty");
+        require(malformed_json_rpc.command.request_id == "12", "numeric json-rpc id should be available for logs");
         require(malformed_json_rpc.command.method.empty(), "malformed json-rpc method should default empty");
         require(malformed_json_rpc.command.device_id.empty(), "malformed json-rpc device id should default empty");
         require(malformed_json_rpc.command.params.is_object(), "malformed json-rpc params should stay object");

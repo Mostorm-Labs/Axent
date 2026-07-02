@@ -2,7 +2,21 @@
 
 #include <exception>
 
+#include "axent/core/json.hpp"
+
 namespace axent {
+namespace {
+
+nlohmann::json device_list_body(const std::vector<DeviceSnapshot>& devices)
+{
+    nlohmann::json body = {{"devices", nlohmann::json::array()}};
+    for (const auto& device : devices) {
+        body["devices"].push_back(to_json(device));
+    }
+    return body;
+}
+
+} // namespace
 
 Broker::Broker(RouteManager& routes, Middleware& middleware, FlowControl& flow_control)
     : routes_(routes), middleware_(middleware), flow_control_(flow_control)
@@ -28,6 +42,8 @@ ControlResult Broker::dispatch(const ControlCommand& command)
         if (flow_control_.snapshot().paused) {
             flow_control_.record_drop();
             result = {ControlStatus::Unavailable, {{"error", "flow paused"}}};
+        } else if (command.method == "devices.list") {
+            result = {ControlStatus::Ok, device_list_body(routes_.list_devices())};
         } else {
             const auto target = routes_.resolve(command.device_id);
             if (!target) {

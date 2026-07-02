@@ -11,6 +11,7 @@ namespace axent {
 struct DecodedControlMessage {
     ControlCommand command;
     std::string wire_method;
+    nlohmann::json json_rpc_id = nullptr;
     nlohmann::json original;
 };
 

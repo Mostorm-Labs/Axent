@@ -91,6 +91,11 @@ if(BUILD_TESTING)
     axent_enable_warnings(protocol_codecs_test)
     add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
 
+    add_executable(websocket_server_test tests/websocket_server_test.cpp)
+    target_link_libraries(websocket_server_test PRIVATE axent::libaxent axtp::transport_websocket_ix)
+    axent_enable_warnings(websocket_server_test)
+    add_test(NAME websocket_server_test COMMAND websocket_server_test)
+
     add_executable(cli_smoke_test tests/cli_smoke_test.cpp)
     axent_enable_warnings(cli_smoke_test)
     add_test(NAME cli_smoke_test COMMAND cli_smoke_test $<TARGET_FILE:axent>)

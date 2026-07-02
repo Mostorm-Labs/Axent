@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "axent/core/device_manager.hpp"
 
@@ -17,6 +18,7 @@ public:
     explicit RouteManager(const DeviceManager& devices);
 
     std::optional<RouteTarget> resolve(const std::string& device_id) const;
+    std::vector<DeviceSnapshot> list_devices() const;
 
 private:
     const DeviceManager& devices_;

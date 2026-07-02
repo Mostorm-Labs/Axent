@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "axent/adapters/mock_adapter.hpp"
+#include "axent/control/control_plane.hpp"
 #include "axent/core/broker.hpp"
 #include "axent/core/flow_control.hpp"
 #include "axent/core/middleware.hpp"
@@ -82,29 +83,73 @@ int main()
     axent::Broker broker(routes, middleware, flow);
     broker.register_adapter(adapter);
     broker.register_adapter(throwing_adapter);
+    axent::ControlPlane control_plane(broker);
+
+    const auto legacy_device_list = control_plane.handle_text({
+        {"op", 7},
+        {"sid", 1001},
+        {"d", {
+            {"id", "legacy-list"},
+            {"method", "GetDeviceList"},
+            {"params", nlohmann::json::object()},
+        }},
+    });
+    require(legacy_device_list.at("d").at("status").at("result") == true,
+            "legacy GetDeviceList should succeed");
+    require(legacy_device_list.at("d").at("result").at("devices").size() == 2,
+            "legacy GetDeviceList should return managed devices");
+
+    const auto legacy_info_by_serial = control_plane.handle_text({
+        {"op", 7},
+        {"sid", 1002},
+        {"d", {
+            {"id", "legacy-info-serial"},
+            {"method", "GetDeviceInfo"},
+            {"params", {{"serialNumber", "MOCK001"}}},
+        }},
+    });
+    require(legacy_info_by_serial.at("d").at("status").at("result") == true,
+            "legacy GetDeviceInfo by serialNumber should succeed");
+    require(legacy_info_by_serial.at("d").at("result").at("identity").at("serialNumber") == "MOCK001",
+            "legacy GetDeviceInfo by serialNumber should return mock identity");
+
+    const auto legacy_info_by_device_id = control_plane.handle_text({
+        {"op", 7},
+        {"sid", 1003},
+        {"d", {
+            {"id", "legacy-info-device"},
+            {"method", "GetDeviceInfo"},
+            {"params", {{"deviceId", "mock-device-001"}}},
+        }},
+    });
+    require(legacy_info_by_device_id.at("d").at("status").at("result") == true,
+            "legacy GetDeviceInfo by deviceId should succeed");
+    require(legacy_info_by_device_id.at("d").at("result").at("id") == "mock-device-001",
+            "legacy GetDeviceInfo by deviceId should return mock device");
 
     axent::ControlCommand command;
     command.request_id = "req-1";
     command.method = "status.get";
     command.device_id = "mock-device-001";
+    const auto audit_start = logger.records().size();
     const auto result = broker.dispatch(command);
 
     require(result.status == axent::ControlStatus::Ok, "status.get should succeed");
     require(result.body.at("health") == "ok", "status.get health mismatch");
-    require(logger.records().size() == 2, "broker should emit request and response audit records");
-    require(logger.records()[0].channel == "audit", "request log channel mismatch");
-    require(logger.records()[0].message == "control.request", "request log message mismatch");
-    require(logger.records()[0].fields.at("requestId") == "req-1", "request log requestId mismatch");
-    require(logger.records()[0].fields.at("method") == "status.get", "request log method mismatch");
-    require(logger.records()[0].fields.at("deviceId") == "mock-device-001", "request log deviceId mismatch");
-    require(logger.records()[0].fields.at("source") == "json-rpc", "request log source mismatch");
-    require(logger.records()[1].channel == "audit", "response log channel mismatch");
-    require(logger.records()[1].message == "control.response", "response log message mismatch");
-    require(logger.records()[1].fields.at("requestId") == "req-1", "response log requestId mismatch");
-    require(logger.records()[1].fields.at("method") == "status.get", "response log method mismatch");
-    require(logger.records()[1].fields.at("deviceId") == "mock-device-001", "response log deviceId mismatch");
-    require(logger.records()[1].fields.at("source") == "json-rpc", "response log source mismatch");
-    require(logger.records()[1].fields.at("status") == "ok", "response log status mismatch");
+    require(logger.records().size() == audit_start + 2, "broker should emit request and response audit records");
+    require(logger.records()[audit_start].channel == "audit", "request log channel mismatch");
+    require(logger.records()[audit_start].message == "control.request", "request log message mismatch");
+    require(logger.records()[audit_start].fields.at("requestId") == "req-1", "request log requestId mismatch");
+    require(logger.records()[audit_start].fields.at("method") == "status.get", "request log method mismatch");
+    require(logger.records()[audit_start].fields.at("deviceId") == "mock-device-001", "request log deviceId mismatch");
+    require(logger.records()[audit_start].fields.at("source") == "json-rpc", "request log source mismatch");
+    require(logger.records()[audit_start + 1].channel == "audit", "response log channel mismatch");
+    require(logger.records()[audit_start + 1].message == "control.response", "response log message mismatch");
+    require(logger.records()[audit_start + 1].fields.at("requestId") == "req-1", "response log requestId mismatch");
+    require(logger.records()[audit_start + 1].fields.at("method") == "status.get", "response log method mismatch");
+    require(logger.records()[audit_start + 1].fields.at("deviceId") == "mock-device-001", "response log deviceId mismatch");
+    require(logger.records()[audit_start + 1].fields.at("source") == "json-rpc", "response log source mismatch");
+    require(logger.records()[audit_start + 1].fields.at("status") == "ok", "response log status mismatch");
     require(!flow.snapshot().paused, "flow should not be paused");
     require(flow.snapshot().dropped == 0, "flow should not record drops while running");
 

@@ -39,6 +39,20 @@ std::optional<DeviceSnapshot> DeviceManager::get(const std::string& id) const
     return *existing;
 }
 
+std::optional<DeviceSnapshot> DeviceManager::find_by_serial_number(const std::string& serial_number) const
+{
+    if (serial_number.empty()) {
+        return std::nullopt;
+    }
+    auto existing = std::find_if(devices_.begin(), devices_.end(), [&](const auto& current) {
+        return current.identity.serial_number == serial_number;
+    });
+    if (existing == devices_.end()) {
+        return std::nullopt;
+    }
+    return *existing;
+}
+
 std::vector<DeviceSnapshot> DeviceManager::list() const
 {
     return devices_;

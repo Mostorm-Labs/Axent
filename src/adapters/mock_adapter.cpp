@@ -2,6 +2,8 @@
 
 #include <sstream>
 
+#include "axent/core/json.hpp"
+
 namespace axent {
 
 AdapterMetadata MockAdapter::metadata() const
@@ -51,6 +53,9 @@ ControlResult MockAdapter::call(const std::string& device_id, const std::string&
     }
     if (method == "identity.get") {
         return {ControlStatus::Ok, {{"serialNumber", "MOCK001"}, {"model", "MockCam"}}};
+    }
+    if (method == "device.info") {
+        return {ControlStatus::Ok, to_json(discover().front())};
     }
     if (method == "stream.flowControl.get") {
         return {ControlStatus::Ok, {{"paused", false}, {"dropped", 0}}};

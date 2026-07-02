@@ -1,62 +1,35 @@
 #include "axent/control/websocket_server.hpp"
 
-#include <atomic>
-#include <chrono>
+#include <mutex>
 #include <string>
-#include <thread>
 
+#include <ixwebsocket/IXGetFreePort.h>
+#include <ixwebsocket/IXNetSystem.h>
+#include <ixwebsocket/IXWebSocket.h>
+#include <ixwebsocket/IXWebSocketMessage.h>
+#include <ixwebsocket/IXWebSocketMessageType.h>
+#include <ixwebsocket/IXWebSocketServer.h>
 #include <nlohmann/json.hpp>
 
-#include "core/runtime/transport/transport.hpp"
-#include "transports/websocket/ix/websocket_transport.hpp"
-
 namespace axent {
-namespace {
-
-class ControlPlaneSink final : public axtp::IByteSink {
-public:
-    ControlPlaneSink(ControlPlane& control_plane, axtp::WebSocketTransport& transport)
-        : control_plane_(control_plane)
-        , transport_(transport)
-    {
-    }
-
-    void onBytes(const axtp::Byte* data, std::size_t size) override
-    {
-        const std::string text(reinterpret_cast<const char*>(data), size);
-        const auto request = nlohmann::json::parse(text, nullptr, false);
-        if (request.is_discarded()) {
-            return;
-        }
-
-        const auto response = control_plane_.handle_text(request).dump();
-        transport_.sendBytes(reinterpret_cast<const axtp::Byte*>(response.data()), response.size());
-    }
-
-private:
-    ControlPlane& control_plane_;
-    axtp::WebSocketTransport& transport_;
-};
-
-} // namespace
 
 struct WebSocketServer::Impl {
-    std::unique_ptr<axtp::WebSocketTransport> transport;
-    std::unique_ptr<ControlPlaneSink> sink;
-    std::thread poll_thread;
-    std::atomic<bool> running{false};
+    std::unique_ptr<ix::WebSocketServer> server;
+    std::mutex request_mutex;
+    std::uint16_t local_port = 0;
+    bool net_initialized = false;
 
     void stop()
     {
-        running.store(false);
-        if (poll_thread.joinable()) {
-            poll_thread.join();
+        if (server) {
+            server->stop();
+            server.reset();
         }
-        if (transport) {
-            transport->close();
+        local_port = 0;
+        if (net_initialized) {
+            ix::uninitNetSystem();
+            net_initialized = false;
         }
-        sink.reset();
-        transport.reset();
     }
 };
 
@@ -73,22 +46,42 @@ WebSocketServer::~WebSocketServer()
 bool WebSocketServer::start(ControlPlane& control_plane, const std::string& bind_host, std::uint16_t port)
 {
     stop();
-    impl_->transport = std::make_unique<axtp::WebSocketTransport>(port, bind_host.c_str());
-    impl_->sink = std::make_unique<ControlPlaneSink>(control_plane, *impl_->transport);
-    impl_->transport->bind(*impl_->sink);
-    impl_->transport->open();
-    if (impl_->transport->localPort() == 0) {
+    impl_->net_initialized = ix::initNetSystem();
+    const auto listen_port = port == 0 ? ix::getFreePort() : static_cast<int>(port);
+    if (listen_port <= 0) {
         stop();
         return false;
     }
 
-    impl_->running.store(true);
-    impl_->poll_thread = std::thread([this]() {
-        while (impl_->running.load()) {
-            impl_->transport->poll();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    impl_->server = std::make_unique<ix::WebSocketServer>(listen_port, bind_host);
+    impl_->server->disablePerMessageDeflate();
+    impl_->server->setOnClientMessageCallback(
+        [this, &control_plane](std::shared_ptr<ix::ConnectionState>,
+                               ix::WebSocket& web_socket,
+                               const ix::WebSocketMessagePtr& message) {
+        if (!message || message->type != ix::WebSocketMessageType::Message || message->binary) {
+            return;
         }
+
+        const auto request = nlohmann::json::parse(message->str, nullptr, false);
+        if (request.is_discarded()) {
+            return;
+        }
+
+        std::string response;
+        {
+            std::lock_guard<std::mutex> lock(impl_->request_mutex);
+            response = control_plane.handle_text(request).dump();
+        }
+        (void)web_socket.sendText(response);
     });
+
+    if (!impl_->server->listenAndStart()) {
+        stop();
+        return false;
+    }
+
+    impl_->local_port = static_cast<std::uint16_t>(listen_port);
     return true;
 }
 
@@ -99,7 +92,7 @@ void WebSocketServer::stop()
 
 std::uint16_t WebSocketServer::local_port() const
 {
-    return impl_->transport ? impl_->transport->localPort() : 0;
+    return impl_->local_port;
 }
 
 } // namespace axent

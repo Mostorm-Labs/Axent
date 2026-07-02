@@ -42,6 +42,17 @@ std::string optional_string(const nlohmann::json& object, const char* key)
     return found->get<std::string>();
 }
 
+std::string request_id_for_log(const nlohmann::json& value)
+{
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        return value.dump();
+    }
+    return "";
+}
+
 nlohmann::json object_or_empty(const nlohmann::json& object, const char* key)
 {
     if (!object.is_object()) {
@@ -89,7 +100,8 @@ DecodedControlMessage decode_control_message(const nlohmann::json& message)
 
     if (message.contains("jsonrpc")) {
         decoded.command.source = ProtocolSource::JsonRpc;
-        decoded.command.request_id = optional_string(message, "id");
+        decoded.json_rpc_id = message.contains("id") ? message.at("id") : nullptr;
+        decoded.command.request_id = request_id_for_log(decoded.json_rpc_id);
         decoded.command.method = optional_string(message, "method");
         decoded.command.params = object_or_empty(message, "params");
         decoded.command.device_id = optional_string(decoded.command.params, "deviceId");
@@ -116,13 +128,13 @@ nlohmann::json encode_control_response(const DecodedControlMessage& decoded, con
         if (is_success(result.status)) {
             return {
                 {"jsonrpc", "2.0"},
-                {"id", decoded.command.request_id},
+                {"id", decoded.json_rpc_id},
                 {"result", result.body},
             };
         }
         return {
             {"jsonrpc", "2.0"},
-            {"id", decoded.command.request_id},
+            {"id", decoded.json_rpc_id},
             {"error", {
                 {"code", json_rpc_error_code(result.status)},
                 {"message", control_status_name(result.status)},

@@ -12,6 +12,7 @@ int main()
     axent::DeviceSnapshot device;
     device.id = "dev-1";
     device.adapter = "mock";
+    device.identity.serial_number = "SERIAL-1";
     device.connection.online = true;
     devices.upsert(device);
     if (devices.list().size() != 1) {
@@ -19,6 +20,9 @@ int main()
     }
     if (!devices.get("dev-1") || devices.get("dev-1")->adapter != "mock") {
         throw std::runtime_error("device lookup mismatch");
+    }
+    if (!devices.find_by_serial_number("SERIAL-1") || devices.find_by_serial_number("SERIAL-1")->id != "dev-1") {
+        throw std::runtime_error("device serial lookup mismatch");
     }
     devices.mark_offline("dev-1", "test-remove");
     if (!devices.get("dev-1") || devices.get("dev-1")->connection.online) {

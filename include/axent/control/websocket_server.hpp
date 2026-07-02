@@ -16,6 +16,7 @@ public:
     WebSocketServer(const WebSocketServer&) = delete;
     WebSocketServer& operator=(const WebSocketServer&) = delete;
 
+    // The control plane must outlive the running server.
     bool start(ControlPlane& control_plane, const std::string& bind_host, std::uint16_t port);
     void stop();
     std::uint16_t local_port() const;
