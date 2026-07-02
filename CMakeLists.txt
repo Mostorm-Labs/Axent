@@ -12,6 +12,8 @@ include(cmake/AxentDependencies.cmake)
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
+    src/control/control_plane.cpp
+    src/control/websocket_server.cpp
     src/core/json.cpp
     src/core/device_manager.cpp
     src/core/session_manager.cpp
@@ -29,8 +31,19 @@ add_library(libaxent
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
-target_link_libraries(libaxent PUBLIC axtp::core axtp::json_rpc)
+target_link_libraries(libaxent
+    PUBLIC axtp::core axtp::json_rpc
+    PRIVATE axtp::transport_websocket_ix
+)
 axent_enable_warnings(libaxent)
+
+add_executable(axentd src/daemon/main.cpp)
+target_link_libraries(axentd PRIVATE axent::libaxent axtp::transport_websocket_ix)
+axent_enable_warnings(axentd)
+
+add_executable(axent src/cli/main.cpp)
+target_link_libraries(axent PRIVATE axent::libaxent)
+axent_enable_warnings(axent)
 
 if(BUILD_TESTING)
     add_executable(version_smoke_test tests/version_smoke_test.cpp)
@@ -67,4 +80,8 @@ if(BUILD_TESTING)
     target_link_libraries(protocol_codecs_test PRIVATE axent::libaxent)
     axent_enable_warnings(protocol_codecs_test)
     add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
+
+    add_executable(cli_smoke_test tests/cli_smoke_test.cpp)
+    axent_enable_warnings(cli_smoke_test)
+    add_test(NAME cli_smoke_test COMMAND cli_smoke_test $<TARGET_FILE:axent>)
 endif()
