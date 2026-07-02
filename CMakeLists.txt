@@ -11,6 +11,7 @@ include(cmake/AxentDependencies.cmake)
 
 add_library(libaxent
     src/version.cpp
+    src/control/protocol_codecs.cpp
     src/core/json.cpp
     src/core/device_manager.cpp
     src/core/session_manager.cpp
@@ -61,4 +62,9 @@ if(BUILD_TESTING)
     target_link_libraries(broker_flow_test PRIVATE axent::libaxent)
     axent_enable_warnings(broker_flow_test)
     add_test(NAME broker_flow_test COMMAND broker_flow_test)
+
+    add_executable(protocol_codecs_test tests/protocol_codecs_test.cpp)
+    target_link_libraries(protocol_codecs_test PRIVATE axent::libaxent)
+    axent_enable_warnings(protocol_codecs_test)
+    add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
 endif()
