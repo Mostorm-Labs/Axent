@@ -1,5 +1,7 @@
 #include "axent/diagnostics/diagnostics.hpp"
 
+#include <utility>
+
 #include "axent/core/json.hpp"
 
 namespace axent {
@@ -19,7 +21,11 @@ nlohmann::json Diagnostics::collect(const std::string& device_id, bool include_s
     nlohmann::json audit_log = nlohmann::json::array();
     for (const auto& record : logger_.records()) {
         if (record.channel == "audit") {
-            audit_log.push_back({{"message", record.message}, {"fields", record.fields}});
+            nlohmann::json audit_record = {{"message", record.message}};
+            if (include_sensitive) {
+                audit_record["fields"] = record.fields;
+            }
+            audit_log.push_back(std::move(audit_record));
         }
     }
 

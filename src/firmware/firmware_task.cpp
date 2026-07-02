@@ -47,7 +47,13 @@ void FirmwareTask::mark_transferring(std::uint64_t transferred, std::uint64_t to
     progress_.stage = "transferring";
     progress_.transferred_bytes = transferred;
     progress_.total_bytes = total;
-    progress_.percent = total == 0 ? 0 : static_cast<int>((transferred * 100U) / total);
+    if (total == 0) {
+        progress_.percent = 0;
+    } else if (transferred >= total) {
+        progress_.percent = 100;
+    } else {
+        progress_.percent = static_cast<int>((static_cast<unsigned __int128>(transferred) * 100U) / total);
+    }
 }
 
 void FirmwareTask::mark_succeeded()
