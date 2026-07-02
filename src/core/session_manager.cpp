@@ -54,10 +54,13 @@ void SessionManager::map_control_to_device(std::string control_session_id, std::
     control_to_device_[std::move(control_session_id)] = std::move(device_session_id);
 }
 
-std::string SessionManager::device_session_for_control(const std::string& control_session_id) const
+std::optional<std::string> SessionManager::device_session_for_control(const std::string& control_session_id) const
 {
     auto found = control_to_device_.find(control_session_id);
-    return found == control_to_device_.end() ? std::string() : found->second;
+    if (found == control_to_device_.end()) {
+        return std::nullopt;
+    }
+    return found->second;
 }
 
 } // namespace axent

@@ -42,7 +42,7 @@ public:
     ControlSessionManager& control();
     DeviceSessionManager& device();
     void map_control_to_device(std::string control_session_id, std::string device_session_id);
-    std::string device_session_for_control(const std::string& control_session_id) const;
+    std::optional<std::string> device_session_for_control(const std::string& control_session_id) const;
 
 private:
     ControlSessionManager control_;
