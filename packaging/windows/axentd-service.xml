@@ -1,0 +1,11 @@
+<service>
+  <id>axentd</id>
+  <name>Axent Daemon</name>
+  <description>Axtp Endpoint Agent daemon</description>
+  <executable>%BASE%\axentd.exe</executable>
+  <arguments></arguments>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>
