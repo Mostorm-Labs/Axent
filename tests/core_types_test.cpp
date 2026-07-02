@@ -1,4 +1,4 @@
-#include <cassert>
+#include <stdexcept>
 #include <string>
 
 #include "axent/core/json.hpp"
@@ -40,7 +40,14 @@ int main()
     capability.domain = "core";
     capability.available = true;
     capability.methods.push_back({"firmware.update", axent::RiskLevel::Dangerous, true, true});
-    assert(axent::risk_name(axent::RiskLevel::Dangerous) == std::string("dangerous"));
-    assert(axent::to_json(capability).at("methods").at(0).at("name") == "firmware.update");
+    if (axent::risk_name(axent::RiskLevel::Dangerous) != std::string("dangerous")) {
+        throw std::runtime_error("dangerous risk name mismatch");
+    }
+    if (axent::risk_name(static_cast<axent::RiskLevel>(999)) != std::string("dangerous")) {
+        throw std::runtime_error("invalid risk level must fail closed to dangerous");
+    }
+    if (axent::to_json(capability).at("methods").at(0).at("name") != "firmware.update") {
+        throw std::runtime_error("capability method name mismatch");
+    }
     return 0;
 }

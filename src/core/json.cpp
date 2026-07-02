@@ -9,7 +9,7 @@ const char* risk_name(RiskLevel risk)
     case RiskLevel::Confirm: return "confirm";
     case RiskLevel::Dangerous: return "dangerous";
     }
-    return "safe";
+    return "dangerous";
 }
 
 const char* protocol_source_name(ProtocolSource source)
