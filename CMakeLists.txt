@@ -27,14 +27,24 @@ add_library(libaxent
     src/diagnostics/diagnostics.cpp
     src/firmware/firmware_task.cpp
     src/logging/logger.cpp
+    src/adapters/axdp_adapter.cpp
+    src/adapters/axtp_adapter.cpp
     src/adapters/mock_adapter.cpp
+    src/adapters/tea_adapter.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
 target_link_libraries(libaxent
-    PUBLIC axtp::core axtp::json_rpc
+    PUBLIC axtp::core axtp::json_rpc axtp::runtime axtp::sdk
     PRIVATE axtp::transport_websocket_ix
 )
+if(AXENT_HAS_AXDP_HEADERS)
+    target_include_directories(libaxent PRIVATE third_party/axdp/include)
+endif()
+
+if(AXENT_HAS_TEA_MACOS_SDK)
+    target_include_directories(libaxent PRIVATE third_party/tea/macos/TeaSdkMacOS_1.0.0.36/include)
+endif()
 axent_enable_warnings(libaxent)
 
 add_executable(axentd src/daemon/main.cpp)
@@ -84,4 +94,9 @@ if(BUILD_TESTING)
     add_executable(cli_smoke_test tests/cli_smoke_test.cpp)
     axent_enable_warnings(cli_smoke_test)
     add_test(NAME cli_smoke_test COMMAND cli_smoke_test $<TARGET_FILE:axent>)
+
+    add_executable(adapter_skeleton_test tests/adapter_skeleton_test.cpp)
+    target_link_libraries(adapter_skeleton_test PRIVATE axent::libaxent)
+    axent_enable_warnings(adapter_skeleton_test)
+    add_test(NAME adapter_skeleton_test COMMAND adapter_skeleton_test)
 endif()
