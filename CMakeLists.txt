@@ -11,6 +11,7 @@ include(cmake/AxentDependencies.cmake)
 
 add_library(libaxent
     src/version.cpp
+    src/core/json.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
@@ -22,4 +23,9 @@ if(BUILD_TESTING)
     target_link_libraries(version_smoke_test PRIVATE axent::libaxent)
     axent_enable_warnings(version_smoke_test)
     add_test(NAME version_smoke_test COMMAND version_smoke_test)
+
+    add_executable(core_types_test tests/core_types_test.cpp)
+    target_link_libraries(core_types_test PRIVATE axent::libaxent)
+    axent_enable_warnings(core_types_test)
+    add_test(NAME core_types_test COMMAND core_types_test)
 endif()
