@@ -12,6 +12,10 @@ include(cmake/AxentDependencies.cmake)
 add_library(libaxent
     src/version.cpp
     src/core/json.cpp
+    src/core/device_manager.cpp
+    src/core/session_manager.cpp
+    src/core/capability_registry.cpp
+    src/core/adapter_registry.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
@@ -28,4 +32,9 @@ if(BUILD_TESTING)
     target_link_libraries(core_types_test PRIVATE axent::libaxent)
     axent_enable_warnings(core_types_test)
     add_test(NAME core_types_test COMMAND core_types_test)
+
+    add_executable(manager_registry_test tests/manager_registry_test.cpp)
+    target_link_libraries(manager_registry_test PRIVATE axent::libaxent)
+    axent_enable_warnings(manager_registry_test)
+    add_test(NAME manager_registry_test COMMAND manager_registry_test)
 endif()
