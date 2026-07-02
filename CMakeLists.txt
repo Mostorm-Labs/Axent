@@ -16,6 +16,10 @@ add_library(libaxent
     src/core/session_manager.cpp
     src/core/capability_registry.cpp
     src/core/adapter_registry.cpp
+    src/config/config.cpp
+    src/diagnostics/diagnostics.cpp
+    src/firmware/firmware_task.cpp
+    src/logging/logger.cpp
     src/adapters/mock_adapter.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
@@ -43,4 +47,9 @@ if(BUILD_TESTING)
     target_link_libraries(mock_adapter_test PRIVATE axent::libaxent)
     axent_enable_warnings(mock_adapter_test)
     add_test(NAME mock_adapter_test COMMAND mock_adapter_test)
+
+    add_executable(diagnostics_config_test tests/diagnostics_config_test.cpp)
+    target_link_libraries(diagnostics_config_test PRIVATE axent::libaxent)
+    axent_enable_warnings(diagnostics_config_test)
+    add_test(NAME diagnostics_config_test COMMAND diagnostics_config_test)
 endif()
