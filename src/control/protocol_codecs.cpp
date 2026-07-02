@@ -30,6 +30,56 @@ bool is_success(ControlStatus status)
     return status == ControlStatus::Ok || status == ControlStatus::Accepted;
 }
 
+std::string optional_string(const nlohmann::json& object, const char* key)
+{
+    if (!object.is_object()) {
+        return "";
+    }
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_string()) {
+        return "";
+    }
+    return found->get<std::string>();
+}
+
+nlohmann::json object_or_empty(const nlohmann::json& object, const char* key)
+{
+    if (!object.is_object()) {
+        return nlohmann::json::object();
+    }
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_object()) {
+        return nlohmann::json::object();
+    }
+    return *found;
+}
+
+int int_or_default(const nlohmann::json& object, const char* key, int default_value)
+{
+    if (!object.is_object()) {
+        return default_value;
+    }
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_number_integer()) {
+        return default_value;
+    }
+    return found->get<int>();
+}
+
+int json_rpc_error_code(ControlStatus status)
+{
+    switch (status) {
+    case ControlStatus::Ok: return 0;
+    case ControlStatus::Accepted: return 1;
+    case ControlStatus::NotFound: return -32004;
+    case ControlStatus::Forbidden: return -32003;
+    case ControlStatus::InvalidArgument: return -32602;
+    case ControlStatus::Unavailable: return -32001;
+    case ControlStatus::InternalError: return -32603;
+    }
+    return -32603;
+}
+
 } // namespace
 
 DecodedControlMessage decode_control_message(const nlohmann::json& message)
@@ -39,22 +89,24 @@ DecodedControlMessage decode_control_message(const nlohmann::json& message)
 
     if (message.contains("jsonrpc")) {
         decoded.command.source = ProtocolSource::JsonRpc;
-        decoded.command.request_id = message.value("id", "");
-        decoded.command.method = message.value("method", "");
-        decoded.command.params = message.value("params", nlohmann::json::object());
-        decoded.command.device_id = decoded.command.params.value("deviceId", "");
+        decoded.command.request_id = optional_string(message, "id");
+        decoded.command.method = optional_string(message, "method");
+        decoded.command.params = object_or_empty(message, "params");
+        decoded.command.device_id = optional_string(decoded.command.params, "deviceId");
         decoded.wire_method = decoded.command.method;
         return decoded;
     }
 
     decoded.command.source = ProtocolSource::LegacyOp;
-    const auto d = message.value("d", nlohmann::json::object());
-    decoded.command.request_id = d.value("id", "");
-    decoded.wire_method = d.value("method", "");
+    const auto d = object_or_empty(message, "d");
+    decoded.command.request_id = optional_string(d, "id");
+    decoded.wire_method = optional_string(d, "method");
     decoded.command.method = map_legacy_method(decoded.wire_method);
-    decoded.command.params = d.value("params", nlohmann::json::object());
-    decoded.command.device_id =
-        decoded.command.params.value("serialNumber", decoded.command.params.value("deviceId", ""));
+    decoded.command.params = object_or_empty(d, "params");
+    decoded.command.device_id = optional_string(decoded.command.params, "serialNumber");
+    if (decoded.command.device_id.empty()) {
+        decoded.command.device_id = optional_string(decoded.command.params, "deviceId");
+    }
     return decoded;
 }
 
@@ -72,6 +124,7 @@ nlohmann::json encode_control_response(const DecodedControlMessage& decoded, con
             {"jsonrpc", "2.0"},
             {"id", decoded.command.request_id},
             {"error", {
+                {"code", json_rpc_error_code(result.status)},
                 {"message", control_status_name(result.status)},
                 {"data", result.body},
             }},
@@ -80,7 +133,7 @@ nlohmann::json encode_control_response(const DecodedControlMessage& decoded, con
 
     return {
         {"op", 8},
-        {"sid", decoded.original.value("sid", 0)},
+        {"sid", int_or_default(decoded.original, "sid", 0)},
         {"d", {
             {"id", decoded.command.request_id},
             {"method", decoded.wire_method},

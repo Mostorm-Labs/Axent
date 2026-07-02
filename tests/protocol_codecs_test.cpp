@@ -19,6 +19,16 @@ void require_eq(const nlohmann::json& actual, const nlohmann::json& expected, co
     }
 }
 
+template <typename Func>
+void require_no_throw(Func&& func, const char* message)
+{
+    try {
+        func();
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string(message) + ": " + error.what());
+    }
+}
+
 } // namespace
 
 int main()
@@ -87,6 +97,7 @@ int main()
     const auto json_error = axent::encode_control_response(json_rpc, error);
     require(json_error.at("jsonrpc") == "2.0", "json-rpc error version mismatch");
     require(json_error.at("id") == "jr-1", "json-rpc error id mismatch");
+    require(json_error.at("error").at("code") == -32602, "json-rpc error code mismatch");
     require(json_error.at("error").at("message") == "invalid_argument", "json-rpc error message mismatch");
     require(json_error.at("error").at("data").at("detail") == "bad params", "json-rpc error data mismatch");
 
@@ -94,6 +105,75 @@ int main()
     require(legacy_error.at("d").at("status").at("result") == false, "legacy error result mismatch");
     require(legacy_error.at("d").at("status").at("code") == 500, "legacy error code mismatch");
     require(legacy_error.at("d").at("status").at("comment") == "invalid_argument", "legacy error comment mismatch");
+
+    require_no_throw([] {
+        const auto malformed_json_rpc = axent::decode_control_message({
+            {"jsonrpc", "2.0"},
+            {"id", 12},
+            {"method", {"status.get"}},
+            {"params", {{"deviceId", 42}}}
+        });
+        require(malformed_json_rpc.command.source == axent::ProtocolSource::JsonRpc,
+                "malformed json-rpc source mismatch");
+        require(malformed_json_rpc.command.request_id.empty(), "malformed json-rpc id should default empty");
+        require(malformed_json_rpc.command.method.empty(), "malformed json-rpc method should default empty");
+        require(malformed_json_rpc.command.device_id.empty(), "malformed json-rpc device id should default empty");
+        require(malformed_json_rpc.command.params.is_object(), "malformed json-rpc params should stay object");
+    }, "malformed json-rpc decode should not throw");
+
+    require_no_throw([] {
+        const auto scalar_params_json_rpc = axent::decode_control_message({
+            {"jsonrpc", "2.0"},
+            {"id", "jr-2"},
+            {"method", "status.get"},
+            {"params", "not-object"}
+        });
+        require(scalar_params_json_rpc.command.request_id == "jr-2", "scalar params json-rpc id mismatch");
+        require(scalar_params_json_rpc.command.method == "status.get", "scalar params json-rpc method mismatch");
+        require(scalar_params_json_rpc.command.device_id.empty(), "scalar params json-rpc device id should default empty");
+        require(scalar_params_json_rpc.command.params.is_object(), "scalar params json-rpc params should default object");
+        require(scalar_params_json_rpc.command.params.empty(), "scalar params json-rpc params should be empty");
+    }, "scalar params json-rpc decode should not throw");
+
+    require_no_throw([] {
+        const auto malformed_legacy = axent::decode_control_message({
+            {"op", 7},
+            {"sid", "not-int"},
+            {"d", "not-object"}
+        });
+        require(malformed_legacy.command.source == axent::ProtocolSource::LegacyOp,
+                "malformed legacy source mismatch");
+        require(malformed_legacy.command.request_id.empty(), "malformed legacy id should default empty");
+        require(malformed_legacy.command.method.empty(), "malformed legacy method should default empty");
+        require(malformed_legacy.command.device_id.empty(), "malformed legacy device id should default empty");
+        require(malformed_legacy.command.params.is_object(), "malformed legacy params should default object");
+        require(malformed_legacy.wire_method.empty(), "malformed legacy wire method should default empty");
+    }, "malformed legacy d decode should not throw");
+
+    require_no_throw([] {
+        const auto malformed_legacy_params = axent::decode_control_message({
+            {"op", 7},
+            {"d", {
+                {"id", 99},
+                {"method", 42},
+                {"params", {{"serialNumber", 123}, {"deviceId", false}}}
+            }}
+        });
+        require(malformed_legacy_params.command.source == axent::ProtocolSource::LegacyOp,
+                "malformed legacy params source mismatch");
+        require(malformed_legacy_params.command.request_id.empty(), "malformed legacy params id should default empty");
+        require(malformed_legacy_params.command.method.empty(), "malformed legacy params method should default empty");
+        require(malformed_legacy_params.command.device_id.empty(),
+                "malformed legacy params device id should default empty");
+        require(malformed_legacy_params.command.params.is_object(), "malformed legacy params should stay object");
+    }, "malformed legacy params decode should not throw");
+
+    require_no_throw([&] {
+        axent::DecodedControlMessage malformed_original = legacy;
+        malformed_original.original = {{"op", 7}, {"sid", {"not-int"}}};
+        const auto response = axent::encode_control_response(malformed_original, result);
+        require(response.at("sid") == 0, "malformed legacy response sid should default zero");
+    }, "malformed legacy response encode should not throw");
 
     return 0;
 }
