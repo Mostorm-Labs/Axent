@@ -105,6 +105,11 @@ if(BUILD_TESTING)
     axent_enable_warnings(diagnostics_config_test)
     add_test(NAME diagnostics_config_test COMMAND diagnostics_config_test)
 
+    add_executable(logging_foundation_test tests/logging_foundation_test.cpp)
+    target_link_libraries(logging_foundation_test PRIVATE axent::libaxent)
+    axent_enable_warnings(logging_foundation_test)
+    add_test(NAME logging_foundation_test COMMAND logging_foundation_test)
+
     add_executable(broker_flow_test tests/broker_flow_test.cpp)
     target_link_libraries(broker_flow_test PRIVATE axent::libaxent)
     axent_enable_warnings(broker_flow_test)
