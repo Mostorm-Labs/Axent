@@ -26,6 +26,23 @@ axent::MediaFrame make_media_frame(std::uint64_t sequence_id)
     return frame;
 }
 
+axent::DeviceSnapshot make_second_mock_device()
+{
+    axent::DeviceSnapshot device;
+    device.id = "mock-device-002";
+    device.adapter = "mock";
+    device.identity.vendor = "Mostorm";
+    device.identity.model = "MockCam";
+    device.identity.serial_number = "MOCK002";
+    device.identity.firmware_version = "mock-fw-1.0.0";
+    device.identity.hardware_version = "mock-hw-revA";
+    device.connection.online = true;
+    device.connection.transport = "mock";
+    device.connection.last_change_reason = "test-upserted";
+    device.status.health = "ok";
+    return device;
+}
+
 } // namespace
 
 int main()
@@ -63,6 +80,9 @@ int main()
     const auto devices = host.discover_devices();
     require(devices.size() == 1, "mock host should discover one device");
     require(devices[0].id == "mock-device-001", "mock device id mismatch");
+    host.upsert_device(make_second_mock_device());
+    const auto devices_after_upsert = host.discover_devices();
+    require(devices_after_upsert.size() == 2, "host should allow upserting a second device");
 
     axent::SessionAcquireRequest unknown_device_request;
     unknown_device_request.client_id = "nearcast-test";
@@ -104,6 +124,20 @@ int main()
     const auto denied = host.acquire_session(denied_request);
     require(!denied.acquired, "second media owner should still be denied");
     require(denied.reason == "media lease busy", "denied reason mismatch");
+
+    auto second_device_media_request = denied_request;
+    second_device_media_request.device_id = "mock-device-002";
+    const auto second_device_media_lease = host.acquire_session(second_device_media_request);
+    require(second_device_media_lease.acquired, "second device media lease should be acquired");
+    require(second_device_media_lease.media, "second device lease should be marked media");
+
+    auto denied_second_device_request = second_device_media_request;
+    denied_second_device_request.client_id = "third-renderer";
+    const auto denied_second_device = host.acquire_session(denied_second_device_request);
+    require(!denied_second_device.acquired, "second media owner for second device should be denied");
+    require(denied_second_device.reason == "media lease busy", "second device denied reason mismatch");
+
+    host.release_session(second_device_media_lease.session_id, "second device media done");
 
     auto early_frame = make_media_frame(42);
     require(!host.publish_media_frame(lease.session_id, early_frame),

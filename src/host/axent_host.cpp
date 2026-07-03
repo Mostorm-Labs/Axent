@@ -33,8 +33,7 @@ struct AxentHost::Impl {
     SessionManager sessions;
     std::map<std::string, SessionLease> leases;
     std::map<std::string, std::shared_ptr<MediaStreamRelay>> relays;
-    std::string media_owner_client_id;
-    std::string media_owner_session_id;
+    std::map<std::string, std::string> media_owner_session_by_device;
 };
 
 void AxentHost::Impl::reset()
@@ -46,8 +45,7 @@ void AxentHost::Impl::reset()
     }
     relays.clear();
     leases.clear();
-    media_owner_client_id.clear();
-    media_owner_session_id.clear();
+    media_owner_session_by_device.clear();
     broker.reset();
     flow.reset();
     middleware.reset();
@@ -139,6 +137,14 @@ std::vector<DeviceSnapshot> AxentHost::discover_devices() const
     return impl_->devices ? impl_->devices->list() : std::vector<DeviceSnapshot>{};
 }
 
+void AxentHost::upsert_device(DeviceSnapshot snapshot)
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->devices) {
+        impl_->devices->upsert(std::move(snapshot));
+    }
+}
+
 SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -149,7 +155,9 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
     if (!device.has_value()) {
         return {false, "", request.device_id, request.client_id, false, "device not found"};
     }
-    if (request.media && !impl_->media_owner_session_id.empty()) {
+    if (request.media
+        && impl_->media_owner_session_by_device.find(request.device_id)
+               != impl_->media_owner_session_by_device.end()) {
         return {false, "", request.device_id, request.client_id, false, "media lease busy"};
     }
 
@@ -157,8 +165,7 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
     SessionLease lease{true, session_id, request.device_id, request.client_id, request.media, ""};
     impl_->leases[session_id] = lease;
     if (request.media) {
-        impl_->media_owner_client_id = request.client_id;
-        impl_->media_owner_session_id = session_id;
+        impl_->media_owner_session_by_device[request.device_id] = session_id;
     }
     return lease;
 }
@@ -167,9 +174,11 @@ void AxentHost::release_session(const std::string& session_id, const std::string
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto lease = impl_->lease_for_session_locked(session_id);
-    if (lease.has_value() && session_id == impl_->media_owner_session_id) {
-        impl_->media_owner_client_id.clear();
-        impl_->media_owner_session_id.clear();
+    if (lease.has_value() && lease->media) {
+        const auto owner = impl_->media_owner_session_by_device.find(lease->device_id);
+        if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
+            impl_->media_owner_session_by_device.erase(owner);
+        }
     }
     const auto relay = impl_->relays.find(session_id);
     if (relay != impl_->relays.end()) {

@@ -63,6 +63,7 @@ public:
     bool running() const;
 
     std::vector<DeviceSnapshot> discover_devices() const;
+    void upsert_device(DeviceSnapshot snapshot);
     SessionLease acquire_session(const SessionAcquireRequest& request);
     void release_session(const std::string& session_id, const std::string& reason);
 
