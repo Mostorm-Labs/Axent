@@ -102,6 +102,35 @@ function(assert_text_appears_before text before_text after_text message)
     endif()
 endfunction()
 
+function(assert_file_contains file_path pattern message)
+    if(NOT EXISTS "${file_path}")
+        message(FATAL_ERROR "Missing ${file_path}")
+    endif()
+
+    file(READ "${file_path}" file_contents)
+    if(NOT "${file_contents}" MATCHES "${pattern}")
+        message(FATAL_ERROR "${message}")
+    endif()
+endfunction()
+
+assert_file_contains(
+    "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake"
+    "AXENT_USE_EXTERNAL_AXTP_RUNTIME"
+    "Axent must expose a parent-provided AXTP runtime option"
+)
+
+assert_file_contains(
+    "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake"
+    "axtp::runtime"
+    "Axent external runtime mode must validate axtp::runtime"
+)
+
+assert_file_contains(
+    "${AXENT_REPO_ROOT}/CMakeLists.txt"
+    "AXENT_BUILD_TESTING"
+    "Axent must allow parent projects to disable Axent tests"
+)
+
 assert_text_contains(
     "${axent_effective_deps}"
     "add_subdirectory\\(third_party/IXWebSocket EXCLUDE_FROM_ALL\\)"
@@ -114,19 +143,19 @@ assert_text_contains(
 )
 assert_text_contains(
     "${axent_effective_deps}"
-    "add_subdirectory\\(third_party/axtp-cpp-runtime\\)"
+    "add_subdirectory\\(\"\\$\\{AXENT_THIRD_PARTY_DIR\\}/axtp-cpp-runtime\" \"\\$\\{CMAKE_CURRENT_BINARY_DIR\\}/third_party/axtp-cpp-runtime\"\\)"
     "Axent must add axtp-cpp-runtime"
 )
 assert_text_appears_before(
     "${axent_effective_deps}"
     "add_subdirectory(third_party/IXWebSocket EXCLUDE_FROM_ALL)"
-    "add_subdirectory(third_party/axtp-cpp-runtime)"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "Axent must add IXWebSocket before axtp-cpp-runtime"
 )
 assert_text_appears_before(
     "${axent_effective_deps}"
     "add_subdirectory(third_party/hidapi EXCLUDE_FROM_ALL)"
-    "add_subdirectory(third_party/axtp-cpp-runtime)"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "Axent must add hidapi before axtp-cpp-runtime"
 )
 assert_text_contains(

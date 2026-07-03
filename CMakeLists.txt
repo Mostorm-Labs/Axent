@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+option(AXENT_BUILD_TESTING "Build Axent test executables" ${BUILD_TESTING})
 include(cmake/CompilerWarnings.cmake)
 include(cmake/AxentDependencies.cmake)
 
@@ -58,7 +59,7 @@ add_executable(axent src/cli/main.cpp)
 target_link_libraries(axent PRIVATE axent::libaxent)
 axent_enable_warnings(axent)
 
-if(BUILD_TESTING)
+if(AXENT_BUILD_TESTING)
     add_test(
         NAME axent_dependency_boundary
         COMMAND ${CMAKE_COMMAND}
