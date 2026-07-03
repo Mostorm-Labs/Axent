@@ -73,6 +73,11 @@ if(BUILD_TESTING)
     axent_enable_warnings(core_types_test)
     add_test(NAME core_types_test COMMAND core_types_test)
 
+    add_executable(transport_media_types_test tests/transport_media_types_test.cpp)
+    target_link_libraries(transport_media_types_test PRIVATE axent::libaxent)
+    axent_enable_warnings(transport_media_types_test)
+    add_test(NAME transport_media_types_test COMMAND transport_media_types_test)
+
     add_executable(manager_registry_test tests/manager_registry_test.cpp)
     target_link_libraries(manager_registry_test PRIVATE axent::libaxent)
     axent_enable_warnings(manager_registry_test)
