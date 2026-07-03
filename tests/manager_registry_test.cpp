@@ -49,6 +49,13 @@ int main()
     if (!mapped_session || *mapped_session != device_session) {
         throw std::runtime_error("mapped control session mismatch");
     }
+    sessions.close_device_session(device_session);
+    if (sessions.device().get(device_session).has_value()) {
+        throw std::runtime_error("closed device session should not be returned");
+    }
+    if (sessions.device_session_for_control(control).has_value()) {
+        throw std::runtime_error("closed device session should not remain mapped");
+    }
     if (sessions.device_session_for_control("ctrl-missing").has_value()) {
         throw std::runtime_error("missing control session should not map to a device session");
     }

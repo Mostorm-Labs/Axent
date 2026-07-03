@@ -39,6 +39,11 @@ std::optional<DeviceSession> DeviceSessionManager::get(const std::string& id) co
     return found->second;
 }
 
+void DeviceSessionManager::close(const std::string& id)
+{
+    sessions_.erase(id);
+}
+
 ControlSessionManager& SessionManager::control()
 {
     return control_;
@@ -60,7 +65,22 @@ std::optional<std::string> SessionManager::device_session_for_control(const std:
     if (found == control_to_device_.end()) {
         return std::nullopt;
     }
+    if (!device_.get(found->second).has_value()) {
+        return std::nullopt;
+    }
     return found->second;
+}
+
+void SessionManager::close_device_session(const std::string& device_session_id)
+{
+    device_.close(device_session_id);
+    for (auto it = control_to_device_.begin(); it != control_to_device_.end();) {
+        if (it->second == device_session_id) {
+            it = control_to_device_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 } // namespace axent

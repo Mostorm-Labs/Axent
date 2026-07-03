@@ -31,6 +31,7 @@ class DeviceSessionManager {
 public:
     std::string open(const std::string& device_id, const std::string& adapter);
     std::optional<DeviceSession> get(const std::string& id) const;
+    void close(const std::string& id);
 
 private:
     int next_id_ = 1;
@@ -43,6 +44,7 @@ public:
     DeviceSessionManager& device();
     void map_control_to_device(std::string control_session_id, std::string device_session_id);
     std::optional<std::string> device_session_for_control(const std::string& control_session_id) const;
+    void close_device_session(const std::string& device_session_id);
 
 private:
     ControlSessionManager control_;

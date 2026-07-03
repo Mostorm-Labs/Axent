@@ -31,6 +31,7 @@ add_library(libaxent
     src/adapters/axtp_adapter.cpp
     src/adapters/mock_adapter.cpp
     src/adapters/tea_adapter.cpp
+    src/host/axent_host.cpp
     src/media/media_relay.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
@@ -83,6 +84,11 @@ if(BUILD_TESTING)
     target_link_libraries(media_relay_test PRIVATE axent::libaxent)
     axent_enable_warnings(media_relay_test)
     add_test(NAME media_relay_test COMMAND media_relay_test)
+
+    add_executable(axent_host_test tests/axent_host_test.cpp)
+    target_link_libraries(axent_host_test PRIVATE axent::libaxent)
+    axent_enable_warnings(axent_host_test)
+    add_test(NAME axent_host_test COMMAND axent_host_test)
 
     add_executable(manager_registry_test tests/manager_registry_test.cpp)
     target_link_libraries(manager_registry_test PRIVATE axent::libaxent)
