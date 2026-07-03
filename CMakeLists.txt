@@ -26,6 +26,7 @@ add_library(libaxent
     src/config/config.cpp
     src/diagnostics/diagnostics.cpp
     src/firmware/firmware_task.cpp
+    src/cli/options.cpp
     src/logging/logger.cpp
     src/adapters/axdp_adapter.cpp
     src/adapters/axtp_adapter.cpp
@@ -109,6 +110,11 @@ if(BUILD_TESTING)
     target_link_libraries(logging_foundation_test PRIVATE axent::libaxent)
     axent_enable_warnings(logging_foundation_test)
     add_test(NAME logging_foundation_test COMMAND logging_foundation_test)
+
+    add_executable(cli_options_test tests/cli_options_test.cpp)
+    target_link_libraries(cli_options_test PRIVATE axent::libaxent)
+    axent_enable_warnings(cli_options_test)
+    add_test(NAME cli_options_test COMMAND cli_options_test)
 
     add_executable(broker_flow_test tests/broker_flow_test.cpp)
     target_link_libraries(broker_flow_test PRIVATE axent::libaxent)
