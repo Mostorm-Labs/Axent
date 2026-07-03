@@ -56,6 +56,13 @@ target_link_libraries(axent PRIVATE axent::libaxent)
 axent_enable_warnings(axent)
 
 if(BUILD_TESTING)
+    add_test(
+        NAME axent_dependency_boundary
+        COMMAND ${CMAKE_COMMAND}
+            -DAXENT_REPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/verify_axent_dependency_boundary.cmake
+    )
+
     add_executable(version_smoke_test tests/version_smoke_test.cpp)
     target_link_libraries(version_smoke_test PRIVATE axent::libaxent)
     axent_enable_warnings(version_smoke_test)
