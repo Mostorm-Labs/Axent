@@ -78,6 +78,40 @@ void test_missing_port_value_reports_error()
     require(result.message.find("--port") != std::string::npos, "missing port value error should name --port");
 }
 
+void test_option_value_must_not_be_another_option()
+{
+    struct Case {
+        std::vector<std::string> args;
+        bool daemon = false;
+        std::string option;
+    };
+
+    Case cases[] = {
+        {{"axent", "--log-dir", "--json", "status"}, false, "--log-dir"},
+        {{"axent", "--log-file", "--debug", "status"}, false, "--log-file"},
+        {{"axent", "--log-level", "--json", "status"}, false, "--log-level"},
+        {{"axentd", "--bind", "--foreground"}, true, "--bind"},
+        {{"axentd", "--port", "--foreground"}, true, "--port"},
+    };
+
+    for (auto& test_case : cases) {
+        auto pointers = argv(test_case.args);
+        if (test_case.daemon) {
+            const auto result = axent::parse_axentd_cli(static_cast<int>(test_case.args.size()), pointers.data());
+            require(result.status == axent::CliParseStatus::Error,
+                    test_case.option + " should reject another option as its value");
+            require(result.message.find(test_case.option) != std::string::npos,
+                    test_case.option + " error should name option");
+        } else {
+            const auto result = axent::parse_axent_cli(static_cast<int>(test_case.args.size()), pointers.data());
+            require(result.status == axent::CliParseStatus::Error,
+                    test_case.option + " should reject another option as its value");
+            require(result.message.find(test_case.option) != std::string::npos,
+                    test_case.option + " error should name option");
+        }
+    }
+}
+
 void test_help_and_version_status()
 {
     std::vector<std::string> axent_help = {"axent", "--help"};
@@ -128,6 +162,7 @@ int main()
     test_axentd_options();
     test_invalid_log_level_reports_error();
     test_missing_port_value_reports_error();
+    test_option_value_must_not_be_another_option();
     test_help_and_version_status();
     test_invalid_port_reports_error();
     return 0;

@@ -21,7 +21,7 @@ std::string missing_value_message(const std::string& option)
 
 bool require_value(int argc, char** argv, int& index, const std::string& option, std::string& value, std::string& message)
 {
-    if (index + 1 >= argc) {
+    if (index + 1 >= argc || is_option(argv[index + 1])) {
         message = missing_value_message(option);
         return false;
     }
@@ -235,6 +235,7 @@ std::string axent_usage()
         << "  --log-level <error|warn|warning|info|debug|trace>\n"
         << "  --debug\n"
         << "  --json\n";
+    out << "\nCommon options may appear before or after the command.\n";
     return out.str();
 }
 
