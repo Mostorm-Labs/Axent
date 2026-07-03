@@ -127,15 +127,26 @@ Logger::Logger(LogConfig config)
 
 void Logger::configure(LogConfig config)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     config_ = std::move(config);
-    file_.close();
+    try {
+        file_.close();
+    } catch (const std::exception&) {
+        note_sink_drop();
+    }
     file_bytes_ = 0;
     active_file_path_.clear();
 
     if (config_.file_enabled) {
-        active_file_path_ = std::filesystem::path(config_.directory) / (config_.file_prefix + ".log");
-        if (std::filesystem::exists(active_file_path_)) {
-            file_bytes_ = static_cast<std::size_t>(std::filesystem::file_size(active_file_path_));
+        try {
+            active_file_path_ = std::filesystem::path(config_.directory) / (config_.file_prefix + ".log");
+            if (std::filesystem::exists(active_file_path_)) {
+                file_bytes_ = static_cast<std::size_t>(std::filesystem::file_size(active_file_path_));
+            }
+        } catch (const std::exception&) {
+            note_sink_drop();
+            active_file_path_.clear();
+            file_bytes_ = 0;
         }
     }
 
@@ -145,13 +156,15 @@ void Logger::configure(LogConfig config)
     }
 }
 
-const LogConfig& Logger::config() const
+LogConfig Logger::config() const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     return config_;
 }
 
 bool Logger::enabled(LogLevel level, LogCategory) const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     return level_rank(level) <= level_rank(config_.minimum_level);
 }
 
@@ -183,24 +196,32 @@ void Logger::adapter(const std::string& message, nlohmann::json fields)
 
 void Logger::flush()
 {
-    if (file_.is_open()) {
-        file_.flush();
+    std::lock_guard<std::mutex> lock(mutex_);
+    try {
+        if (file_.is_open()) {
+            file_.flush();
+        }
+        std::clog.flush();
+    } catch (const std::exception&) {
+        note_sink_drop();
     }
-    std::clog.flush();
 }
 
-const std::vector<LogRecord>& Logger::records() const
+std::vector<LogRecord> Logger::records() const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     return records_;
 }
 
 std::size_t Logger::dropped_count() const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     return dropped_count_;
 }
 
 std::string Logger::file_path() const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     return active_file_path_.string();
 }
 
@@ -211,7 +232,8 @@ void Logger::write_record(LogLevel level,
                           nlohmann::json fields,
                           bool force)
 {
-    if (!force && !enabled(level, category)) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!force && level_rank(level) > level_rank(config_.minimum_level)) {
         return;
     }
 
@@ -259,19 +281,35 @@ void Logger::remember(LogRecord record)
 
 void Logger::emit(const LogRecord& record)
 {
-    const auto line = format_line(record);
-    if (config_.console_enabled) {
-        std::clog << line;
-    }
-    if (!config_.file_enabled) {
-        return;
-    }
+    try {
+        const auto line = format_line(record);
+        if (config_.console_enabled) {
+            std::clog << line;
+        }
+        if (!config_.file_enabled) {
+            return;
+        }
 
-    ensure_file();
-    rotate_if_needed(line.size());
-    ensure_file();
-    file_ << line;
-    file_bytes_ += line.size();
+        ensure_file();
+        rotate_if_needed(line.size());
+        ensure_file();
+        if (!file_.is_open()) {
+            note_sink_drop();
+            return;
+        }
+        file_ << line;
+        if (!file_) {
+            note_sink_drop();
+            file_.close();
+            return;
+        }
+        file_bytes_ += line.size();
+    } catch (const std::exception&) {
+        note_sink_drop();
+        if (file_.is_open()) {
+            file_.close();
+        }
+    }
 }
 
 void Logger::ensure_file()
@@ -282,7 +320,10 @@ void Logger::ensure_file()
     if (active_file_path_.empty()) {
         active_file_path_ = std::filesystem::path(config_.directory) / (config_.file_prefix + ".log");
     }
-    std::filesystem::create_directories(active_file_path_.parent_path());
+    const auto parent = active_file_path_.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
     file_.open(active_file_path_, std::ios::out | std::ios::app);
     if (std::filesystem::exists(active_file_path_)) {
         file_bytes_ = static_cast<std::size_t>(std::filesystem::file_size(active_file_path_));
@@ -330,6 +371,11 @@ void Logger::rotate()
 std::filesystem::path Logger::segment_path(std::size_t index) const
 {
     return active_file_path_.string() + "." + std::to_string(index);
+}
+
+void Logger::note_sink_drop()
+{
+    ++dropped_count_;
 }
 
 } // namespace axent

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -60,7 +61,7 @@ public:
     explicit Logger(LogConfig config);
 
     void configure(LogConfig config);
-    const LogConfig& config() const;
+    LogConfig config() const;
     bool enabled(LogLevel level, LogCategory category = LogCategory::General) const;
 
     void write(LogLevel level,
@@ -74,7 +75,7 @@ public:
     void adapter(const std::string& message, nlohmann::json fields = nlohmann::json::object());
     void flush();
 
-    const std::vector<LogRecord>& records() const;
+    std::vector<LogRecord> records() const;
     std::size_t dropped_count() const;
     std::string file_path() const;
 
@@ -91,7 +92,9 @@ private:
     void rotate_if_needed(std::size_t next_line_bytes);
     void rotate();
     std::filesystem::path segment_path(std::size_t index) const;
+    void note_sink_drop();
 
+    mutable std::mutex mutex_;
     LogConfig config_;
     std::vector<LogRecord> records_;
     std::size_t dropped_count_ = 0;

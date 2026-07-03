@@ -3,6 +3,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "axent/logging/logger.hpp"
 
@@ -34,6 +35,23 @@ bool contains(const std::string& text, const std::string& needle)
 {
     return text.find(needle) != std::string::npos;
 }
+
+class ScopedCurrentPath {
+public:
+    explicit ScopedCurrentPath(std::filesystem::path path)
+        : original_(std::filesystem::current_path())
+    {
+        std::filesystem::current_path(std::move(path));
+    }
+
+    ~ScopedCurrentPath()
+    {
+        std::filesystem::current_path(original_);
+    }
+
+private:
+    std::filesystem::path original_;
+};
 
 void test_level_parsing()
 {
@@ -98,6 +116,64 @@ void test_compatibility_channels()
     require(logger.records()[2].channel == "adapter", "adapter channel should remain compatible");
 }
 
+void test_records_are_snapshots()
+{
+    axent::Logger logger;
+    logger.core("first");
+
+    const auto& snapshot = logger.records();
+    logger.core("second");
+
+    require(snapshot.size() == 1, "records snapshot should not observe later writes");
+    require(logger.records().size() == 2, "logger should still retain later writes");
+}
+
+void test_empty_directory_writes_in_current_directory()
+{
+    auto dir = make_temp_dir("current-directory-log");
+    ScopedCurrentPath cwd(dir);
+
+    axent::LogConfig config;
+    config.file_enabled = true;
+    config.directory = "";
+    config.file_prefix = "current-directory";
+
+    axent::Logger logger(config);
+    logger.write(axent::LogLevel::Info, axent::LogCategory::General, "current directory line");
+    logger.flush();
+
+    const auto path = dir / "current-directory.log";
+    require(std::filesystem::exists(path), "empty log directory should write active file in current directory");
+    require(contains(read_file(path), "current directory line"), "current-directory log should contain the line");
+}
+
+void test_file_sink_failures_do_not_escape()
+{
+    auto dir = make_temp_dir("sink-failure");
+    const auto file_instead_of_directory = dir / "not-a-directory";
+    {
+        std::ofstream blocker(file_instead_of_directory);
+        blocker << "not a directory";
+    }
+
+    axent::LogConfig config;
+    config.file_enabled = true;
+    config.directory = (file_instead_of_directory / "child").string();
+    config.file_prefix = "sink-failure";
+
+    axent::Logger logger(config);
+    bool threw = false;
+    try {
+        logger.write(axent::LogLevel::Info, axent::LogCategory::General, "best effort write");
+        logger.checkpoint("best effort checkpoint");
+    } catch (...) {
+        threw = true;
+    }
+
+    require(!threw, "file sink failures should not escape logging calls");
+    require(logger.dropped_count() > 0, "file sink failures should increment dropped count");
+}
+
 void test_rotation_and_retention()
 {
     auto dir = make_temp_dir("log-rotate");
@@ -157,6 +233,9 @@ int main()
     test_level_filtering_and_checkpoint();
     test_checkpoint_is_not_filtered();
     test_compatibility_channels();
+    test_records_are_snapshots();
+    test_empty_directory_writes_in_current_directory();
+    test_file_sink_failures_do_not_escape();
     test_rotation_and_retention();
     test_bounded_memory_records_keep_mandatory_lines();
     return 0;
