@@ -64,6 +64,7 @@ int main(int argc, char** argv)
                        {"bind_host", parsed.options.bind_host},
                        {"port", parsed.options.port},
                        {"mock_adapter", parsed.options.enable_mock_adapter},
+                       {"axtp_adapter", parsed.options.enable_axtp_adapter},
                        {"log_enabled", parsed.options.common.log_enabled}});
 
     std::signal(SIGINT, stop_signal);
@@ -72,7 +73,16 @@ int main(int argc, char** argv)
     axent::AxentHost host;
     axent::AxentHostOptions host_options;
     host_options.enable_mock_adapter = parsed.options.enable_mock_adapter;
-    logger.checkpoint("host starting", {{"mock_adapter", host_options.enable_mock_adapter}});
+    host_options.enable_axtp_adapter = parsed.options.enable_axtp_adapter;
+    host_options.axtp = parsed.options.axtp;
+    logger.checkpoint("host starting",
+                      {{"mock_adapter", host_options.enable_mock_adapter},
+                       {"axtp_adapter", host_options.enable_axtp_adapter},
+                       {"hid_vid", host_options.axtp.selector.vendor_id},
+                       {"hid_pid", host_options.axtp.selector.product_id},
+                       {"hid_usage_page", host_options.axtp.selector.usage_page},
+                       {"hid_usage", host_options.axtp.selector.usage},
+                       {"hid_report_id", host_options.axtp.selector.report_id}});
     if (!host.start(host_options)) {
         logger.write(axent::LogLevel::Error, axent::LogCategory::Daemon, "failed to start axent host");
         std::cerr << "failed to start axent host\n";

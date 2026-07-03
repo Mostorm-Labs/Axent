@@ -101,6 +101,45 @@ bool parse_port_value(const std::string& text, int& port)
     return true;
 }
 
+bool parse_u32_value(const std::string& text, std::uint32_t max_value, std::uint32_t& value)
+{
+    if (text.empty()) {
+        return false;
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long parsed = std::strtoul(text.c_str(), &end, 0);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0' || parsed > max_value) {
+        return false;
+    }
+
+    value = static_cast<std::uint32_t>(parsed);
+    return true;
+}
+
+template <typename Assign>
+bool parse_sized_option(int argc,
+                        char** argv,
+                        int& index,
+                        const std::string& option,
+                        std::uint32_t max_value,
+                        Assign assign,
+                        std::string& message)
+{
+    std::string value_text;
+    if (!require_value(argc, argv, index, option, value_text, message)) {
+        return false;
+    }
+    std::uint32_t value = 0;
+    if (!parse_u32_value(value_text, max_value, value)) {
+        message = "invalid value for " + option + ": " + value_text;
+        return false;
+    }
+    assign(value);
+    return true;
+}
+
 bool is_axent_command(const std::string& token)
 {
     return token == "status" || token == "list" || token == "reload" || token == "diagnostics";
@@ -168,6 +207,7 @@ CliParseResult<AxentCliOptions> parse_axent_cli(int argc, char** argv)
 CliParseResult<AxentdCliOptions> parse_axentd_cli(int argc, char** argv)
 {
     CliParseResult<AxentdCliOptions> result;
+    result.options.axtp = AxtpAdapter::na20_defaults();
 
     for (int i = 1; i < argc; ++i) {
         CliParseStatus common_status = CliParseStatus::Ok;
@@ -206,6 +246,116 @@ CliParseResult<AxentdCliOptions> parse_axentd_cli(int argc, char** argv)
         }
         if (token == "--no-mock-adapter") {
             result.options.enable_mock_adapter = false;
+            continue;
+        }
+        if (token == "--axtp-real") {
+            result.options.enable_axtp_adapter = true;
+            continue;
+        }
+        if (token == "--no-axtp-real") {
+            result.options.enable_axtp_adapter = false;
+            continue;
+        }
+        if (token == "--hid-path") {
+            if (!require_value(argc, argv, i, token, result.options.axtp.selector.path, result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-serial") {
+            if (!require_value(argc, argv, i, token, result.options.axtp.selector.serial_number, result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-vid") {
+            if (!parse_sized_option(argc, argv, i, token, 0xffffU,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.vendor_id = static_cast<std::uint16_t>(value);
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-pid") {
+            if (!parse_sized_option(argc, argv, i, token, 0xffffU,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.product_id = static_cast<std::uint16_t>(value);
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-usage-page") {
+            if (!parse_sized_option(argc, argv, i, token, 0xffffU,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.usage_page = static_cast<std::uint16_t>(value);
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-usage") {
+            if (!parse_sized_option(argc, argv, i, token, 0xffffU,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.usage = static_cast<std::uint16_t>(value);
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-report-id") {
+            if (!parse_sized_option(argc, argv, i, token, 0xffU,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.report_id = static_cast<std::uint8_t>(value);
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-input-report-size") {
+            if (!parse_sized_option(argc, argv, i, token, 1024U * 1024U,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.input_report_size = value;
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-output-report-size") {
+            if (!parse_sized_option(argc, argv, i, token, 1024U * 1024U,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.output_report_size = value;
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-read-buffer-size") {
+            if (!parse_sized_option(argc, argv, i, token, 1024U * 1024U,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.read_buffer_size = value;
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
+            continue;
+        }
+        if (token == "--hid-max-reports-per-poll") {
+            if (!parse_sized_option(argc, argv, i, token, 4096U,
+                                    [&](std::uint32_t value) {
+                                        result.options.axtp.selector.max_reports_per_poll = value;
+                                    },
+                                    result.message)) {
+                return error_result(result.options, result.message);
+            }
             continue;
         }
 
@@ -251,6 +401,19 @@ std::string axentd_usage()
         << "  --bind <host>\n"
         << "  --port <1..65535>\n"
         << "  --no-mock-adapter\n"
+        << "  --axtp-real\n"
+        << "  --no-axtp-real\n"
+        << "  --hid-path <path>\n"
+        << "  --hid-serial <serial>\n"
+        << "  --hid-vid <value>\n"
+        << "  --hid-pid <value>\n"
+        << "  --hid-usage-page <value>\n"
+        << "  --hid-usage <value>\n"
+        << "  --hid-report-id <value>\n"
+        << "  --hid-input-report-size <bytes>\n"
+        << "  --hid-output-report-size <bytes>\n"
+        << "  --hid-read-buffer-size <bytes>\n"
+        << "  --hid-max-reports-per-poll <count>\n"
         << "  --log\n"
         << "  --log-dir <path>\n"
         << "  --log-file <name-or-prefix>\n"

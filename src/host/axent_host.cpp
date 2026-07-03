@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "axent/adapters/axtp_adapter.hpp"
 #include "axent/adapters/mock_adapter.hpp"
 #include "axent/core/broker.hpp"
 #include "axent/core/device_manager.hpp"
@@ -24,6 +25,7 @@ struct AxentHost::Impl {
     bool running = false;
     AxentHostOptions options;
     std::unique_ptr<Logger> logger;
+    std::unique_ptr<Adapter> axtp_adapter;
     std::unique_ptr<MockAdapter> mock_adapter;
     std::unique_ptr<DeviceManager> devices;
     std::unique_ptr<RouteManager> routes;
@@ -52,9 +54,15 @@ void AxentHost::Impl::reset()
     routes.reset();
     devices.reset();
     mock_adapter.reset();
+    axtp_adapter.reset();
     logger.reset();
     sessions = SessionManager{};
     running = false;
+}
+
+AxentHostOptions::AxentHostOptions()
+    : axtp(AxtpAdapter::na20_defaults())
+{
 }
 
 std::optional<SessionLease> AxentHost::Impl::lease_for_session_locked(const std::string& session_id) const
@@ -110,6 +118,17 @@ bool AxentHost::start(AxentHostOptions options)
             impl_->devices->upsert(device);
         }
         impl_->broker->register_adapter(*impl_->mock_adapter);
+    }
+    if (impl_->options.enable_axtp_adapter) {
+        if (impl_->options.axtp_adapter_factory) {
+            impl_->axtp_adapter = impl_->options.axtp_adapter_factory(impl_->options.axtp);
+        } else {
+            impl_->axtp_adapter = std::make_unique<AxtpAdapter>(impl_->options.axtp);
+        }
+        for (const auto& device : impl_->axtp_adapter->discover()) {
+            impl_->devices->upsert(device);
+        }
+        impl_->broker->register_adapter(*impl_->axtp_adapter);
     }
 
     impl_->running = true;
