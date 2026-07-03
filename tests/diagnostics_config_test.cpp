@@ -72,6 +72,7 @@ int main()
                                               });
     logger.adapter("mock.discovery", {{"count", 1}});
     require(logger.records().size() == 4, "logger should store all channels in memory");
+    require(logger.config().minimum_level == axent::LogLevel::Info, "default logger level should be info");
 
     axent::DeviceManager devices;
     axent::MockAdapter adapter;
@@ -89,6 +90,9 @@ int main()
     require(!bundle.at("capabilities").empty(), "diagnostics should include capabilities");
     require(bundle.at("auditLog").size() == 2, "diagnostics should include only audit log records");
     require(bundle.at("auditLog").at(0).at("message") == "control.request", "diagnostics should preserve audit message");
+    require(bundle.at("logging").at("minimumLevel") == "INFO", "diagnostics should expose logging level");
+    require(bundle.at("logging").contains("droppedCount"), "diagnostics should expose dropped log count");
+    require(bundle.at("logging").at("droppedCount") == 0, "diagnostics should expose current dropped log count");
     const auto sanitized_audit = bundle.at("auditLog").dump();
     require(sanitized_audit.find("accessToken") == std::string::npos,
             "sanitized diagnostics should not include accessToken audit key");
