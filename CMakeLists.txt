@@ -14,7 +14,6 @@ add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
     src/control/control_plane.cpp
-    src/control/websocket_server.cpp
     src/core/json.cpp
     src/core/device_manager.cpp
     src/core/session_manager.cpp
@@ -40,7 +39,6 @@ add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
 target_link_libraries(libaxent
     PUBLIC axtp::core axtp::json_rpc axtp::runtime axtp::sdk
-    PRIVATE axtp::transport_websocket_ix
 )
 if(AXENT_HAS_AXDP_HEADERS)
     target_include_directories(libaxent PRIVATE third_party/axdp/include)
@@ -51,9 +49,23 @@ if(AXENT_HAS_TEA_MACOS_SDK)
 endif()
 axent_enable_warnings(libaxent)
 
-add_executable(axentd src/daemon/main.cpp)
-target_link_libraries(axentd PRIVATE axent::libaxent axtp::transport_websocket_ix)
-axent_enable_warnings(axentd)
+set(AXENT_HAS_WEBSOCKET_TRANSPORT OFF)
+if(TARGET axtp::transport_websocket_ix)
+    set(AXENT_HAS_WEBSOCKET_TRANSPORT ON)
+    add_library(axent_websocket_control
+        src/control/websocket_server.cpp
+    )
+    target_include_directories(axent_websocket_control PUBLIC include)
+    target_link_libraries(axent_websocket_control
+        PUBLIC axent::libaxent
+        PRIVATE axtp::transport_websocket_ix
+    )
+    axent_enable_warnings(axent_websocket_control)
+
+    add_executable(axentd src/daemon/main.cpp)
+    target_link_libraries(axentd PRIVATE axent_websocket_control)
+    axent_enable_warnings(axentd)
+endif()
 
 add_executable(axent src/cli/main.cpp)
 target_link_libraries(axent PRIVATE axent::libaxent)
@@ -127,10 +139,12 @@ if(AXENT_BUILD_TESTING)
     axent_enable_warnings(protocol_codecs_test)
     add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
 
-    add_executable(websocket_server_test tests/websocket_server_test.cpp)
-    target_link_libraries(websocket_server_test PRIVATE axent::libaxent axtp::transport_websocket_ix)
-    axent_enable_warnings(websocket_server_test)
-    add_test(NAME websocket_server_test COMMAND websocket_server_test)
+    if(AXENT_HAS_WEBSOCKET_TRANSPORT)
+        add_executable(websocket_server_test tests/websocket_server_test.cpp)
+        target_link_libraries(websocket_server_test PRIVATE axent_websocket_control axtp::transport_websocket_ix)
+        axent_enable_warnings(websocket_server_test)
+        add_test(NAME websocket_server_test COMMAND websocket_server_test)
+    endif()
 
     add_executable(cli_smoke_test tests/cli_smoke_test.cpp)
     axent_enable_warnings(cli_smoke_test)

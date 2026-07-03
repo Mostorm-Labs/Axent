@@ -198,4 +198,49 @@ foreach(required_file
     endif()
 endforeach()
 
+set(parent_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/axent-parent-runtime-fixture")
+file(REMOVE_RECURSE "${parent_fixture_dir}")
+file(MAKE_DIRECTORY "${parent_fixture_dir}")
+file(WRITE "${parent_fixture_dir}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.21)
+project(axent_parent_runtime_fixture LANGUAGES CXX)
+
+add_library(axtp_core INTERFACE)
+add_library(axtp::core ALIAS axtp_core)
+add_library(axtp_json_rpc INTERFACE)
+add_library(axtp::json_rpc ALIAS axtp_json_rpc)
+add_library(axtp_runtime INTERFACE)
+add_library(axtp::runtime ALIAS axtp_runtime)
+add_library(axtp_sdk INTERFACE)
+add_library(axtp::sdk ALIAS axtp_sdk)
+
+set(AXENT_USE_EXTERNAL_AXTP_RUNTIME ON CACHE BOOL "" FORCE)
+set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS OFF CACHE BOOL "" FORCE)
+set(AXENT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+]=])
+file(APPEND "${parent_fixture_dir}/CMakeLists.txt" "add_subdirectory(\"${AXENT_REPO_ROOT}\" axent)\n")
+file(APPEND "${parent_fixture_dir}/CMakeLists.txt" [=[
+
+if(NOT TARGET axent::libaxent)
+    message(FATAL_ERROR "Expected axent::libaxent target")
+endif()
+if(TARGET axent_dependency_boundary)
+    message(FATAL_ERROR "AXENT_BUILD_TESTING=OFF must not import Axent tests")
+endif()
+]=])
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -S "${parent_fixture_dir}" -B "${parent_fixture_dir}/build"
+    RESULT_VARIABLE parent_fixture_result
+    OUTPUT_VARIABLE parent_fixture_output
+    ERROR_VARIABLE parent_fixture_error
+)
+if(NOT parent_fixture_result EQUAL 0)
+    message(FATAL_ERROR
+        "Axent parent-provided runtime fixture failed.\n"
+        "stdout:\n${parent_fixture_output}\n"
+        "stderr:\n${parent_fixture_error}"
+    )
+endif()
+
 message(STATUS "Axent dependency boundary check passed")
