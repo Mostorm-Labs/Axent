@@ -51,6 +51,7 @@ inline bool has_flag(MediaFrameFlag flags, MediaFrameFlag flag)
 
 struct MediaFrame {
     std::string session_id;
+    std::string device_id;
     std::uint32_t stream_id = 0;
     MediaKind kind = MediaKind::Unknown;
     MediaCodec codec = MediaCodec::Unknown;
