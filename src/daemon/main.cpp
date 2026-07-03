@@ -6,16 +6,10 @@
 #include <string>
 #include <thread>
 
-#include "axent/adapters/mock_adapter.hpp"
 #include "axent/config/config.hpp"
 #include "axent/control/control_plane.hpp"
 #include "axent/control/websocket_server.hpp"
-#include "axent/core/broker.hpp"
-#include "axent/core/device_manager.hpp"
-#include "axent/core/flow_control.hpp"
-#include "axent/core/middleware.hpp"
-#include "axent/core/route_manager.hpp"
-#include "axent/logging/logger.hpp"
+#include "axent/host/axent_host.hpp"
 #include "axent/version.hpp"
 
 namespace {
@@ -42,23 +36,19 @@ int main(int argc, char** argv)
     std::signal(SIGTERM, stop_signal);
 
     const axent::AxentConfig config = axent::AxentConfig::dev_trial_defaults();
-    axent::Logger logger;
-    axent::MockAdapter mock;
-    axent::DeviceManager devices;
-    for (const auto& device : mock.discover()) {
-        devices.upsert(device);
+    axent::AxentHost host;
+    axent::AxentHostOptions host_options;
+    host_options.enable_mock_adapter = true;
+    if (!host.start(host_options)) {
+        std::cerr << "failed to start axent host\n";
+        return 2;
     }
 
-    axent::RouteManager routes(devices);
-    axent::Middleware middleware(logger);
-    axent::FlowControl flow;
-    axent::Broker broker(routes, middleware, flow);
-    broker.register_adapter(mock);
-
-    axent::ControlPlane control_plane(broker);
+    axent::ControlPlane control_plane(host.broker());
     axent::WebSocketServer server;
     if (!server.start(control_plane, config.server.bind_host, static_cast<std::uint16_t>(config.server.port))) {
         std::cerr << "failed to start axentd websocket server\n";
+        host.stop();
         return 2;
     }
 
@@ -75,6 +65,7 @@ int main(int argc, char** argv)
     }
 
     server.stop();
+    host.stop();
     std::cout << "axentd stopped\n";
     return 0;
 }
