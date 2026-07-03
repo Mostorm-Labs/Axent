@@ -1,7 +1,119 @@
 set(AXENT_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
+set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS ON CACHE BOOL "Build Axent-owned concrete transport dependencies")
+
+function(axent_select_hidapi_target output_variable)
+    foreach(candidate
+            hidapi::hidapi
+            hidapi::hidapi-shared
+            hidapi::hidapi-static
+            hidapi::hidapi-darwin
+            hidapi::hidapi-hidraw
+            hidapi::hidapi-libusb
+            hidapi::darwin
+            hidapi::hidraw
+            hidapi::libusb)
+        if(TARGET ${candidate})
+            set(${output_variable} ${candidate} PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+    set(${output_variable} "" PARENT_SCOPE)
+endfunction()
+
+macro(axent_save_variable variable)
+    if(DEFINED ${variable})
+        set(_axent_saved_variable_${variable}_was_defined ON)
+        set(_axent_saved_variable_${variable}_value "${${variable}}")
+    else()
+        set(_axent_saved_variable_${variable}_was_defined OFF)
+    endif()
+endmacro()
+
+macro(axent_restore_variable variable)
+    if(_axent_saved_variable_${variable}_was_defined)
+        set(${variable} "${_axent_saved_variable_${variable}_value}")
+    else()
+        unset(${variable})
+    endif()
+    unset(_axent_saved_variable_${variable}_was_defined)
+    unset(_axent_saved_variable_${variable}_value)
+endmacro()
+
+macro(axent_save_cache_variable variable)
+    if(DEFINED CACHE{${variable}})
+        set(_axent_saved_cache_${variable}_was_defined ON)
+        get_property(_axent_saved_cache_${variable}_value CACHE ${variable} PROPERTY VALUE)
+        get_property(_axent_saved_cache_${variable}_type CACHE ${variable} PROPERTY TYPE)
+        get_property(_axent_saved_cache_${variable}_help CACHE ${variable} PROPERTY HELPSTRING)
+    else()
+        set(_axent_saved_cache_${variable}_was_defined OFF)
+    endif()
+endmacro()
+
+macro(axent_restore_cache_variable variable)
+    if(_axent_saved_cache_${variable}_was_defined)
+        set(${variable}
+            "${_axent_saved_cache_${variable}_value}"
+            CACHE ${_axent_saved_cache_${variable}_type}
+            "${_axent_saved_cache_${variable}_help}"
+            FORCE)
+    else()
+        unset(${variable} CACHE)
+    endif()
+    unset(_axent_saved_cache_${variable}_was_defined)
+    unset(_axent_saved_cache_${variable}_value)
+    unset(_axent_saved_cache_${variable}_type)
+    unset(_axent_saved_cache_${variable}_help)
+endmacro()
+
+if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
+    axent_save_variable(BUILD_SHARED_LIBS)
+    set(BUILD_SHARED_LIBS OFF)
+
+    axent_save_cache_variable(BUILD_DEMO)
+    axent_save_cache_variable(USE_TLS)
+    axent_save_cache_variable(USE_ZLIB)
+    axent_save_cache_variable(IXWEBSOCKET_INSTALL)
+    set(BUILD_DEMO OFF CACHE BOOL "" FORCE)
+    set(USE_TLS OFF CACHE BOOL "" FORCE)
+    set(USE_ZLIB OFF CACHE BOOL "" FORCE)
+    set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "" FORCE)
+    if(EXISTS "${AXENT_THIRD_PARTY_DIR}/IXWebSocket/CMakeLists.txt")
+        add_subdirectory(third_party/IXWebSocket EXCLUDE_FROM_ALL)
+    else()
+        message(FATAL_ERROR "Missing third_party/IXWebSocket. Run git submodule update --init --recursive.")
+    endif()
+    axent_restore_cache_variable(BUILD_DEMO)
+    axent_restore_cache_variable(USE_TLS)
+    axent_restore_cache_variable(USE_ZLIB)
+    axent_restore_cache_variable(IXWEBSOCKET_INSTALL)
+
+    axent_save_cache_variable(HIDAPI_INSTALL_TARGETS)
+    axent_save_cache_variable(HIDAPI_BUILD_HIDTEST)
+    axent_save_cache_variable(HIDAPI_WITH_TESTS)
+    set(HIDAPI_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+    set(HIDAPI_BUILD_HIDTEST OFF CACHE BOOL "" FORCE)
+    set(HIDAPI_WITH_TESTS OFF CACHE BOOL "" FORCE)
+    if(EXISTS "${AXENT_THIRD_PARTY_DIR}/hidapi/CMakeLists.txt")
+        add_subdirectory(third_party/hidapi EXCLUDE_FROM_ALL)
+    else()
+        message(FATAL_ERROR "Missing third_party/hidapi. Run git submodule update --init --recursive.")
+    endif()
+    axent_restore_cache_variable(HIDAPI_INSTALL_TARGETS)
+    axent_restore_cache_variable(HIDAPI_BUILD_HIDTEST)
+    axent_restore_cache_variable(HIDAPI_WITH_TESTS)
+    axent_select_hidapi_target(AXENT_SELECTED_HIDAPI_TARGET)
+    if(AXENT_SELECTED_HIDAPI_TARGET AND NOT TARGET hidapi::hidapi)
+        add_library(hidapi::hidapi ALIAS ${AXENT_SELECTED_HIDAPI_TARGET})
+    endif()
+
+    axent_restore_variable(BUILD_SHARED_LIBS)
+endif()
+
 set(AXTP_CPP_RUNTIME_BUILD_SDK ON CACHE BOOL "" FORCE)
 set(AXTP_CPP_RUNTIME_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS OFF CACHE BOOL "" FORCE)
 set(AXTP_CPP_RUNTIME_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AXTP_CPP_RUNTIME_BUILD_CONFORMANCE OFF CACHE BOOL "" FORCE)
 set(AXTP_CPP_RUNTIME_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
@@ -12,6 +124,16 @@ if(EXISTS "${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime/CMakeLists.txt")
     add_subdirectory(third_party/axtp-cpp-runtime)
 else()
     message(FATAL_ERROR "Missing third_party/axtp-cpp-runtime. Run git submodule update --init --recursive.")
+endif()
+
+if(AXTP_CPP_RUNTIME_BUILD_TOOLS OR AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS)
+    message(FATAL_ERROR "Axent owns concrete AXTP transport dependencies; do not enable cpp-runtime tool dependency fetching.")
+endif()
+if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS AND NOT TARGET ixwebsocket::ixwebsocket)
+    message(FATAL_ERROR "Axent must provide ixwebsocket::ixwebsocket before adding axtp-cpp-runtime.")
+endif()
+if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS AND NOT TARGET hidapi::hidapi)
+    message(FATAL_ERROR "Axent must provide hidapi::hidapi before adding axtp-cpp-runtime.")
 endif()
 
 set(AXENT_AXDP_ROOT "${AXENT_THIRD_PARTY_DIR}/axdp" CACHE PATH "AXDP source root")
