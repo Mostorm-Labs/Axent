@@ -32,6 +32,8 @@ struct AxtpAdapterConfig {
     TransportSelector selector;
 };
 
+class AxentHost;
+
 class AxtpAdapter final : public Adapter {
 public:
     using TransportFactory = std::function<std::unique_ptr<axtp::ITransport>(const axtp::HidTransportOptions&)>;
@@ -60,9 +62,13 @@ public:
     bool open_session_for_test(const std::string& device_id, std::string& error);
 
 private:
+    friend class AxentHost;
+
     std::thread request_stop_session_pump_locked();
     bool ensure_session_locked(const std::string& device_id, std::string& error);
     void refresh_diagnostics_locked();
+    void drop_pending_media_frames_for_device(const std::string& device_id);
+    void reset_session_for_device(const std::string& device_id);
     void handle_stream_payload(const std::string& device_id,
                                const axtp::BrokerContext& context,
                                const axtp::StreamPayload& stream);

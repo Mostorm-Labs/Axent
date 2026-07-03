@@ -345,6 +345,53 @@ void AxtpAdapter::set_media_frame_callback(MediaFrameCallback callback)
     media_frame_callback_ = std::move(callback);
 }
 
+void AxtpAdapter::drop_pending_media_frames_for_device(const std::string& device_id)
+{
+    std::lock_guard<std::mutex> lock(pending_media_mutex_);
+    std::queue<std::pair<std::string, MediaFrame>> retained;
+    while (!pending_media_frames_.empty()) {
+        auto entry = std::move(pending_media_frames_.front());
+        pending_media_frames_.pop();
+        if (entry.first != device_id) {
+            retained.push(std::move(entry));
+        }
+    }
+    pending_media_frames_.swap(retained);
+}
+
+void AxtpAdapter::reset_session_for_device(const std::string& device_id)
+{
+    std::thread stopped_pump;
+    {
+        std::lock_guard<std::mutex> session_lock(session_mutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (active_device_id_ != device_id) {
+                drop_pending_media_frames_for_device(device_id);
+                return;
+            }
+            stopped_pump = request_stop_session_pump_locked();
+        }
+        if (stopped_pump.joinable()) {
+            stopped_pump.join();
+        }
+        {
+            std::lock_guard<std::mutex> client_lock(client_mutex_);
+            if (client_ != nullptr) {
+                client_->close();
+                client_.reset();
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_transport_ = nullptr;
+            active_device_id_.clear();
+            diagnostics_.open = false;
+        }
+    }
+    drop_pending_media_frames_for_device(device_id);
+}
+
 bool AxtpAdapter::open_session_for_test(const std::string& device_id, std::string& error)
 {
     std::lock_guard<std::mutex> session_lock(session_mutex_);

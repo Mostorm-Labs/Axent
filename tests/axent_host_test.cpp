@@ -1,4 +1,5 @@
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -123,6 +124,31 @@ public:
         rx_queue_.push(encode_stream(std::move(stream)));
     }
 
+    void blockAfterNextStream()
+    {
+        std::lock_guard<std::mutex> lock(block_mutex_);
+        block_after_next_stream_ = true;
+        stream_blocked_ = false;
+        unblock_stream_ = false;
+    }
+
+    bool waitForStreamBlocked()
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        return block_cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            return stream_blocked_;
+        });
+    }
+
+    void unblockStream()
+    {
+        {
+            std::lock_guard<std::mutex> lock(block_mutex_);
+            unblock_stream_ = true;
+        }
+        block_cv_.notify_all();
+    }
+
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
         CapturingPayloadSink payload_sink;
@@ -184,11 +210,31 @@ private:
         if (sink_ != nullptr) {
             sink_->onBytes(bytes.data(), bytes.size());
         }
+        maybeBlockAfterStreamInject();
+    }
+
+    void maybeBlockAfterStreamInject()
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        if (!block_after_next_stream_) {
+            return;
+        }
+        block_after_next_stream_ = false;
+        stream_blocked_ = true;
+        block_cv_.notify_all();
+        block_cv_.wait(lock, [this]() {
+            return unblock_stream_;
+        });
     }
 
     axtp::IByteSink* sink_ = nullptr;
     std::mutex rx_mutex_;
     std::queue<axtp::Bytes> rx_queue_;
+    std::mutex block_mutex_;
+    std::condition_variable block_cv_;
+    bool block_after_next_stream_ = false;
+    bool stream_blocked_ = false;
+    bool unblock_stream_ = false;
     bool open_ = false;
 };
 
@@ -437,6 +483,26 @@ int main()
     require(media_frame->device_id == real_device.id, "media relay device mismatch");
     require(media_frame->stream_id == 0x1001, "media relay stream mismatch");
     require(media_frame->codec == axent::MediaCodec::H264, "media relay codec mismatch");
+
+    scripted->blockAfterNextStream();
+    scripted->injectStream(0x1001, 10, 10000, {0x00, 0x00, 0x01, 0x41});
+    require(scripted->waitForStreamBlocked(), "stale stream should be queued before adapter drain");
+    std::thread release_thread([&real_host, &media_lease]() {
+        real_host.release_session(media_lease.session_id, "replace media lease");
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    scripted->unblockStream();
+    release_thread.join();
+
+    const auto replacement_lease = real_host.acquire_session(real_request);
+    require(replacement_lease.acquired, "replacement media lease should be acquired");
+    auto replacement_consumer = real_host.create_media_consumer(replacement_lease.session_id, real_relay_options);
+    require(replacement_consumer != nullptr, "replacement media consumer should be created");
+
+    const auto stale_frame = wait_for_media_frame(*replacement_consumer);
+    require(!stale_frame.has_value(), "queued frame from released media lease must not reach replacement lease");
+
+    real_host.release_session(replacement_lease.session_id, "replacement media lease done");
     real_host.stop();
 
     return 0;

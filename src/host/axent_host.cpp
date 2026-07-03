@@ -216,23 +216,42 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
 
 void AxentHost::release_session(const std::string& session_id, const std::string&)
 {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    const auto lease = impl_->lease_for_session_locked(session_id);
-    if (lease.has_value() && lease->media) {
-        const auto owner = impl_->media_owner_session_by_device.find(lease->device_id);
-        if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
-            impl_->media_owner_session_by_device.erase(owner);
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    std::string reset_device_id;
+    AxtpAdapter* reset_adapter = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (lease.has_value() && lease->media) {
+            const auto owner = impl_->media_owner_session_by_device.find(lease->device_id);
+            if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
+                reset_device_id = lease->device_id;
+                reset_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+            }
         }
     }
-    const auto relay = impl_->relays.find(session_id);
-    if (relay != impl_->relays.end()) {
-        relay->second->close();
-        impl_->relays.erase(relay);
+    if (reset_adapter != nullptr && !reset_device_id.empty()) {
+        reset_adapter->reset_session_for_device(reset_device_id);
     }
-    if (lease.has_value()) {
-        impl_->sessions.close_device_session(session_id);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (lease.has_value() && lease->media) {
+            const auto owner = impl_->media_owner_session_by_device.find(lease->device_id);
+            if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
+                impl_->media_owner_session_by_device.erase(owner);
+            }
+        }
+        const auto relay = impl_->relays.find(session_id);
+        if (relay != impl_->relays.end()) {
+            relay->second->close();
+            impl_->relays.erase(relay);
+        }
+        if (lease.has_value()) {
+            impl_->sessions.close_device_session(session_id);
+        }
+        impl_->leases.erase(session_id);
     }
-    impl_->leases.erase(session_id);
 }
 
 std::unique_ptr<MediaConsumer> AxentHost::create_media_consumer(const std::string& session_id,
