@@ -90,6 +90,8 @@ public:
     Broker& broker();
 
 private:
+    bool publish_media_frame_for_device(std::string device_id, MediaFrame frame);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -1,7 +1,12 @@
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -66,6 +71,14 @@ axtp::Bytes encode_rpc(axtp::RpcPayload payload)
     return writer.bytes;
 }
 
+axtp::Bytes encode_stream(axtp::StreamPayload payload)
+{
+    CapturingByteWriter writer;
+    axtp::OutboundProcessor outbound(writer);
+    outbound.sendStream(std::move(payload));
+    return writer.bytes;
+}
+
 class ScriptedAxtpTransport : public axtp::ITransport {
 public:
     void bind(axtp::IByteSink& sink) override
@@ -83,7 +96,32 @@ public:
         open_ = false;
     }
 
-    void poll() override {}
+    void poll() override
+    {
+        std::queue<axtp::Bytes> pending;
+        {
+            std::lock_guard<std::mutex> lock(rx_mutex_);
+            pending.swap(rx_queue_);
+        }
+        while (!pending.empty()) {
+            inject(pending.front());
+            pending.pop();
+        }
+    }
+
+    void injectStream(std::uint32_t stream_id,
+                      std::uint32_t sequence_id,
+                      std::uint64_t cursor,
+                      axtp::Bytes data)
+    {
+        axtp::StreamPayload stream;
+        stream.streamId = stream_id;
+        stream.seqId = sequence_id;
+        stream.cursor = cursor;
+        stream.data = std::move(data);
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        rx_queue_.push(encode_stream(std::move(stream)));
+    }
 
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
@@ -149,6 +187,8 @@ private:
     }
 
     axtp::IByteSink* sink_ = nullptr;
+    std::mutex rx_mutex_;
+    std::queue<axtp::Bytes> rx_queue_;
     bool open_ = false;
 };
 
@@ -181,6 +221,19 @@ axent::DeviceSnapshot make_second_mock_device()
     device.connection.last_change_reason = "test-upserted";
     device.status.health = "ok";
     return device;
+}
+
+std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& consumer)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto frame = consumer.read();
+        if (frame.has_value()) {
+            return frame;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -366,6 +419,24 @@ int main()
     require(real_call.body.at("via") == "axtp", "real AXTP host call response mismatch");
     require(scripted != nullptr && scripted->saw_business_request,
             "real AXTP host call should use scripted transport");
+
+    real_request.media = true;
+    const auto media_lease = real_host.acquire_session(real_request);
+    require(media_lease.acquired, "real AXTP media lease should be acquired");
+
+    axent::MediaRelayOptions real_relay_options;
+    real_relay_options.max_frames = 4;
+    auto real_consumer = real_host.create_media_consumer(media_lease.session_id, real_relay_options);
+    require(real_consumer != nullptr, "real media consumer should be created");
+
+    scripted->injectStream(0x1001, 9, 9000, {0x00, 0x00, 0x01, 0x65});
+
+    const auto media_frame = wait_for_media_frame(*real_consumer);
+    require(media_frame.has_value(), "real adapter stream should reach host media relay");
+    require(media_frame->session_id == media_lease.session_id, "media relay session mismatch");
+    require(media_frame->device_id == real_device.id, "media relay device mismatch");
+    require(media_frame->stream_id == 0x1001, "media relay stream mismatch");
+    require(media_frame->codec == axent::MediaCodec::H264, "media relay codec mismatch");
     real_host.stop();
 
     return 0;

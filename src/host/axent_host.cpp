@@ -36,6 +36,7 @@ struct AxentHost::Impl {
     std::map<std::string, SessionLease> leases;
     std::map<std::string, std::shared_ptr<MediaStreamRelay>> relays;
     std::map<std::string, std::string> media_owner_session_by_device;
+    std::mutex dispatch_mutex;
 };
 
 void AxentHost::Impl::reset()
@@ -101,9 +102,19 @@ AxentHost::~AxentHost()
 
 bool AxentHost::start(AxentHostOptions options)
 {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    std::unique_ptr<Adapter> previous_axtp_adapter;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        previous_axtp_adapter = std::move(impl_->axtp_adapter);
+        impl_->reset();
+    }
+    if (auto* axtp_adapter = dynamic_cast<AxtpAdapter*>(previous_axtp_adapter.get())) {
+        axtp_adapter->set_media_frame_callback({});
+    }
+    previous_axtp_adapter.reset();
 
-    impl_->reset();
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->options = options;
     impl_->logger = std::make_unique<Logger>();
     impl_->devices = std::make_unique<DeviceManager>();
@@ -125,6 +136,12 @@ bool AxentHost::start(AxentHostOptions options)
         } else {
             impl_->axtp_adapter = std::make_unique<AxtpAdapter>(impl_->options.axtp);
         }
+        if (auto* axtp_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get())) {
+            axtp_adapter->set_media_frame_callback(
+                [this](std::string device_id, MediaFrame frame) {
+                    this->publish_media_frame_for_device(std::move(device_id), std::move(frame));
+                });
+        }
         for (const auto& device : impl_->axtp_adapter->discover()) {
             impl_->devices->upsert(device);
         }
@@ -137,11 +154,19 @@ bool AxentHost::start(AxentHostOptions options)
 
 void AxentHost::stop()
 {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (!impl_->running && !impl_->broker) {
-        return;
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    std::unique_ptr<Adapter> axtp_adapter;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->running && !impl_->broker) {
+            return;
+        }
+        axtp_adapter = std::move(impl_->axtp_adapter);
+        impl_->reset();
     }
-    impl_->reset();
+    if (auto* adapter = dynamic_cast<AxtpAdapter*>(axtp_adapter.get())) {
+        adapter->set_media_frame_callback({});
+    }
 }
 
 bool AxentHost::running() const
@@ -242,26 +267,52 @@ bool AxentHost::publish_media_frame(const std::string& session_id, MediaFrame fr
     return true;
 }
 
+bool AxentHost::publish_media_frame_for_device(std::string device_id, MediaFrame frame)
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto owner = impl_->media_owner_session_by_device.find(device_id);
+    if (owner == impl_->media_owner_session_by_device.end()) {
+        return false;
+    }
+    const auto lease = impl_->lease_for_session_locked(owner->second);
+    if (!lease.has_value() || !lease->media) {
+        return false;
+    }
+    const auto relay = impl_->relays.find(owner->second);
+    if (relay == impl_->relays.end() || !relay->second) {
+        return false;
+    }
+    frame.session_id = owner->second;
+    frame.device_id = std::move(device_id);
+    relay->second->publish(std::move(frame));
+    return true;
+}
+
 ControlResult AxentHost::call(const std::string& session_id,
                               const std::string& method,
                               const nlohmann::json& params)
 {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (!impl_->broker) {
-        return {ControlStatus::Unavailable, {{"error", "host not running"}}};
-    }
-    const auto lease = impl_->lease_for_session_locked(session_id);
-    if (!lease.has_value()) {
-        return {ControlStatus::NotFound, {{"error", "session not found"}}};
-    }
-
     ControlCommand command;
-    command.request_id = session_id + ":" + method;
-    command.control_session_id = lease->client_id;
-    command.device_id = lease->device_id;
-    command.method = method;
-    command.params = params;
-    return impl_->broker->dispatch(command);
+    Broker* broker = nullptr;
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->broker) {
+            return {ControlStatus::Unavailable, {{"error", "host not running"}}};
+        }
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value()) {
+            return {ControlStatus::NotFound, {{"error", "session not found"}}};
+        }
+
+        broker = impl_->broker.get();
+        command.request_id = session_id + ":" + method;
+        command.control_session_id = lease->client_id;
+        command.device_id = lease->device_id;
+        command.method = method;
+        command.params = params;
+    }
+    return broker->dispatch(command);
 }
 
 Broker& AxentHost::broker()
