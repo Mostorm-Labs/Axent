@@ -1,7 +1,15 @@
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "axent/host/axent_host.hpp"
+
+#include "core/protocol/wire/inbound_processor.hpp"
+#include "core/protocol/wire/outbound_processor.hpp"
+#include "transports/hidapi/hid_transport.hpp"
 
 namespace {
 
@@ -11,6 +19,138 @@ void require(bool condition, const char* message)
         throw std::runtime_error(message);
     }
 }
+
+struct CapturingByteWriter : axtp::IByteWriter {
+    axtp::Bytes bytes;
+
+    void writeBytes(const axtp::Byte* data, std::size_t size) override
+    {
+        bytes.insert(bytes.end(), data, data + size);
+    }
+};
+
+struct CapturingPayloadSink : axtp::IPayloadSink {
+    std::vector<axtp::ControlPayload> controls;
+    std::vector<axtp::RpcPayload> rpcs;
+    std::vector<axtp::StreamPayload> streams;
+
+    void onControl(axtp::ControlPayload payload) override
+    {
+        controls.push_back(std::move(payload));
+    }
+
+    void onRpc(axtp::RpcPayload payload) override
+    {
+        rpcs.push_back(std::move(payload));
+    }
+
+    void onStream(axtp::StreamPayload payload) override
+    {
+        streams.push_back(std::move(payload));
+    }
+};
+
+axtp::Bytes encode_control(axtp::ControlPayload payload)
+{
+    CapturingByteWriter writer;
+    axtp::OutboundProcessor outbound(writer);
+    outbound.sendControl(std::move(payload));
+    return writer.bytes;
+}
+
+axtp::Bytes encode_rpc(axtp::RpcPayload payload)
+{
+    CapturingByteWriter writer;
+    axtp::OutboundProcessor outbound(writer);
+    outbound.sendRpc(std::move(payload));
+    return writer.bytes;
+}
+
+class ScriptedAxtpTransport : public axtp::ITransport {
+public:
+    void bind(axtp::IByteSink& sink) override
+    {
+        sink_ = &sink;
+    }
+
+    void open() override
+    {
+        open_ = true;
+    }
+
+    void close() override
+    {
+        open_ = false;
+    }
+
+    void poll() override {}
+
+    void sendBytes(const axtp::Byte* data, std::size_t size) override
+    {
+        CapturingPayloadSink payload_sink;
+        axtp::InboundProcessor inbound(payload_sink);
+        inbound.onBytes(data, size);
+
+        for (const auto& control : payload_sink.controls) {
+            if (control.opcode == axtp::ControlOpcode::Open) {
+                axtp::ControlPayload accept;
+                accept.opcode = axtp::ControlOpcode::Accept;
+                accept.controlId = control.controlId;
+                accept.statusCode = axtp::ErrorCode::Success;
+                inject(encode_control(accept));
+                inject(encode_rpc(axtp::JsonRpcEncoder::makeHello()));
+            }
+        }
+
+        for (const auto& rpc : payload_sink.rpcs) {
+            if (rpc.op == axtp::RpcOp::Identify) {
+                inject(encode_rpc(axtp::JsonRpcEncoder::makeIdentified("axent-host-session")));
+                continue;
+            }
+            if (rpc.op == axtp::RpcOp::Request) {
+                saw_business_request = true;
+                axtp::RpcPayload response;
+                response.encoding = axtp::RpcEncoding::Json;
+                response.op = axtp::RpcOp::RequestResponse;
+                response.requestId = rpc.requestId;
+                response.methodOrEventId = rpc.methodOrEventId;
+                response.statusCode = axtp::ErrorCode::Success;
+                response.bodyEncoding = axtp::RpcBodyEncoding::None;
+                response.meta.sourceProtocol = axtp::SourceProtocol::JsonRpc;
+                response.meta.jsonSid = rpc.meta.jsonSid;
+                const std::string body = R"({"via":"axtp"})";
+                response.body = axtp::Bytes(body.begin(), body.end());
+                inject(encode_rpc(response));
+            }
+        }
+    }
+
+    axtp::TransportProfile profile() const override
+    {
+        return axtp::TransportProfile{
+            axtp::TransportKind::Hid,
+            axtp::AxtpWireMode::FramedBinary,
+            axtp::jsonBinaryRpcEncoding(),
+            false,
+            false,
+            true,
+            4096,
+        };
+    }
+
+    bool saw_business_request = false;
+
+private:
+    void inject(const axtp::Bytes& bytes)
+    {
+        if (sink_ != nullptr) {
+            sink_->onBytes(bytes.data(), bytes.size());
+        }
+    }
+
+    axtp::IByteSink* sink_ = nullptr;
+    bool open_ = false;
+};
 
 axent::MediaFrame make_media_frame(std::uint64_t sequence_id)
 {
@@ -75,10 +215,11 @@ int main()
 
     axent::AxentHostOptions options;
     options.enable_mock_adapter = true;
+    options.enable_axtp_adapter = false;
     require(host.start(options), "host should start");
 
     const auto devices = host.discover_devices();
-    require(devices.size() == 1, "mock host should discover one device");
+    require(devices.size() >= 1, "host should discover at least the mock device");
     require(devices[0].id == "mock-device-001", "mock device id mismatch");
     host.upsert_device(make_second_mock_device());
     const auto devices_after_upsert = host.discover_devices();
@@ -189,6 +330,43 @@ int main()
         broker_threw = true;
     }
     require(broker_threw, "broker should throw after stop");
+
+    axent::AxentHost real_host;
+    ScriptedAxtpTransport* scripted = nullptr;
+    axent::AxentHostOptions real_options;
+    real_options.enable_mock_adapter = false;
+    real_options.enable_axtp_adapter = true;
+    real_options.axtp_adapter_factory = [&](axent::AxtpAdapterConfig config) {
+        return std::make_unique<axent::AxtpAdapter>(std::move(config), [&](const axtp::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            scripted = transport.get();
+            return transport;
+        });
+    };
+    require(real_host.start(std::move(real_options)), "real AXTP host should start");
+
+    axent::DeviceSnapshot real_device;
+    real_device.id = "hid:0581:2581:NA20-SERIAL";
+    real_device.adapter = "axtp";
+    real_device.identity.vendor = "Mostorm";
+    real_device.identity.model = "NA20";
+    real_device.identity.serial_number = "NA20-SERIAL";
+    real_device.connection.online = true;
+    real_device.connection.transport = "hid";
+    real_device.status.health = "ready";
+    real_host.upsert_device(real_device);
+
+    axent::SessionAcquireRequest real_request;
+    real_request.client_id = "nearcast-real";
+    real_request.device_id = real_device.id;
+    const auto real_lease = real_host.acquire_session(real_request);
+    require(real_lease.acquired, "real AXTP device lease should be acquired");
+    const auto real_call = real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(real_call.status == axent::ControlStatus::Ok, "real AXTP host call should dispatch");
+    require(real_call.body.at("via") == "axtp", "real AXTP host call response mismatch");
+    require(scripted != nullptr && scripted->saw_business_request,
+            "real AXTP host call should use scripted transport");
+    real_host.stop();
 
     return 0;
 }

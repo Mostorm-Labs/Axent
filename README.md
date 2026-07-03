@@ -51,4 +51,24 @@ Developer smoke:
 structured in-memory diagnostics, checkpoints, bounded memory records, and
 rotating file segments without adding a third-party logging dependency.
 
+## Real AXTP Adapter And Daemon Mode
+
+`axentd` can host the first real AXTP HID adapter path with NA20-style defaults:
+
+    build/axentd --foreground --axtp-real --bind 127.0.0.1 --port 6060
+
+Default NA20 HID selector values are VID `0x0581`, PID `0x2581`, usage page
+`0x0081`, report id `0x05`, and automatic input/output report sizes. Override
+them with `--hid-vid`, `--hid-pid`, `--hid-usage-page`, `--hid-usage`,
+`--hid-report-id`, `--hid-input-report-size`, `--hid-output-report-size`,
+`--hid-path`, and `--hid-serial`.
+
+When no matching HID device is present, the real adapter simply discovers zero
+devices and daemon startup continues. When a discovered AXTP device is selected,
+the adapter lazily opens the HID transport, runs the AXTP app-ready handshake,
+and forwards JSON control calls through the runtime SDK. This lets `axentd`
+remain the single resource owner on a PC without making development machines
+require hardware. NearCast can either connect to this daemon or embed
+`libaxent`; it should keep its `MediaCore` and renderer policy outside Axent.
+
 The development profile binds WebSocket to LAN by default and has no authentication. Use only on trusted networks until the hardening stage adds authentication and authorization.

@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "axent/adapters/axtp_adapter.hpp"
 #include "axent/logging/logger.hpp"
 
 namespace axent {
@@ -35,6 +36,8 @@ struct AxentdCliOptions {
     std::string bind_host = "0.0.0.0";
     int port = 6060;
     bool enable_mock_adapter = true;
+    bool enable_axtp_adapter = false;
+    AxtpAdapterConfig axtp;
 };
 
 template <typename T>

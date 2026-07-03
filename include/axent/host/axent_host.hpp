@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -7,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "axent/adapters/axtp_adapter.hpp"
 #include "axent/core/types.hpp"
 #include "axent/media/media_frame.hpp"
 #include "axent/media/media_relay.hpp"
@@ -17,7 +19,14 @@ class Broker;
 class MediaStreamRelay;
 
 struct AxentHostOptions {
+    AxentHostOptions();
+
+    using AdapterFactory = std::function<std::unique_ptr<Adapter>(AxtpAdapterConfig)>;
+
     bool enable_mock_adapter = true;
+    bool enable_axtp_adapter = false;
+    AxtpAdapterConfig axtp;
+    AdapterFactory axtp_adapter_factory;
 };
 
 struct SessionAcquireRequest {
