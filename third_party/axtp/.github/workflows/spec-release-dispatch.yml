@@ -1,0 +1,97 @@
+name: Release AXTP Spec and Dispatch Runtime Upgrades
+
+on:
+  push:
+    tags:
+      - "spec/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout AXTP spec
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse spec tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          spec_tag="$GITHUB_REF_NAME"
+          if [[ ! "$spec_tag" =~ ^spec/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "AXTP Spec release tags must match spec/vMAJOR.MINOR.PATCH" >&2
+            exit 2
+          fi
+
+          spec_version="${spec_tag#spec/v}"
+          spec_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
+
+          echo "SPEC_TAG=$spec_tag" >> "$GITHUB_ENV"
+          echo "SPEC_VERSION=$spec_version" >> "$GITHUB_ENV"
+          echo "SPEC_COMMIT=$spec_commit" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@11.3.0 --activate
+
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --dir tooling/generators install --frozen-lockfile
+          pnpm --dir tooling/generators build
+          pnpm --dir tooling/generators lint
+          pnpm --dir tooling/generators test
+          pnpm --dir tooling/generators validate
+          pnpm --dir tooling/generators validate:sources
+          pnpm --dir tooling/generators validate:protocol
+          tooling/scripts/check-generated-drift.sh
+          tooling/scripts/validate-conformance.sh
+          tooling/scripts/check-links.mjs
+          node tooling/scripts/check-text-paths.mjs
+          node tooling/scripts/check-frontstage-language.mjs
+          node tooling/scripts/check-draft-noise.mjs
+          tooling/scripts/check-protocol-status.mjs
+          node tooling/scripts/report-protocol-draft-health.mjs --check docs/product/protocol-draft-health.md
+
+      - name: Build spec artifact
+        shell: bash
+        run: tooling/scripts/build-spec-artifact.sh "$SPEC_VERSION"
+
+      - name: Validate spec artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          tooling/scripts/check-release-artifact.sh "$SPEC_VERSION"
+          node tooling/scripts/check-links.mjs "dist/axtp-spec-v$SPEC_VERSION"
+
+      - name: Create or update AXTP Spec release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SPEC_TAG }}
+          name: AXTP Spec v${{ env.SPEC_VERSION }}
+          files: dist/axtp-spec-v${{ env.SPEC_VERSION }}.zip
+          make_latest: true
+
+      - name: Dispatch runtime/tool upgrades
+        shell: bash
+        env:
+          AXTP_RUNTIME_DISPATCH_TOKEN: ${{ secrets.AXTP_RUNTIME_DISPATCH_TOKEN }}
+        run: >
+          node tooling/scripts/dispatch-runtime-updates.mjs
+          --spec-tag "$SPEC_TAG"
+          --spec-version "$SPEC_VERSION"
+          --spec-commit "$SPEC_COMMIT"

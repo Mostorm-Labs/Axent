@@ -1,0 +1,34 @@
+id: error.unauthorized
+title: Unauthorized request uses standard permission or auth errors
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  session:
+    authorization: denied
+
+steps:
+  - direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 100
+      method: audio.setAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 100
+        statusCode:
+          oneOf:
+            - PERMISSION_DENIED
+            - SEC_AUTH_REQUIRED
+            - SEC_PERMISSION_DENIED
+
+assertions:
+  - response.statusCode != SUCCESS

@@ -1,0 +1,1564 @@
+{
+  "errors": [
+    {
+      "id": 0,
+      "name": "SUCCESS",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Operation completed successfully.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0000"
+    },
+    {
+      "id": 1,
+      "name": "UNKNOWN_ERROR",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Unknown error.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0001"
+    },
+    {
+      "id": 2,
+      "name": "NOT_IMPLEMENTED",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Feature is not implemented.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0002"
+    },
+    {
+      "id": 3,
+      "name": "NOT_SUPPORTED",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Feature is not supported by the current device or mode.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0003"
+    },
+    {
+      "id": 4,
+      "name": "INVALID_STATE",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Operation is not allowed in the current state.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0004"
+    },
+    {
+      "id": 5,
+      "name": "BUSY",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Device or resource is busy.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0005"
+    },
+    {
+      "id": 6,
+      "name": "TIMEOUT",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Operation timed out.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0006"
+    },
+    {
+      "id": 7,
+      "name": "CANCELED",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Operation was canceled.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0007"
+    },
+    {
+      "id": 8,
+      "name": "RESOURCE_EXHAUSTED",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Resource is exhausted.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0008"
+    },
+    {
+      "id": 9,
+      "name": "PERMISSION_DENIED",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Permission denied.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0009"
+    },
+    {
+      "id": 10,
+      "name": "INVALID_ARGUMENT",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Argument is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x000A"
+    },
+    {
+      "id": 11,
+      "name": "OUT_OF_RANGE",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Argument is out of range.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x000B"
+    },
+    {
+      "id": 12,
+      "name": "NOT_FOUND",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Resource was not found.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x000C"
+    },
+    {
+      "id": 13,
+      "name": "ALREADY_EXISTS",
+      "domain": "common",
+      "status": "draft",
+      "description": "Resource already exists.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x000D"
+    },
+    {
+      "id": 14,
+      "name": "INTERNAL_ERROR",
+      "domain": "common",
+      "status": "mvp",
+      "description": "Internal error.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x000E"
+    },
+    {
+      "id": 15,
+      "name": "UNAVAILABLE",
+      "domain": "common",
+      "status": "draft",
+      "description": "Service is temporarily unavailable.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x000F"
+    },
+    {
+      "id": 17,
+      "name": "FRAME_MAGIC_INVALID",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame magic is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0011"
+    },
+    {
+      "id": 18,
+      "name": "FRAME_VERSION_UNSUPPORTED",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame version is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0012"
+    },
+    {
+      "id": 19,
+      "name": "FRAME_HEADER_INVALID",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame header is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0013"
+    },
+    {
+      "id": 20,
+      "name": "FRAME_LENGTH_INVALID",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame payload length or total length is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0014"
+    },
+    {
+      "id": 21,
+      "name": "FRAME_PAYLOAD_TYPE_INVALID",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame payload type is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0015"
+    },
+    {
+      "id": 22,
+      "name": "FRAME_CRC_ERROR",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame CRC check failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0016"
+    },
+    {
+      "id": 23,
+      "name": "FRAME_FRAGMENT_INVALID",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame fragment metadata is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0017"
+    },
+    {
+      "id": 24,
+      "name": "FRAME_FRAGMENT_MISSING",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "One or more frame fragments are missing.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0018"
+    },
+    {
+      "id": 25,
+      "name": "FRAME_REASSEMBLY_TIMEOUT",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame reassembly timed out.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0019"
+    },
+    {
+      "id": 26,
+      "name": "FRAME_TOO_LARGE",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Frame exceeds the negotiated maximum size.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x001A"
+    },
+    {
+      "id": 27,
+      "name": "TRANSPORT_MTU_EXCEEDED",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Transport MTU was exceeded.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x001B"
+    },
+    {
+      "id": 28,
+      "name": "TRANSPORT_WRITE_FAILED",
+      "domain": "frame",
+      "status": "draft",
+      "description": "Transport write failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x001C"
+    },
+    {
+      "id": 29,
+      "name": "TRANSPORT_READ_FAILED",
+      "domain": "frame",
+      "status": "draft",
+      "description": "Transport read failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x001D"
+    },
+    {
+      "id": 30,
+      "name": "TRANSPORT_DISCONNECTED",
+      "domain": "frame",
+      "status": "mvp",
+      "description": "Transport disconnected.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x001E"
+    },
+    {
+      "id": 33,
+      "name": "CONTROL_OPCODE_INVALID",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Control opcode is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0021"
+    },
+    {
+      "id": 34,
+      "name": "CONTROL_PAYLOAD_INVALID",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Control payload is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0022"
+    },
+    {
+      "id": 35,
+      "name": "RESERVED_CONTROL_BODY_ENCODING_UNSUPPORTED",
+      "domain": "control",
+      "status": "reserved",
+      "description": "Historical control body encoding negotiation error. AXTP v1 implementations must not emit it.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0023"
+    },
+    {
+      "id": 36,
+      "name": "CONTROL_OPEN_REQUIRED",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Session has not completed CONTROL OPEN.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0024"
+    },
+    {
+      "id": 37,
+      "name": "CONTROL_OPEN_REJECTED",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Control OPEN was rejected.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0025"
+    },
+    {
+      "id": 38,
+      "name": "RESERVED_CONTROL_PROFILE_UNSUPPORTED",
+      "domain": "control",
+      "status": "reserved",
+      "description": "Historical header profile negotiation error. AXTP v1 implementations must not emit it.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0026"
+    },
+    {
+      "id": 39,
+      "name": "CONTROL_NEGOTIATION_FAILED",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Control negotiation failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0027"
+    },
+    {
+      "id": 40,
+      "name": "CONTROL_SESSION_INVALID",
+      "domain": "control",
+      "status": "mvp",
+      "description": "SessionId is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0028"
+    },
+    {
+      "id": 41,
+      "name": "CONTROL_SESSION_EXPIRED",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Session has expired.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0029"
+    },
+    {
+      "id": 42,
+      "name": "CONTROL_RESUME_FAILED",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Session resume failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x002A"
+    },
+    {
+      "id": 43,
+      "name": "CONTROL_ACK_TARGET_INVALID",
+      "domain": "control",
+      "status": "mvp",
+      "description": "ACK/NACK target type is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x002B"
+    },
+    {
+      "id": 44,
+      "name": "CONTROL_WINDOW_EXCEEDED",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Flow-control window was exceeded.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x002C"
+    },
+    {
+      "id": 45,
+      "name": "CONTROL_HEARTBEAT_TIMEOUT",
+      "domain": "control",
+      "status": "mvp",
+      "description": "Control heartbeat timed out.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x002D"
+    },
+    {
+      "id": 49,
+      "name": "RPC_ENCODING_UNSUPPORTED",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC encoding is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0031"
+    },
+    {
+      "id": 50,
+      "name": "RPC_OP_INVALID",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC operation is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0032"
+    },
+    {
+      "id": 51,
+      "name": "RPC_PAYLOAD_INVALID",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC payload is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0033"
+    },
+    {
+      "id": 52,
+      "name": "RPC_BODY_ENCODING_UNSUPPORTED",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC body encoding is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0034"
+    },
+    {
+      "id": 53,
+      "name": "RPC_BODY_DECODE_FAILED",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC body decoding failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0035"
+    },
+    {
+      "id": 54,
+      "name": "RPC_METHOD_NOT_FOUND",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "MethodId or method name is not registered.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0036"
+    },
+    {
+      "id": 55,
+      "name": "RPC_METHOD_NOT_SUPPORTED",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "Method exists but is not supported by the current device.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0037"
+    },
+    {
+      "id": 56,
+      "name": "RPC_METHOD_DISABLED",
+      "domain": "rpc",
+      "status": "draft",
+      "description": "Method is disabled.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0038"
+    },
+    {
+      "id": 57,
+      "name": "RPC_REQUEST_ID_INVALID",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC requestId is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0039"
+    },
+    {
+      "id": 58,
+      "name": "RPC_PARAM_MISSING",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "Required RPC parameter is missing.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x003A"
+    },
+    {
+      "id": 59,
+      "name": "RPC_PARAM_INVALID",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC parameters are invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x003B"
+    },
+    {
+      "id": 60,
+      "name": "RPC_PARAM_OUT_OF_RANGE",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC parameter is out of range.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x003C"
+    },
+    {
+      "id": 61,
+      "name": "RPC_EXECUTION_FAILED",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC method execution failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x003D"
+    },
+    {
+      "id": 62,
+      "name": "RPC_RESPONSE_TIMEOUT",
+      "domain": "rpc",
+      "status": "mvp",
+      "description": "RPC response timed out.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x003E"
+    },
+    {
+      "id": 63,
+      "name": "RPC_BATCH_UNSUPPORTED",
+      "domain": "rpc",
+      "status": "draft",
+      "description": "RPC batch is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x003F"
+    },
+    {
+      "id": 64,
+      "name": "RPC_BATCH_PARTIAL_FAILED",
+      "domain": "rpc",
+      "status": "draft",
+      "description": "One or more RPC batch items failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0040"
+    },
+    {
+      "id": 257,
+      "name": "DEVICE_INFO_UNAVAILABLE",
+      "domain": "device",
+      "status": "mvp",
+      "description": "Device information is unavailable.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0101"
+    },
+    {
+      "id": 258,
+      "name": "DEVICE_REBOOT_FAILED",
+      "domain": "device",
+      "status": "draft",
+      "description": "Device reboot failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0102"
+    },
+    {
+      "id": 259,
+      "name": "DEVICE_FACTORY_RESET_FAILED",
+      "domain": "device",
+      "status": "draft",
+      "description": "Device factory reset failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0103"
+    },
+    {
+      "id": 260,
+      "name": "DEVICE_LOW_POWER",
+      "domain": "device",
+      "status": "draft",
+      "description": "Device power is low.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0104"
+    },
+    {
+      "id": 261,
+      "name": "DEVICE_OVER_TEMPERATURE",
+      "domain": "device",
+      "status": "draft",
+      "description": "Device temperature is too high.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0105"
+    },
+    {
+      "id": 262,
+      "name": "DEVICE_STORAGE_FULL",
+      "domain": "device",
+      "status": "mvp",
+      "description": "Device storage is full.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0106"
+    },
+    {
+      "id": 263,
+      "name": "DEVICE_MODE_CONFLICT",
+      "domain": "device",
+      "status": "mvp",
+      "description": "Device mode conflicts with the requested operation.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0107"
+    },
+    {
+      "id": 264,
+      "name": "DEVICE_RESOURCE_BUSY",
+      "domain": "device",
+      "status": "mvp",
+      "description": "Device resource is busy.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0108"
+    },
+    {
+      "id": 265,
+      "name": "DEVICE_HARDWARE_FAILURE",
+      "domain": "device",
+      "status": "draft",
+      "description": "Device hardware failure.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0109"
+    },
+    {
+      "id": 266,
+      "name": "ENROLLMENT_CODE_EXPIRED",
+      "domain": "device",
+      "status": "draft",
+      "description": "Pairing code has expired.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x010A"
+    },
+    {
+      "id": 267,
+      "name": "ENROLLMENT_CODE_ALREADY_USED",
+      "domain": "device",
+      "status": "draft",
+      "description": "Pairing code has already been used.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x010B"
+    },
+    {
+      "id": 513,
+      "name": "CAPABILITY_NOT_FOUND",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Capability does not exist.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0201"
+    },
+    {
+      "id": 514,
+      "name": "CAPABILITY_DOMAIN_NOT_FOUND",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Capability domain does not exist.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0202"
+    },
+    {
+      "id": 515,
+      "name": "CAPABILITY_METHOD_UNSUPPORTED",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Method capability is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0203"
+    },
+    {
+      "id": 516,
+      "name": "CAPABILITY_EVENT_UNSUPPORTED",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Event capability is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0204"
+    },
+    {
+      "id": 517,
+      "name": "CAPABILITY_STREAM_UNSUPPORTED",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Stream capability is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0205"
+    },
+    {
+      "id": 518,
+      "name": "CAPABILITY_ENCODING_UNSUPPORTED",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Encoding capability is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0206"
+    },
+    {
+      "id": 519,
+      "name": "CAPABILITY_NEGOTIATION_FAILED",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Business capability negotiation failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0207"
+    },
+    {
+      "id": 520,
+      "name": "CAPABILITY_LIMIT_EXCEEDED",
+      "domain": "capability",
+      "status": "mvp",
+      "description": "Capability limit was exceeded.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0208"
+    },
+    {
+      "id": 1025,
+      "name": "FW_IMAGE_INVALID",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware image is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0401"
+    },
+    {
+      "id": 1026,
+      "name": "FW_IMAGE_TYPE_UNSUPPORTED",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware image type is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0402"
+    },
+    {
+      "id": 1027,
+      "name": "FW_VERSION_UNSUPPORTED",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware version is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0403"
+    },
+    {
+      "id": 1028,
+      "name": "FW_VERSION_TOO_OLD",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Firmware version is too old.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0404"
+    },
+    {
+      "id": 1029,
+      "name": "FW_TRANSFER_NOT_STARTED",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware transfer has not started.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0405"
+    },
+    {
+      "id": 1030,
+      "name": "FW_TRANSFER_ALREADY_STARTED",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Firmware transfer has already started.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0406"
+    },
+    {
+      "id": 1031,
+      "name": "FW_CHUNK_INVALID",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware chunk is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0407"
+    },
+    {
+      "id": 1032,
+      "name": "FW_CHUNK_CRC_ERROR",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware chunk CRC failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0408"
+    },
+    {
+      "id": 1033,
+      "name": "FW_SIZE_MISMATCH",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware size does not match the declared size.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0409"
+    },
+    {
+      "id": 1034,
+      "name": "FW_HASH_MISMATCH",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware hash does not match the declared verification value.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x040A"
+    },
+    {
+      "id": 1035,
+      "name": "FW_VERIFY_FAILED",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware verification failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x040B"
+    },
+    {
+      "id": 1036,
+      "name": "FW_APPLY_FAILED",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Firmware apply failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x040C"
+    },
+    {
+      "id": 1037,
+      "name": "FW_ROLLBACK_FAILED",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Firmware rollback failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x040D"
+    },
+    {
+      "id": 1038,
+      "name": "FW_STORAGE_NOT_ENOUGH",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Not enough storage for firmware update.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x040E"
+    },
+    {
+      "id": 1039,
+      "name": "FW_DEVICE_NOT_READY",
+      "domain": "firmware",
+      "status": "mvp",
+      "description": "Device is not ready for firmware update.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x040F"
+    },
+    {
+      "id": 1040,
+      "name": "FW_REBOOT_REQUIRED",
+      "domain": "firmware",
+      "status": "draft",
+      "description": "Reboot is required before continuing.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0410"
+    },
+    {
+      "id": 1281,
+      "name": "STREAM_NOT_FOUND",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream context does not exist.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0501"
+    },
+    {
+      "id": 1282,
+      "name": "STREAM_TIMEOUT",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream timed out.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0502"
+    },
+    {
+      "id": 1283,
+      "name": "STREAM_CRC_ERROR",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream chunk CRC check failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0503"
+    },
+    {
+      "id": 1284,
+      "name": "STREAM_PAYLOAD_INVALID",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream payload is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0504"
+    },
+    {
+      "id": 1285,
+      "name": "STREAM_ID_INVALID",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "StreamId is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0505"
+    },
+    {
+      "id": 1286,
+      "name": "STREAM_NOT_OPEN",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream is not open.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0506"
+    },
+    {
+      "id": 1287,
+      "name": "STREAM_ALREADY_OPEN",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Stream is already open.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0507"
+    },
+    {
+      "id": 1288,
+      "name": "STREAM_SEQ_INVALID",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream seqId is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0508"
+    },
+    {
+      "id": 1289,
+      "name": "STREAM_SEQ_DUPLICATED",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Stream seqId is duplicated.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0509"
+    },
+    {
+      "id": 1290,
+      "name": "STREAM_CHUNK_MISSING",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream chunk is missing.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x050A"
+    },
+    {
+      "id": 1291,
+      "name": "STREAM_OFFSET_INVALID",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream cursor or offset is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x050B"
+    },
+    {
+      "id": 1292,
+      "name": "STREAM_WINDOW_FULL",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream receive window is full.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x050C"
+    },
+    {
+      "id": 1293,
+      "name": "STREAM_BACKPRESSURE",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Stream receiver reported backpressure.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x050D"
+    },
+    {
+      "id": 1294,
+      "name": "STREAM_RESUME_UNSUPPORTED",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream resume is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x050E"
+    },
+    {
+      "id": 1295,
+      "name": "STREAM_RESUME_FAILED",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream resume failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x050F"
+    },
+    {
+      "id": 1296,
+      "name": "STREAM_CLOSED",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream is closed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0510"
+    },
+    {
+      "id": 1297,
+      "name": "STREAM_TRANSFER_ABORTED",
+      "domain": "stream",
+      "status": "mvp",
+      "description": "Stream transfer was aborted.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0511"
+    },
+    {
+      "id": 2049,
+      "name": "MEDIA_SOURCE_NOT_FOUND",
+      "domain": "video",
+      "status": "mvp",
+      "description": "Requested media source does not exist.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0801"
+    },
+    {
+      "id": 2050,
+      "name": "MEDIA_SOURCE_UNAVAILABLE",
+      "domain": "video",
+      "status": "mvp",
+      "description": "Requested media source is currently unavailable.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0802"
+    },
+    {
+      "id": 2051,
+      "name": "MEDIA_CODEC_UNSUPPORTED",
+      "domain": "video",
+      "status": "mvp",
+      "description": "Requested media codec or sample format is unsupported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0803"
+    },
+    {
+      "id": 2052,
+      "name": "MEDIA_RESOLUTION_UNSUPPORTED",
+      "domain": "video",
+      "status": "mvp",
+      "description": "Requested video resolution is unsupported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0804"
+    },
+    {
+      "id": 2053,
+      "name": "MEDIA_FRAMERATE_UNSUPPORTED",
+      "domain": "video",
+      "status": "mvp",
+      "description": "Requested video frame rate is unsupported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0805"
+    },
+    {
+      "id": 2054,
+      "name": "MEDIA_BITRATE_UNSUPPORTED",
+      "domain": "video",
+      "status": "draft",
+      "description": "Requested media bitrate is unsupported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x0806"
+    },
+    {
+      "id": 2055,
+      "name": "MEDIA_STREAM_START_FAILED",
+      "domain": "video",
+      "status": "mvp",
+      "description": "Device failed to start the requested media stream.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0807"
+    },
+    {
+      "id": 2056,
+      "name": "MEDIA_STREAM_STOP_FAILED",
+      "domain": "video",
+      "status": "draft",
+      "description": "Device failed to stop the media stream.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0808"
+    },
+    {
+      "id": 2057,
+      "name": "MEDIA_FRAME_DROPPED",
+      "domain": "video",
+      "status": "draft",
+      "description": "Media frame was dropped.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x0809"
+    },
+    {
+      "id": 2059,
+      "name": "MEDIA_VIDEO_SIGNAL_LOST",
+      "domain": "video",
+      "status": "draft",
+      "description": "Video signal was lost.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x080B"
+    },
+    {
+      "id": 2314,
+      "name": "MEDIA_AUDIO_DEVICE_NOT_FOUND",
+      "domain": "audio",
+      "status": "draft",
+      "description": "Audio device was not found.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x090A"
+    },
+    {
+      "id": 4097,
+      "name": "FILE_NOT_FOUND",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File does not exist.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1001"
+    },
+    {
+      "id": 4098,
+      "name": "FILE_ALREADY_EXISTS",
+      "domain": "file",
+      "status": "draft",
+      "description": "File already exists.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1002"
+    },
+    {
+      "id": 4099,
+      "name": "FILE_PERMISSION_DENIED",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File permission denied.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1003"
+    },
+    {
+      "id": 4100,
+      "name": "FILE_PATH_INVALID",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File path is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1004"
+    },
+    {
+      "id": 4101,
+      "name": "FILE_TYPE_UNSUPPORTED",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File type is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1005"
+    },
+    {
+      "id": 4102,
+      "name": "FILE_TOO_LARGE",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File is too large.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1006"
+    },
+    {
+      "id": 4103,
+      "name": "FILE_READ_FAILED",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File read failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x1007"
+    },
+    {
+      "id": 4104,
+      "name": "FILE_WRITE_FAILED",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File write failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x1008"
+    },
+    {
+      "id": 4105,
+      "name": "FILE_DELETE_FAILED",
+      "domain": "file",
+      "status": "draft",
+      "description": "File delete failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1009"
+    },
+    {
+      "id": 4106,
+      "name": "FILE_TRANSFER_FAILED",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File transfer failed.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x100A"
+    },
+    {
+      "id": 4107,
+      "name": "FILE_VERIFY_FAILED",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File verification failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x100B"
+    },
+    {
+      "id": 4108,
+      "name": "FILE_STORAGE_FULL",
+      "domain": "file",
+      "status": "mvp",
+      "description": "File storage is full.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x100C"
+    },
+    {
+      "id": 4609,
+      "name": "DIAG_TEST_NOT_FOUND",
+      "domain": "diagnostic",
+      "status": "draft",
+      "description": "Diagnostic test was not found.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1201"
+    },
+    {
+      "id": 4610,
+      "name": "DIAG_TEST_UNSUPPORTED",
+      "domain": "diagnostic",
+      "status": "draft",
+      "description": "Diagnostic test is not supported.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1202"
+    },
+    {
+      "id": 4611,
+      "name": "DIAG_TEST_RUNNING",
+      "domain": "diagnostic",
+      "status": "draft",
+      "description": "Diagnostic test is already running.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1203"
+    },
+    {
+      "id": 4612,
+      "name": "DIAG_TEST_FAILED",
+      "domain": "diagnostic",
+      "status": "draft",
+      "description": "Diagnostic test failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1204"
+    },
+    {
+      "id": 4613,
+      "name": "DIAG_METRIC_UNAVAILABLE",
+      "domain": "diagnostic",
+      "status": "draft",
+      "description": "Diagnostic metric is unavailable.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x1205"
+    },
+    {
+      "id": 4614,
+      "name": "DIAG_LOOPBACK_FAILED",
+      "domain": "diagnostic",
+      "status": "draft",
+      "description": "Diagnostic loopback failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1206"
+    },
+    {
+      "id": 5121,
+      "name": "SEC_AUTH_REQUIRED",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Authentication is required.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1401"
+    },
+    {
+      "id": 5122,
+      "name": "SEC_AUTH_FAILED",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Authentication failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1402"
+    },
+    {
+      "id": 5123,
+      "name": "SEC_PERMISSION_DENIED",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Security permission denied.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1403"
+    },
+    {
+      "id": 5124,
+      "name": "SEC_ENCRYPTION_REQUIRED",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Encryption is required.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1404"
+    },
+    {
+      "id": 5125,
+      "name": "SEC_DECRYPT_FAILED",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Decryption failed.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1405"
+    },
+    {
+      "id": 5126,
+      "name": "SEC_SIGNATURE_INVALID",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Signature is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1406"
+    },
+    {
+      "id": 5127,
+      "name": "SEC_CERT_INVALID",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Certificate is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1407"
+    },
+    {
+      "id": 5128,
+      "name": "SEC_TOKEN_EXPIRED",
+      "domain": "auth",
+      "status": "draft",
+      "description": "Security token expired.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x1408"
+    },
+    {
+      "id": 32513,
+      "name": "LEGACY_CMD_UNMAPPED",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy CmdValue is not mapped to an AXTP method.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F01"
+    },
+    {
+      "id": 32514,
+      "name": "LEGACY_STATUS_UNMAPPED",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy status is not mapped to an AXTP ErrorCode.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F02"
+    },
+    {
+      "id": 32515,
+      "name": "LEGACY_PAYLOAD_INVALID",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy payload is invalid.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F03"
+    },
+    {
+      "id": 32516,
+      "name": "LEGACY_PAYLOAD_TOO_SHORT",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy payload is too short.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F04"
+    },
+    {
+      "id": 32517,
+      "name": "LEGACY_PAYLOAD_TOO_LONG",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy payload is too long.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F05"
+    },
+    {
+      "id": 32518,
+      "name": "LEGACY_FIELD_UNSUPPORTED",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy field cannot be adapted.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F06"
+    },
+    {
+      "id": 32519,
+      "name": "LEGACY_CAPABILITY_CONFLICT",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy capability conflicts with AXTP capability.",
+      "deprecated": false,
+      "retryable": false,
+      "idHex": "0x7F07"
+    },
+    {
+      "id": 32520,
+      "name": "LEGACY_RESPONSE_TIMEOUT",
+      "domain": "legacy",
+      "status": "mvp",
+      "description": "Legacy response timed out.",
+      "deprecated": false,
+      "retryable": true,
+      "idHex": "0x7F08"
+    }
+  ]
+}

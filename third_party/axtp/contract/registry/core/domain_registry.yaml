@@ -1,0 +1,93 @@
+domains:
+  - high_byte: 0x01
+    domain: device
+    status: stable
+    description: Device identity, product, hardware, and topology.
+  - high_byte: 0x02
+    domain: capability
+    status: stable
+    description: Capability discovery and profile support.
+  - high_byte: 0x03
+    domain: system
+    status: stable
+    description: OS/runtime state and lifecycle.
+  - high_byte: 0x04
+    domain: firmware
+    status: stable
+    description: Device firmware and image update operations.
+  - high_byte: 0x05
+    domain: stream
+    status: stable
+    description: Shared STREAM data-plane and flow-control concepts.
+  - high_byte: 0x06
+    domain: display
+    status: stable
+    description: Display output and display configuration.
+  - high_byte: 0x07
+    domain: camera
+    status: stable
+    description: Camera and capture device capabilities.
+  - high_byte: 0x08
+    domain: video
+    status: stable
+    description: Video processing, capture, and stream setup.
+  - high_byte: 0x09
+    domain: audio
+    status: stable
+    description: Audio processing and stream setup.
+  - high_byte: 0x0A
+    domain: input
+    status: stable
+    description: Input control and injection.
+  - high_byte: 0x0B
+    domain: output
+    status: stable
+    description: Output routing and output state.
+  - high_byte: 0x0C
+    domain: room
+    status: stable
+    description: Logical space and business endpoint grouping.
+  - high_byte: 0x0D
+    domain: signage
+    status: stable
+    description: Signage playback and presentation.
+  - high_byte: 0x0E
+    domain: network
+    status: stable
+    description: Network interface and connectivity state.
+  - high_byte: 0x0F
+    domain: storage
+    status: stable
+    description: Storage devices and storage capacity state.
+  - high_byte: 0x10
+    domain: file
+    status: stable
+    description: File transfer and file metadata.
+  - high_byte: 0x11
+    domain: log
+    status: stable
+    description: Runtime logs and log retrieval.
+  - high_byte: 0x12
+    domain: diagnostic
+    status: stable
+    description: Diagnostics, health, and troubleshooting state.
+  - high_byte: 0x13
+    domain: sensor
+    status: stable
+    description: Sensor telemetry and sensor configuration.
+  - high_byte: 0x14
+    domain: auth
+    status: stable
+    description: Authentication and authorization state.
+  - high_byte: 0x15
+    domain: privacy
+    status: stable
+    description: Privacy controls and privacy policy state.
+  - high_byte: 0x16
+    domain: cast
+    status: draft
+    description: Cast receiver control for AirPlay/UxPlay and receiver-side status.
+  - high_byte: 0x17
+    domain: software
+    status: draft
+    description: Runtime configuration and update policy for software objects.

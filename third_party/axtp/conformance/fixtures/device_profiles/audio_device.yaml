@@ -1,0 +1,25 @@
+id: audio_device
+name: AXTP Audio Algorithm Device
+capabilities:
+  - id: audio.algorithm
+    methods:
+      - audio.getAlgorithmCapabilities
+      - audio.getAlgorithmConfig
+      - audio.setAlgorithmConfig
+      - audio.resetAlgorithmConfig
+    events:
+      - audio.algorithmConfigChanged
+
+methods:
+  audio.getAlgorithmCapabilities:
+    result:
+      capability: audio.algorithm
+      updatePolicy:
+        partialUpdateSupported: true
+        multiAlgorithmUpdateSupported: true
+        atomicUpdateSupported: true
+  audio.getAlgorithmConfig:
+    result:
+      noiseSuppression:
+        enabled: true
+        level: 1

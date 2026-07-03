@@ -1,0 +1,21 @@
+rpc_encodings:
+  - id: 0x01
+    name: JSON
+    domain: rpc
+    status: mvp
+    description: UTF-8 JSON sid/op/d envelope bytes.
+  - id: 0x02
+    name: CBOR
+    domain: rpc
+    status: draft
+    description: CBOR encoded sid/op/d envelope bytes.
+  - id: 0x03
+    name: MSGPACK
+    domain: rpc
+    status: draft
+    description: MessagePack encoded sid/op/d envelope bytes.
+  - id: 0x04
+    name: JSON_BINARY
+    domain: rpc
+    status: mvp
+    description: Fixed binary sid/op/d envelope with bodyEncoding-selected body bytes.

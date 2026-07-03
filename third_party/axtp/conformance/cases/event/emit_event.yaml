@@ -1,0 +1,30 @@
+id: event.emit_event
+title: Audio algorithm config event shape
+since: spec/v0.0.2
+level: event
+profiles:
+  - event
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  event: audio.algorithmConfigChanged
+
+steps:
+  - direction: server_to_client
+    event:
+      name: audio.algorithmConfigChanged
+      data:
+        reason: user_request
+        applyState: applied
+
+  - direction: client_observes
+    expect:
+      event:
+        name: audio.algorithmConfigChanged
+        data:
+          type: object
+
+assertions:
+  - event.name == "audio.algorithmConfigChanged"
+  - event.data.reason != null

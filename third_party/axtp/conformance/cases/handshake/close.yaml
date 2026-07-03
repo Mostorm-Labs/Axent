@@ -1,0 +1,27 @@
+id: handshake.close
+title: CONTROL CLOSE / CLOSE_ACK
+since: spec/v0.0.2
+level: framed-binary
+profiles:
+  - framed-binary
+
+given:
+  session:
+    control: open
+
+steps:
+  - direction: client_to_server
+    control:
+      type: CLOSE
+      controlId: 2
+
+  - direction: server_to_client
+    expect:
+      control:
+        type: CLOSE_ACK
+        controlId: 2
+        statusCode: SUCCESS
+
+assertions:
+  - closeAck.controlId == close.controlId
+  - session.control == closed

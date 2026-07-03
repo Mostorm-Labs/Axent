@@ -1,0 +1,4 @@
+id: websocket-jsonrpc
+title: AXTP WebSocket JSON RPC Conformance
+since: spec/v0.0.2
+description: WebSocket unframed JSON RPC session and request/response behavior.

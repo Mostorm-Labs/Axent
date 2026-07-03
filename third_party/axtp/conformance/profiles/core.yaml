@@ -1,0 +1,4 @@
+id: core
+title: AXTP Core Conformance
+since: spec/v0.0.2
+description: Minimum RPC, request matching, error, and registry behavior.

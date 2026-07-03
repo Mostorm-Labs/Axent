@@ -1,0 +1,4 @@
+interface:
+  display_name: "60 Release AXTP Spec"
+  short_description: "Stage 60: publish AXTP Spec releases"
+  default_prompt: "发布spec v0.3.0"

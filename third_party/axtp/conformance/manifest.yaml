@@ -1,0 +1,53 @@
+conformance:
+  version: 0.1.0
+  spec_min: spec/v0.0.2
+
+levels:
+  core:
+    description: Required minimum AXTP RPC and registry behavior for all runtimes.
+    required_cases:
+      - rpc.request_response_json
+      - rpc.method_not_found
+      - rpc.request_id_match
+      - error.standard_error_shape
+
+  capability:
+    description: Generated registry and capability metadata behavior available in spec/v0.0.2.
+    required_cases:
+      - capability.get_all
+      - capability.method_binding
+      - capability.unsupported_method
+
+  event:
+    description: RPC event decode/encode behavior.
+    required_cases:
+      - event.subscribe_event
+      - event.unsubscribe_event
+      - event.emit_event
+
+  stream:
+    description: Phase 1 Standard Framed STREAM payload behavior.
+    required_cases:
+      - stream.stream_open
+      - stream.stream_data
+      - stream.stream_close
+
+  websocket-jsonrpc:
+    description: WebSocket unframed JSON RPC behavior.
+    required_cases:
+      - session.hello_identify_identified
+      - session.request_before_identified
+      - rpc.request_response_json
+      - rpc.method_not_found
+      - rpc.request_id_match
+
+  framed-binary:
+    description: Standard framed CONTROL, RPC and STREAM behavior.
+    required_cases:
+      - handshake.open_accept
+      - handshake.close
+      - handshake.heartbeat
+      - rpc.request_id_match
+      - stream.stream_open
+      - stream.stream_data
+      - stream.stream_close

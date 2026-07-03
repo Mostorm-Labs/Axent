@@ -1,0 +1,698 @@
+domain: video
+description: Video control and real-time video stream capabilities.
+
+methods:
+  - id: 0x0812
+    name: video.getStreamCapabilities
+    domain: video
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return video stream sources, codecs, profiles, and open-mode support.
+    rpc_op: request_response
+    request_schema: VideoGetStreamCapabilitiesParams
+    response_schema: VideoStreamCapabilities
+    recommended_encoding: [json, tlv]
+    capabilities: [video.stream]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x080B
+    name: video.openStream
+    domain: video
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Open a real-time video STREAM and return the negotiated streamId and media metadata.
+    rpc_op: request_response
+    request_schema: VideoOpenStreamParams
+    response_schema: VideoOpenStreamResult
+    recommended_encoding: [json, tlv]
+    capabilities: [video.stream]
+    events: [video.streamStateChanged, video.streamSourceStateChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, BUSY, RESOURCE_EXHAUSTED, MEDIA_SOURCE_NOT_FOUND, MEDIA_SOURCE_UNAVAILABLE, MEDIA_CODEC_UNSUPPORTED, MEDIA_RESOLUTION_UNSUPPORTED, MEDIA_FRAMERATE_UNSUPPORTED, MEDIA_STREAM_START_FAILED]
+
+  - id: 0x080C
+    name: video.closeStream
+    domain: video
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Close a previously opened video STREAM.
+    rpc_op: request_response
+    request_schema: VideoCloseStreamParams
+    response_schema: VideoCloseStreamResult
+    recommended_encoding: [json, tlv]
+    capabilities: [video.stream]
+    events: [video.streamStateChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, STREAM_CLOSED, INVALID_STATE, MEDIA_STREAM_STOP_FAILED]
+
+  - id: 0x080D
+    name: video.getStreamState
+    domain: video
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Return runtime state for an opened video stream.
+    rpc_op: request_response
+    request_schema: VideoGetStreamStateParams
+    response_schema: VideoStreamState
+    recommended_encoding: [json, tlv]
+    capabilities: [video.stream]
+    errors: [SUCCESS, STREAM_NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0813
+    name: video.getStreamSourceState
+    domain: video
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Return availability and receiving state for a video stream source.
+    rpc_op: request_response
+    request_schema: VideoGetStreamSourceStateParams
+    response_schema: VideoStreamSourceState
+    recommended_encoding: [json, tlv]
+    capabilities: [video.stream]
+    errors: [SUCCESS, NOT_SUPPORTED, INVALID_ARGUMENT, MEDIA_SOURCE_NOT_FOUND, UNAVAILABLE]
+
+  - id: 0x0814
+    name: video.requestKeyFrame
+    domain: video
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Request an encoder key frame for an active video stream.
+    rpc_op: request_response
+    request_schema: VideoRequestKeyFrameParams
+    response_schema: VideoRequestKeyFrameResult
+    recommended_encoding: [json, tlv]
+    capabilities: [video.stream]
+    events: [video.streamStateChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, INVALID_STATE, MEDIA_STREAM_START_FAILED, PERMISSION_DENIED]
+
+events:
+  - id: 0x0806
+    name: video.streamStateChanged
+    domain: video
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted when a video stream enters opening, streaming, closed, failed, or keyframe-related state.
+    event_schema: VideoStreamStateChangedEvent
+    severity: info
+    trigger: [video.openStream, video.closeStream, video.requestKeyFrame, source disconnected, stream failure]
+    capabilities: [video.stream]
+
+  - id: 0x0807
+    name: video.streamSourceStateChanged
+    domain: video
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Emitted when a video stream source availability or receiving state changes.
+    event_schema: VideoStreamSourceStateChangedEvent
+    severity: info
+    trigger: [source available, source receiving, source stopped]
+    capabilities: [video.stream]
+
+  - id: 0x0808
+    name: video.streamStatsReported
+    domain: video
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Emitted with bounded runtime statistics for a video stream.
+    event_schema: VideoStreamStatsReportedEvent
+    severity: info
+    trigger: [stream statistics interval, diagnostic sampling]
+    capabilities: [video.stream]
+
+types:
+  VideoGetStreamCapabilitiesParams:
+    kind: object
+    description: Selector for video stream capability.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: false
+        max_length: 128
+        description: Optional video source identifier; omit to query all visible sources.
+      - id: 0x02
+        name: includeRuntimeState
+        type: bool
+        required: false
+        default: false
+        description: Whether to include current source runtime state.
+
+  VideoStreamCapabilities:
+    kind: object
+    description: Device-level video.stream capability summary.
+    fields:
+      - id: 0x01
+        name: capability
+        type: string
+        required: true
+        max_length: 32
+        description: Fixed capability name video.stream.
+      - id: 0x02
+        name: sources
+        type: array
+        schema: VideoStreamSource
+        required: true
+        description: Video stream source objects.
+      - id: 0x03
+        name: streamProfiles
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported stream profiles, normally media.video.
+      - id: 0x04
+        name: openModes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported open modes, such as producer_open and receiver_pull.
+      - id: 0x05
+        name: peerRoles
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Peer roles, such as receiver and transmitter.
+      - id: 0x06
+        name: supportsSourceStateEvent
+        type: bool
+        required: true
+        description: Whether video.streamSourceStateChanged is supported.
+      - id: 0x07
+        name: supportsSyncGroup
+        type: bool
+        required: true
+        description: Whether video streams can share a synchronization group with audio streams.
+      - id: 0x08
+        name: flowControlManagedByRuntime
+        type: bool
+        required: true
+        description: Whether normal applications can rely on runtime-managed STREAM flow control.
+
+  VideoStreamSource:
+    kind: object
+    description: One real-time video stream source.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Source identifier such as wireless_cast_video.
+      - id: 0x02
+        name: displayName
+        type: string
+        required: false
+        max_length: 128
+        description: User-visible source name.
+      - id: 0x03
+        name: codecs
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported video codecs.
+      - id: 0x04
+        name: resolutions
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Supported resolution descriptors.
+      - id: 0x05
+        name: frameRates
+        type: array
+        array:
+          item_type: number
+        required: false
+        description: Supported frame rates.
+      - id: 0x06
+        name: state
+        type: enum
+        required: false
+        description: Runtime source state, such as available, receiving, stopped, or unavailable.
+
+  VideoOpenStreamParams:
+    kind: object
+    description: Request to open a real-time video stream.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Video source identifier.
+      - id: 0x02
+        name: peerRole
+        type: enum
+        required: true
+        description: Requested peer media role; values include receiver and transmitter.
+      - id: 0x03
+        name: codec
+        type: enum
+        required: true
+        description: Requested video codec, such as h264, h265, mjpeg, or raw.
+      - id: 0x04
+        name: width
+        type: uint32
+        required: false
+        description: Requested frame width in pixels.
+      - id: 0x05
+        name: height
+        type: uint32
+        required: false
+        description: Requested frame height in pixels.
+      - id: 0x06
+        name: frameRate
+        type: uint32
+        required: false
+        description: Requested frame rate.
+      - id: 0x07
+        name: bitrateKbps
+        type: uint32
+        required: false
+        description: Requested bitrate in kbps.
+      - id: 0x08
+        name: streamProfile
+        type: string
+        required: false
+        max_length: 64
+        default: media.video
+        description: STREAM profile name.
+      - id: 0x09
+        name: cursorUnit
+        type: enum
+        required: false
+        description: STREAM cursor unit, such as timestampUs or frameIndex.
+      - id: 0x0A
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional synchronization group identifier.
+      - id: 0x0B
+        name: castSessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional cast session identifier.
+      - id: 0x0C
+        name: clockDomain
+        type: string
+        required: false
+        max_length: 128
+        description: Source media clock domain.
+      - id: 0x0D
+        name: maxDataSize
+        type: uint32
+        required: false
+        description: Preferred maximum STREAM payload data size.
+
+  VideoOpenStreamResult:
+    kind: object
+    description: Result of opening a real-time video stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Initial state, normally opening or streaming.
+      - id: 0x03
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Bound source identifier.
+      - id: 0x04
+        name: peerRole
+        type: enum
+        required: true
+        description: Confirmed peer media role.
+      - id: 0x05
+        name: codec
+        type: enum
+        required: true
+        description: Negotiated codec.
+      - id: 0x06
+        name: width
+        type: uint32
+        required: false
+        description: Negotiated frame width.
+      - id: 0x07
+        name: height
+        type: uint32
+        required: false
+        description: Negotiated frame height.
+      - id: 0x08
+        name: frameRate
+        type: uint32
+        required: false
+        description: Negotiated frame rate.
+      - id: 0x09
+        name: bitrateKbps
+        type: uint32
+        required: false
+        description: Negotiated bitrate in kbps.
+      - id: 0x0A
+        name: streamProfile
+        type: string
+        required: true
+        max_length: 64
+        description: Normalized stream profile.
+      - id: 0x0B
+        name: cursorUnit
+        type: enum
+        required: true
+        description: STREAM cursor unit.
+      - id: 0x0C
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Synchronization group identifier.
+      - id: 0x0D
+        name: maxDataSize
+        type: uint32
+        required: false
+        description: Negotiated maximum STREAM payload data size.
+
+  VideoCloseStreamParams:
+    kind: object
+    description: Request to close a video stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: peerRole
+        type: enum
+        required: false
+        description: Peer role in this stream.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Close reason.
+      - id: 0x04
+        name: finalCursor
+        type: uint64
+        required: false
+        description: Last processed cursor value.
+
+  VideoCloseStreamResult:
+    kind: object
+    description: Result of closing a video stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: Closed stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Close state, such as closing, closed, or failed.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        description: Final close reason.
+      - id: 0x04
+        name: alreadyClosed
+        type: bool
+        required: false
+        default: false
+        description: Whether the stream was already terminal before this request.
+
+  VideoGetStreamStateParams:
+    kind: object
+    description: Selector for a video stream state query.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+
+  VideoStreamState:
+    kind: object
+    description: Runtime state of one video stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: Stream state, such as opening, streaming, closing, closed, or failed.
+      - id: 0x03
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Bound video source.
+      - id: 0x04
+        name: peerRole
+        type: enum
+        required: false
+        description: Peer media role.
+      - id: 0x05
+        name: codec
+        type: enum
+        required: false
+        description: Negotiated video codec.
+      - id: 0x06
+        name: streamProfile
+        type: string
+        required: false
+        max_length: 64
+        description: Stream profile.
+      - id: 0x07
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Synchronization group identifier.
+      - id: 0x08
+        name: cursorUnit
+        type: enum
+        required: false
+        description: STREAM cursor unit.
+      - id: 0x09
+        name: lastCursor
+        type: uint64
+        required: false
+        description: Last known cursor value.
+      - id: 0x0A
+        name: keyFrameRequested
+        type: bool
+        required: false
+        description: Whether a key frame has been requested and is pending.
+      - id: 0x0B
+        name: failureReason
+        type: enum
+        required: false
+        description: Failure reason when state is failed.
+
+  VideoGetStreamSourceStateParams:
+    kind: object
+    description: Selector for video source runtime state.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Video source identifier.
+
+  VideoStreamSourceState:
+    kind: object
+    description: Runtime state of a video stream source.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Video source identifier.
+      - id: 0x02
+        name: mediaKind
+        type: enum
+        required: false
+        description: Media kind, normally video.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        description: Source state, such as unavailable, available, receiving, stopped, or failed.
+      - id: 0x04
+        name: available
+        type: bool
+        required: false
+        description: Whether the source is available for openStream.
+      - id: 0x05
+        name: activeStreamId
+        type: uint32
+        required: false
+        description: Active downstream stream id, if any.
+
+  VideoRequestKeyFrameParams:
+    kind: object
+    description: Request a key frame for an active video stream.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        description: Request reason.
+
+  VideoRequestKeyFrameResult:
+    kind: object
+    description: Result of a key frame request.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the request was accepted.
+      - id: 0x02
+        name: state
+        type: VideoStreamState
+        required: false
+        description: Current or updated stream state.
+
+  VideoStreamStateChangedEvent:
+    kind: object
+    description: Event payload for video stream state changes.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        description: New stream state.
+      - id: 0x03
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Bound video source.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: State change reason.
+      - id: 0x05
+        name: stats
+        type: VideoStreamStats
+        required: false
+        description: Optional bounded stream statistics.
+
+  VideoStreamSourceStateChangedEvent:
+    kind: object
+    description: Event payload for video stream source state changes.
+    fields:
+      - id: 0x01
+        name: source
+        type: string
+        required: true
+        max_length: 128
+        description: Video source identifier.
+      - id: 0x02
+        name: mediaKind
+        type: enum
+        required: false
+        description: Media kind, normally video.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        description: New source state.
+      - id: 0x04
+        name: reason
+        type: enum
+        required: false
+        description: Source state change reason.
+      - id: 0x05
+        name: activeStreamId
+        type: uint32
+        required: false
+        description: Active downstream stream id, if any.
+
+  VideoStreamStatsReportedEvent:
+    kind: object
+    description: Event payload for video stream statistics reports.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data plane stream identifier.
+      - id: 0x02
+        name: stats
+        type: VideoStreamStats
+        required: true
+        description: Bounded stream statistics.
+
+  VideoStreamStats:
+    kind: object
+    description: Bounded runtime statistics for a video stream.
+    fields:
+      - id: 0x01
+        name: frames
+        type: uint64
+        required: false
+        description: Number of frames observed.
+      - id: 0x02
+        name: bytes
+        type: uint64
+        required: false
+        description: Number of STREAM payload bytes observed.
+      - id: 0x03
+        name: droppedFrames
+        type: uint64
+        required: false
+        description: Number of dropped frames.
+      - id: 0x04
+        name: bitrateKbps
+        type: uint32
+        required: false
+        description: Estimated bitrate in kbps.
+
+capabilities:
+  - id: 0x0801
+    name: video.stream
+    domain: video
+    status: draft
+    since: 1.0.0
+    description: Device supports real-time video STREAM setup, close, state, source state, key frame requests, and stats events.
+    type: object
+    schema: VideoStreamCapabilities

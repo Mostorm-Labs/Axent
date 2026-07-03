@@ -1,0 +1,29 @@
+id: capability.method_binding
+title: Audio methods bind to audio.algorithm capability
+since: spec/v0.0.2
+level: capability
+profiles:
+  - capability
+  - core
+
+given:
+  capability: audio.algorithm
+
+steps:
+  - direction: runtime_local
+    registry_lookup:
+      capability: audio.algorithm
+      methods:
+        - audio.getAlgorithmCapabilities
+        - audio.getAlgorithmConfig
+        - audio.setAlgorithmConfig
+        - audio.resetAlgorithmConfig
+
+  - direction: runtime_local
+    expect:
+      capability:
+        id: 0x0901
+
+assertions:
+  - capability.name == "audio.algorithm"
+  - capability.methods contains "audio.getAlgorithmConfig"

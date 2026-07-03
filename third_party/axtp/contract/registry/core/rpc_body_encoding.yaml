@@ -1,0 +1,16 @@
+rpc_body_encodings:
+  - id: 0x00
+    name: NONE
+    domain: rpc
+    status: mvp
+    description: No binary RPC body.
+  - id: 0x01
+    name: TLV8
+    domain: rpc
+    status: mvp
+    description: TLV body with 1B field id and 1B length.
+  - id: 0x02
+    name: TLV16
+    domain: rpc
+    status: draft
+    description: TLV body with extended length support.

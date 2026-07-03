@@ -1,0 +1,27 @@
+id: event.subscribe_event
+title: Identify can carry event subscription intent
+since: spec/v0.0.2
+level: event
+profiles:
+  - event
+  - websocket-jsonrpc
+
+given:
+  event: audio.algorithmConfigChanged
+
+steps:
+  - direction: client_to_server
+    jsonrpc:
+      sid: ""
+      op: IDENTIFY
+      d:
+        randomSeed: 305419896
+        eventMasks: "090101"
+
+  - direction: server_to_client
+    expect:
+      jsonrpc:
+        op: IDENTIFIED
+
+assertions:
+  - identified.op == IDENTIFIED

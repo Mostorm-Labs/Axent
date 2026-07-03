@@ -1,0 +1,28 @@
+capabilities:
+  - id: 0x0001
+    name: protocol.payload.control
+    domain: protocol
+    status: mvp
+    type: bool
+    description: Device supports CONTROL payload.
+
+  - id: 0x0002
+    name: protocol.payload.rpc
+    domain: protocol
+    status: mvp
+    type: bool
+    description: Device supports RPC payload.
+
+  - id: 0x0003
+    name: protocol.payload.stream
+    domain: protocol
+    status: mvp
+    type: bool
+    description: Device supports STREAM data-plane payloads.
+
+  - id: 0x0009
+    name: protocol.reservedRequestIdWidth
+    domain: protocol
+    status: reserved
+    type: reserved
+    description: Historical requestId width negotiation bit; AXTP v1 fixes requestId as uint32.

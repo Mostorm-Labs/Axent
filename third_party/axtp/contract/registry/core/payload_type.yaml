@@ -1,0 +1,16 @@
+payload_types:
+  - id: 0x01
+    name: CONTROL
+    domain: protocol
+    status: mvp
+    description: Protocol runtime control payload.
+  - id: 0x02
+    name: RPC
+    domain: protocol
+    status: mvp
+    description: Structured business RPC payload.
+  - id: 0x03
+    name: STREAM
+    domain: protocol
+    status: mvp
+    description: Continuous data plane payload.

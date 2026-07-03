@@ -1,0 +1,31 @@
+id: handshake.open_reject
+title: CONTROL OPEN rejection shape
+since: spec/v0.0.2
+level: framed-binary
+profiles:
+  - framed-binary
+
+given:
+  transport: standard_frame
+  server:
+    rejectOpen: true
+
+steps:
+  - direction: client_to_server
+    control:
+      type: OPEN
+      controlId: 1
+
+  - direction: server_to_client
+    expect:
+      control:
+        type: ACCEPT
+        controlId: 1
+        statusCode:
+          oneOf:
+            - CONTROL_OPEN_REJECTED
+            - CONTROL_NEGOTIATION_FAILED
+
+assertions:
+  - rejected.controlId == open.controlId
+  - rejected.statusCode != SUCCESS

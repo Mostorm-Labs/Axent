@@ -1,0 +1,2352 @@
+domain: cast
+description: Cast receiver control capabilities for AirPlay/UxPlay and receiver-side status.
+
+methods:
+  - id: 0x1601
+    name: cast.getSession
+    domain: cast
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return the current cast receiver phase and active session summary.
+    rpc_op: request_response
+    request_schema: CastGetSessionParams
+    response_schema: CastSessionState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.session]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1602
+    name: cast.stopSession
+    domain: cast
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Stop the current cast session when one is active.
+    rpc_op: request_response
+    request_schema: CastStopSessionParams
+    response_schema: CastStopSessionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.session]
+    events: [cast.sessionStateChanged, cast.sessionStopped]
+    errors: [SUCCESS, INVALID_ARGUMENT, INVALID_STATE, UNAVAILABLE]
+
+  - id: 0x1603
+    name: cast.getAirPlayName
+    domain: cast
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Return the AirPlay receiver display name and publish state.
+    rpc_op: request_response
+    request_schema: Empty
+    response_schema: CastAirPlayNameState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.session]
+    errors: [SUCCESS, UNAVAILABLE]
+
+  - id: 0x1604
+    name: cast.setAirPlayName
+    domain: cast
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Set the AirPlay receiver display name and request service rediscovery.
+    rpc_op: request_response
+    request_schema: CastSetAirPlayNameParams
+    response_schema: CastAirPlayNameState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.session]
+    events: [cast.sessionStateChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1605
+    name: cast.getAudio
+    domain: cast
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Return local cast audio playback and mute state.
+    rpc_op: request_response
+    request_schema: CastGetAudioParams
+    response_schema: CastAudioState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.audio]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1606
+    name: cast.setAudio
+    domain: cast
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Enable or disable local playback of received cast audio.
+    rpc_op: request_response
+    request_schema: CastSetAudioParams
+    response_schema: CastAudioState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.audio]
+    events: [cast.audioChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1607
+    name: cast.setMuted
+    domain: cast
+    status: draft
+    bitOffset: 6
+    since: 1.0.0
+    description: Mute or unmute local cast audio output.
+    rpc_op: request_response
+    request_schema: CastSetMutedParams
+    response_schema: CastAudioState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.audio]
+    events: [cast.audioChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1608
+    name: cast.getPinCodeConfig
+    domain: cast
+    status: draft
+    bitOffset: 7
+    since: 1.0.0
+    description: Return cast PIN protection state, visibility, and optional secret material.
+    rpc_op: request_response
+    request_schema: CastGetPinCodeConfigParams
+    response_schema: CastPinCodeConfig
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.pinCode]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1609
+    name: cast.setPinCodeConfig
+    domain: cast
+    status: draft
+    bitOffset: 8
+    since: 1.0.0
+    description: Enable or disable cast PIN protection and update display policy.
+    rpc_op: request_response
+    request_schema: CastSetPinCodeConfigParams
+    response_schema: CastPinCodeConfig
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.pinCode]
+    events: [cast.pinCodeChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, INVALID_STATE, UNAVAILABLE]
+
+  - id: 0x160A
+    name: cast.setPinCode
+    domain: cast
+    status: draft
+    bitOffset: 9
+    since: 1.0.0
+    description: Set the current cast PIN value according to receiver policy.
+    rpc_op: request_response
+    request_schema: CastSetPinCodeParams
+    response_schema: CastPinCodeConfig
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.pinCode]
+    events: [cast.pinCodeChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, INVALID_STATE, UNAVAILABLE]
+
+  - id: 0x160B
+    name: cast.getWindowState
+    domain: cast
+    status: draft
+    bitOffset: 10
+    since: 1.0.0
+    description: Return cast window visibility, mode, and bounds summary.
+    rpc_op: request_response
+    request_schema: Empty
+    response_schema: CastWindowState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.window]
+    errors: [SUCCESS, UNAVAILABLE]
+
+  - id: 0x160C
+    name: cast.setWindowState
+    domain: cast
+    status: draft
+    bitOffset: 11
+    since: 1.0.0
+    description: Set cast window mode, fullscreen state, or always-on-top state.
+    rpc_op: request_response
+    request_schema: CastSetWindowStateParams
+    response_schema: CastWindowState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.window]
+    events: [cast.windowChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, INVALID_STATE, UNAVAILABLE]
+
+  - id: 0x160D
+    name: cast.getBackendStatus
+    domain: cast
+    status: draft
+    bitOffset: 12
+    since: 1.0.0
+    description: Return cast backend process, discoverability, and last-error state.
+    rpc_op: request_response
+    request_schema: CastGetBackendStatusParams
+    response_schema: CastBackendStatus
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.backend]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x160E
+    name: cast.restartBackend
+    domain: cast
+    status: draft
+    bitOffset: 13
+    since: 1.0.0
+    description: Restart the cast backend without restarting the receiver application or device.
+    rpc_op: request_response
+    request_schema: CastRestartBackendParams
+    response_schema: CastRestartBackendResult
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.backend]
+    events: [cast.backendChanged, cast.sessionStopped]
+    errors: [SUCCESS, BUSY, INVALID_STATE, UNAVAILABLE]
+
+  - id: 0x160F
+    name: cast.getFlowControlState
+    domain: cast
+    status: draft
+    bitOffset: 14
+    since: 1.0.0
+    description: Return local cast render fps, queue policy, and low-frequency diagnostics.
+    rpc_op: request_response
+    request_schema: CastGetFlowControlStateParams
+    response_schema: CastFlowControlState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.flowControl]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+  - id: 0x1610
+    name: cast.setRenderFps
+    domain: cast
+    status: draft
+    bitOffset: 15
+    since: 1.0.0
+    description: Set the receiver-local target render fps for cast media.
+    rpc_op: request_response
+    request_schema: CastSetRenderFpsParams
+    response_schema: CastFlowControlState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.flowControl]
+    events: [cast.flowControlChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, OUT_OF_RANGE, UNAVAILABLE]
+
+  - id: 0x1611
+    name: cast.setFlowPolicy
+    domain: cast
+    status: draft
+    bitOffset: 16
+    since: 1.0.0
+    description: Set receiver-local cast queue, late-frame, drop, and overlay policy.
+    rpc_op: request_response
+    request_schema: CastSetFlowPolicyParams
+    response_schema: CastFlowControlState
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.flowControl]
+    events: [cast.flowControlChanged]
+    errors: [SUCCESS, INVALID_ARGUMENT, OUT_OF_RANGE, UNAVAILABLE]
+
+  - id: 0x1612
+    name: cast.getStatus
+    domain: cast
+    status: draft
+    bitOffset: 17
+    since: 1.0.0
+    description: Return a current cast receiver snapshot for UI reload, reconnect, or event-loss recovery.
+    rpc_op: request_response
+    request_schema: CastGetStatusParams
+    response_schema: CastStatus
+    recommended_encoding: [json, tlv]
+    capabilities: [cast.status]
+    errors: [SUCCESS, INVALID_ARGUMENT, UNAVAILABLE]
+
+events:
+  - id: 0x1601
+    name: cast.sessionIncoming
+    domain: cast
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted when a cast source initiates a receiver session.
+    event_schema: CastSessionIncomingEvent
+    severity: info
+    trigger: [source connected, backend incoming session]
+    capabilities: [cast.session]
+
+  - id: 0x1602
+    name: cast.sessionStateChanged
+    domain: cast
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Emitted when receiver phase, protocol state, or low-frequency session media state changes.
+    event_schema: CastSessionStateChangedEvent
+    severity: info
+    trigger: [incoming session, authentication, stream starting, media flow started, interruption, stopping]
+    capabilities: [cast.session]
+
+  - id: 0x1603
+    name: cast.sessionStarted
+    domain: cast
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Emitted when a cast session becomes user-visible after first frame or local playback starts.
+    event_schema: CastSessionStartedEvent
+    severity: info
+    trigger: [first frame rendered, local playback started]
+    capabilities: [cast.session]
+
+  - id: 0x1604
+    name: cast.sessionStopped
+    domain: cast
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Emitted when a cast session ends normally or is forced to stop.
+    event_schema: CastSessionStoppedEvent
+    severity: info
+    trigger: [cast.stopSession, source closed, backend restart, backend exited]
+    capabilities: [cast.session]
+
+  - id: 0x1605
+    name: cast.sessionFailed
+    domain: cast
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Emitted when cast connection, authentication, negotiation, or backend handling fails.
+    event_schema: CastSessionFailedEvent
+    severity: error
+    trigger: [connection failed, authentication failed, media negotiation failed, backend failed]
+    capabilities: [cast.session]
+
+  - id: 0x1606
+    name: cast.audioChanged
+    domain: cast
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Emitted when local cast audio playback or mute state changes.
+    event_schema: CastAudioChangedEvent
+    severity: info
+    trigger: [cast.setAudio, cast.setMuted, local UI, session started, session stopped]
+    capabilities: [cast.audio]
+
+  - id: 0x1607
+    name: cast.pinCodeChanged
+    domain: cast
+    status: draft
+    bitOffset: 6
+    since: 1.0.0
+    description: Emitted when cast PIN protection configuration or current PIN state changes.
+    event_schema: CastPinCodeChangedEvent
+    severity: info
+    trigger: [cast.setPinCodeConfig, cast.setPinCode, generated PIN changed]
+    capabilities: [cast.pinCode]
+
+  - id: 0x1608
+    name: cast.pinCodeRequired
+    domain: cast
+    status: draft
+    bitOffset: 7
+    since: 1.0.0
+    description: Emitted when a cast source is waiting for PIN authentication.
+    event_schema: CastPinCodeRequiredEvent
+    severity: info
+    trigger: [incoming session requires PIN]
+    capabilities: [cast.pinCode]
+
+  - id: 0x1609
+    name: cast.pinCodeAuthFailed
+    domain: cast
+    status: draft
+    bitOffset: 8
+    since: 1.0.0
+    description: Emitted when PIN authentication fails, times out, or is cancelled.
+    event_schema: CastPinCodeAuthFailedEvent
+    severity: warning
+    trigger: [wrong PIN, authentication timeout, authentication cancelled, too many attempts]
+    capabilities: [cast.pinCode]
+
+  - id: 0x160A
+    name: cast.windowChanged
+    domain: cast
+    status: draft
+    bitOffset: 9
+    since: 1.0.0
+    description: Emitted when cast window visibility, mode, topmost state, or bounds changes.
+    event_schema: CastWindowChangedEvent
+    severity: info
+    trigger: [cast.setWindowState, local UI, session started, session stopped]
+    capabilities: [cast.window]
+
+  - id: 0x160B
+    name: cast.backendChanged
+    domain: cast
+    status: draft
+    bitOffset: 10
+    since: 1.0.0
+    description: Emitted when cast backend ready, restart, exit, failed, or discoverable state changes.
+    event_schema: CastBackendChangedEvent
+    severity: info
+    trigger: [backend started, backend restarting, backend exited, backend failed, discovery changed]
+    capabilities: [cast.backend]
+
+  - id: 0x160C
+    name: cast.flowControlChanged
+    domain: cast
+    status: draft
+    bitOffset: 11
+    since: 1.0.0
+    description: Emitted when receiver-local cast flow policy or low-frequency flow statistics change.
+    event_schema: CastFlowControlChangedEvent
+    severity: info
+    trigger: [cast.setRenderFps, cast.setFlowPolicy, diagnostics sample]
+    capabilities: [cast.flowControl]
+
+types:
+  CastSourceSummary:
+    kind: object
+    description: Summary of a cast source device or local AXTP sender.
+    fields:
+      - id: 0x01
+        name: name
+        type: string
+        required: false
+        max_length: 128
+        description: User-visible source name when known.
+      - id: 0x02
+        name: model
+        type: string
+        required: false
+        max_length: 128
+        description: Source model identifier when known.
+      - id: 0x03
+        name: address
+        type: string
+        required: false
+        max_length: 128
+        description: Network or transport address summary when safe to expose.
+      - id: 0x04
+        name: sourceId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local source identifier.
+      - id: 0x05
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Protocol path that produced the source summary.
+
+  CastMediaSummary:
+    kind: object
+    description: Low-frequency media summary for a cast session.
+    fields:
+      - id: 0x01
+        name: firstFrame
+        type: bool
+        required: false
+        description: Whether the first visible frame has rendered.
+      - id: 0x02
+        name: width
+        type: uint32
+        required: false
+        description: Current media width in pixels.
+      - id: 0x03
+        name: height
+        type: uint32
+        required: false
+        description: Current media height in pixels.
+      - id: 0x04
+        name: orientation
+        type: enum
+        required: false
+        enum: [landscape, portrait, unknown]
+        description: Current media orientation summary.
+      - id: 0x05
+        name: inputFps
+        type: number
+        required: false
+        min: 0
+        description: Estimated incoming media frame rate.
+      - id: 0x06
+        name: renderFps
+        type: number
+        required: false
+        min: 0
+        description: Estimated local render frame rate.
+      - id: 0x07
+        name: audioActive
+        type: bool
+        required: false
+        description: Whether local receiver audio output is active.
+
+  CastLastError:
+    kind: object
+    description: Redactable backend or receiver error summary.
+    fields:
+      - id: 0x01
+        name: code
+        type: string
+        required: false
+        max_length: 64
+        description: Backend-local or AXTP-visible error code.
+      - id: 0x02
+        name: message
+        type: string
+        required: false
+        max_length: 512
+        description: Human-readable error summary suitable for authorized clients.
+      - id: 0x03
+        name: occurredAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when the error was observed.
+      - id: 0x04
+        name: redacted
+        type: bool
+        required: false
+        default: false
+        description: Whether sensitive details were removed from this summary.
+
+  CastGetSessionParams:
+    kind: object
+    description: Selector for cast receiver and active session summary.
+    fields:
+      - id: 0x01
+        name: include
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional summary sections, such as source, media, or airPlayName.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id to query.
+
+  CastSessionState:
+    kind: object
+    description: Current receiver phase and active session state.
+    fields:
+      - id: 0x01
+        name: receiverState
+        type: enum
+        required: true
+        enum: [disabled, starting, ready, busy, failed]
+        description: Receiver service availability state.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local active session id.
+      - id: 0x03
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Protocol-neutral receiver phase used by UI and reconnection calibration.
+      - id: 0x04
+        name: sessionState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: AirPlay or backend-specific session state detail.
+      - id: 0x05
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Cast protocol path currently represented by this state.
+      - id: 0x06
+        name: airPlayName
+        type: string
+        required: false
+        max_length: 128
+        description: Current published AirPlay receiver display name.
+      - id: 0x07
+        name: source
+        type: CastSourceSummary
+        required: false
+        description: Source device summary.
+      - id: 0x08
+        name: media
+        type: CastMediaSummary
+        required: false
+        description: Low-frequency media summary.
+      - id: 0x09
+        name: backendState
+        type: enum
+        required: false
+        enum: [starting, ready, restarting, exited, failed, disabled]
+        description: Current backend state summary.
+      - id: 0x0A
+        name: reason
+        type: enum
+        required: false
+        enum: [sessionStarted, mediaFlowStarted, externalRequest, sourceClosed, backendRestart, backendExited, authFailed, error, unknown]
+        description: Last state transition reason.
+      - id: 0x0B
+        name: authRequired
+        type: bool
+        required: false
+        description: Whether this session path currently requires authentication.
+      - id: 0x0C
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this state snapshot.
+
+  CastStopSessionParams:
+    kind: object
+    description: Request to stop an active cast session.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id; omitted means current active session.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        enum: [externalRequest, localUi, backendRestart, shutdown, unknown]
+        description: Caller-visible reason for stopping the session.
+      - id: 0x03
+        name: force
+        type: bool
+        required: false
+        default: false
+        description: Whether the receiver may force backend/session cleanup.
+
+  CastStopSessionResult:
+    kind: object
+    description: Result of a cast session stop request.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the receiver accepted the stop request.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Session affected by the request.
+      - id: 0x03
+        name: previousReceiverPhase
+        type: enum
+        required: false
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Receiver phase before the stop transition.
+      - id: 0x04
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Receiver phase after accepting the stop request.
+      - id: 0x05
+        name: previousState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: Backend-specific state before the stop transition.
+      - id: 0x06
+        name: sessionState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: Backend-specific state after accepting the stop request.
+      - id: 0x07
+        name: reason
+        type: enum
+        required: false
+        enum: [externalRequest, sourceClosed, backendRestart, backendExited, shutdown, unknown]
+        description: Applied stop reason.
+      - id: 0x08
+        name: noActiveSession
+        type: bool
+        required: false
+        description: Whether no active session existed when the request was processed.
+      - id: 0x09
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for the result.
+
+  CastSetAirPlayNameParams:
+    kind: object
+    description: Request to set the AirPlay receiver display name.
+    fields:
+      - id: 0x01
+        name: displayName
+        type: string
+        required: true
+        max_length: 128
+        description: Target AirPlay display name.
+      - id: 0x02
+        name: apply
+        type: enum
+        required: false
+        enum: [immediate, onNextBackendStart]
+        description: Requested backend apply timing.
+
+  CastAirPlayNameState:
+    kind: object
+    description: AirPlay display name and backend publish state.
+    fields:
+      - id: 0x01
+        name: displayName
+        type: string
+        required: true
+        max_length: 128
+        description: Current AirPlay display name.
+      - id: 0x02
+        name: previousDisplayName
+        type: string
+        required: false
+        max_length: 128
+        description: Previous display name when a change was applied.
+      - id: 0x03
+        name: source
+        type: enum
+        required: false
+        enum: [configured, default, backend, unknown]
+        description: Source of the current display name.
+      - id: 0x04
+        name: apply
+        type: enum
+        required: false
+        enum: [immediate, onNextBackendStart]
+        description: Apply timing used for the latest update.
+      - id: 0x05
+        name: publishState
+        type: enum
+        required: true
+        enum: [published, republishing, pending, failed, unpublished]
+        description: Bonjour or backend service publish state.
+      - id: 0x06
+        name: backendType
+        type: enum
+        required: false
+        enum: [uxplay, unknown]
+        description: Backend that owns the published name.
+      - id: 0x07
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this name state.
+
+  CastSessionIncomingEvent:
+    kind: object
+    description: Event payload for a new incoming cast session.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id assigned to the incoming session.
+      - id: 0x02
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [incoming, authenticating]
+        description: Receiver phase entered for the incoming session.
+      - id: 0x03
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Protocol path used by the incoming session.
+      - id: 0x04
+        name: source
+        type: CastSourceSummary
+        required: false
+        description: Source summary when available.
+      - id: 0x05
+        name: authRequired
+        type: bool
+        required: false
+        description: Whether this incoming session requires authentication.
+      - id: 0x06
+        name: incomingAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when the incoming session was observed.
+
+  CastSessionStateChangedEvent:
+    kind: object
+    description: Event payload for receiver phase or backend session state changes.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id.
+      - id: 0x02
+        name: previousReceiverPhase
+        type: enum
+        required: false
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Previous receiver phase.
+      - id: 0x03
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: New receiver phase.
+      - id: 0x04
+        name: previousState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: Previous backend-specific session state.
+      - id: 0x05
+        name: sessionState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: New backend-specific session state.
+      - id: 0x06
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Protocol path represented by this event.
+      - id: 0x07
+        name: authRequired
+        type: bool
+        required: false
+        description: Whether the current session phase requires authentication.
+      - id: 0x08
+        name: media
+        type: CastMediaSummary
+        required: false
+        description: Low-frequency media summary at the time of transition.
+      - id: 0x09
+        name: reason
+        type: enum
+        required: false
+        enum: [sessionStarted, mediaFlowStarted, externalRequest, sourceClosed, backendRestart, backendExited, authFailed, error, unknown]
+        description: Transition reason.
+      - id: 0x0A
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for the transition.
+
+  CastSessionStartedEvent:
+    kind: object
+    description: Event payload for a user-visible cast session start.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: true
+        max_length: 128
+        description: Receiver-local started session id.
+      - id: 0x02
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [rendering]
+        description: Receiver phase after first visible frame or local playback starts.
+      - id: 0x03
+        name: sessionState
+        type: enum
+        required: false
+        enum: [casting]
+        description: Backend-specific state after session start.
+      - id: 0x04
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Protocol path represented by the started session.
+      - id: 0x05
+        name: source
+        type: CastSourceSummary
+        required: false
+        description: Source summary when available.
+      - id: 0x06
+        name: media
+        type: CastMediaSummary
+        required: false
+        description: Media summary at session start.
+      - id: 0x07
+        name: startedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when the session became user-visible.
+
+  CastSessionStoppedEvent:
+    kind: object
+    description: Event payload for a stopped cast session.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local stopped session id.
+      - id: 0x02
+        name: previousReceiverPhase
+        type: enum
+        required: false
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Receiver phase before stop completion.
+      - id: 0x03
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [ended, failed, idle]
+        description: Receiver phase after stop completion.
+      - id: 0x04
+        name: previousState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: Backend-specific state before stop completion.
+      - id: 0x05
+        name: sessionState
+        type: enum
+        required: false
+        enum: [ended, failed, idle]
+        description: Backend-specific state after stop completion.
+      - id: 0x06
+        name: reason
+        type: enum
+        required: false
+        enum: [externalRequest, sourceClosed, backendRestart, backendExited, shutdown, error, unknown]
+        description: Stop reason.
+      - id: 0x07
+        name: backendType
+        type: enum
+        required: false
+        enum: [uxplay, unknown]
+        description: Backend type associated with the stopped session.
+      - id: 0x08
+        name: stoppedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when the stop was observed.
+
+  CastSessionFailedEvent:
+    kind: object
+    description: Event payload for cast session failure.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local failed session id when assigned.
+      - id: 0x02
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [failed]
+        description: Receiver phase after failure.
+      - id: 0x03
+        name: sessionState
+        type: enum
+        required: false
+        enum: [failed]
+        description: Backend-specific failed state.
+      - id: 0x04
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Protocol path represented by the failed session.
+      - id: 0x05
+        name: source
+        type: CastSourceSummary
+        required: false
+        description: Source summary when available.
+      - id: 0x06
+        name: reason
+        type: enum
+        required: false
+        enum: [connectionFailed, authFailed, negotiationFailed, backendFailed, mediaFailed, unknown]
+        description: Failure reason.
+      - id: 0x07
+        name: error
+        type: CastLastError
+        required: false
+        description: Redactable error summary.
+      - id: 0x08
+        name: failedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when the failure was observed.
+
+  CastGetAudioParams:
+    kind: object
+    description: Selector for local cast audio state.
+    fields:
+      - id: 0x01
+        name: includeEffective
+        type: bool
+        required: false
+        default: true
+        description: Whether to include effective local playback state.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id.
+
+  CastSetAudioParams:
+    kind: object
+    description: Request to enable or disable local cast audio playback.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: true
+        description: Whether local receiver playback is enabled.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id.
+      - id: 0x03
+        name: scope
+        type: enum
+        required: false
+        enum: [currentSession, default]
+        description: State target hint; this is not an authorization scope.
+
+  CastSetMutedParams:
+    kind: object
+    description: Request to mute or unmute local cast audio output.
+    fields:
+      - id: 0x01
+        name: muted
+        type: bool
+        required: true
+        description: Whether local receiver output is muted.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id.
+      - id: 0x03
+        name: scope
+        type: enum
+        required: false
+        enum: [currentSession, default]
+        description: State target hint; this is not an authorization scope.
+
+  CastAudioState:
+    kind: object
+    description: Local cast audio playback and mute state.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: true
+        default: false
+        description: Whether local receiver playback is enabled.
+      - id: 0x02
+        name: muted
+        type: bool
+        required: true
+        default: false
+        description: Whether local receiver output is muted.
+      - id: 0x03
+        name: effectivePlayback
+        type: bool
+        required: true
+        description: Whether audio is effectively playing locally after state and session conditions are applied.
+      - id: 0x04
+        name: scope
+        type: enum
+        required: false
+        enum: [currentSession, default]
+        description: State target hint represented by this snapshot.
+      - id: 0x05
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id for session-specific state.
+      - id: 0x06
+        name: source
+        type: enum
+        required: false
+        enum: [defaultConfig, externalSet, localUi, sessionStarted, sessionStopped, unknown]
+        description: Source of the latest state value.
+      - id: 0x07
+        name: reason
+        type: enum
+        required: false
+        enum: [receiverDefault, externalSet, localUi, sessionStarted, sessionStopped, unknown]
+        description: Latest audio state transition reason.
+      - id: 0x08
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Field names changed by the latest operation or event.
+      - id: 0x09
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this audio state.
+
+  CastAudioChangedEvent:
+    kind: object
+    description: Event payload for local cast audio state changes.
+    fields:
+      - id: 0x01
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Field names changed by this event.
+      - id: 0x02
+        name: state
+        type: CastAudioState
+        required: true
+        description: State after the change.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        enum: [externalSet, localUi, sessionStarted, sessionStopped, unknown]
+        description: Change reason.
+      - id: 0x04
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this event.
+
+  CastGetPinCodeConfigParams:
+    kind: object
+    description: Selector for cast PIN protection configuration.
+    fields:
+      - id: 0x01
+        name: includeSecret
+        type: bool
+        required: false
+        default: false
+        description: Whether authorized clients request plaintext PIN material.
+
+  CastSetPinCodeConfigParams:
+    kind: object
+    description: Request to update cast PIN protection configuration.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: false
+        description: Whether PIN protection is enabled.
+      - id: 0x02
+        name: pinDisplay
+        type: enum
+        required: false
+        enum: [hidden, authorizedClients, localUi, both]
+        description: Where the current PIN may be displayed.
+      - id: 0x03
+        name: rotatePin
+        type: bool
+        required: false
+        default: false
+        description: Whether the receiver should rotate or regenerate the PIN.
+      - id: 0x04
+        name: visibility
+        type: enum
+        required: false
+        enum: [hidden, authorizedOnly, localUi, both]
+        description: Visibility policy for responses and events.
+
+  CastSetPinCodeParams:
+    kind: object
+    description: Request to set the active cast PIN value.
+    fields:
+      - id: 0x01
+        name: pinCode
+        type: string
+        required: true
+        description: Opaque PIN value; concrete format is backend or product policy.
+      - id: 0x02
+        name: expirePrevious
+        type: bool
+        required: false
+        default: true
+        description: Whether prior PIN material should stop being accepted.
+      - id: 0x03
+        name: visibility
+        type: enum
+        required: false
+        enum: [hidden, authorizedOnly, localUi, both]
+        description: Visibility policy for the new PIN.
+
+  CastPinCodeConfig:
+    kind: object
+    description: Cast PIN protection state and optional plaintext PIN value.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: true
+        default: true
+        description: Whether PIN protection is enabled.
+      - id: 0x02
+        name: hasPinCode
+        type: bool
+        required: true
+        description: Whether a current PIN exists.
+      - id: 0x03
+        name: pinCode
+        type: string
+        required: false
+        description: Plaintext PIN value when visible to the caller.
+      - id: 0x04
+        name: pinDisplay
+        type: enum
+        required: false
+        enum: [hidden, authorizedClients, localUi, both]
+        description: Where the current PIN may be displayed.
+      - id: 0x05
+        name: generatedBy
+        type: enum
+        required: false
+        enum: [nearcast, uxplay, external, unknown]
+        description: Component or actor that generated the current PIN.
+      - id: 0x06
+        name: visibility
+        type: enum
+        required: false
+        enum: [hidden, authorizedOnly, localUi, both]
+        description: Visibility policy for the PIN value.
+      - id: 0x07
+        name: expiresAt
+        type: string
+        required: false
+        max_length: 64
+        description: Expiration timestamp when applicable.
+      - id: 0x08
+        name: redactionRequired
+        type: bool
+        required: false
+        default: true
+        description: Whether logs, diagnostics, and error summaries must redact the PIN.
+      - id: 0x09
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Field names changed by the latest operation or event.
+      - id: 0x0A
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this PIN state.
+      - id: 0x0B
+        name: redacted
+        type: bool
+        required: false
+        description: Whether sensitive fields were withheld in this snapshot.
+
+  CastPinCodeChangedEvent:
+    kind: object
+    description: Event payload for PIN configuration or PIN state changes.
+    fields:
+      - id: 0x01
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Field names changed by this event.
+      - id: 0x02
+        name: config
+        type: CastPinCodeConfig
+        required: true
+        description: PIN state after the change.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        enum: [externalSet, localUi, generated, backendChanged, unknown]
+        description: Change reason.
+      - id: 0x04
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this event.
+
+  CastPinCodeRequiredEvent:
+    kind: object
+    description: Event payload for a session waiting for PIN authentication.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id.
+      - id: 0x02
+        name: source
+        type: CastSourceSummary
+        required: false
+        description: Source waiting for authentication.
+      - id: 0x03
+        name: pinCode
+        type: string
+        required: false
+        description: Plaintext PIN value when visible to the event subscriber.
+      - id: 0x04
+        name: visibility
+        type: enum
+        required: false
+        enum: [hidden, authorizedOnly, localUi, both]
+        description: Visibility policy for this event payload.
+      - id: 0x05
+        name: redactionRequired
+        type: bool
+        required: false
+        default: true
+        description: Whether logs and diagnostics must redact this PIN value.
+      - id: 0x06
+        name: requestedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when PIN input was requested.
+
+  CastPinCodeAuthFailedEvent:
+    kind: object
+    description: Event payload for failed PIN authentication.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id.
+      - id: 0x02
+        name: source
+        type: CastSourceSummary
+        required: false
+        description: Source that failed authentication.
+      - id: 0x03
+        name: authFailureReason
+        type: enum
+        required: false
+        enum: [wrongPin, timeout, cancelled, tooManyAttempts, unknown]
+        description: Authentication failure reason.
+      - id: 0x04
+        name: attemptCount
+        type: uint16
+        required: false
+        description: Attempt count visible to the receiver.
+      - id: 0x05
+        name: failedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp when authentication failed.
+
+  CastRect:
+    kind: object
+    description: Cast window rectangle in screen coordinates.
+    fields:
+      - id: 0x01
+        name: x
+        type: int32
+        required: true
+        description: Rectangle left coordinate.
+      - id: 0x02
+        name: y
+        type: int32
+        required: true
+        description: Rectangle top coordinate.
+      - id: 0x03
+        name: width
+        type: uint32
+        required: true
+        description: Rectangle width in pixels.
+      - id: 0x04
+        name: height
+        type: uint32
+        required: true
+        description: Rectangle height in pixels.
+
+  CastSetWindowStateParams:
+    kind: object
+    description: Request to update cast window state.
+    fields:
+      - id: 0x01
+        name: mode
+        type: enum
+        required: false
+        enum: [normal, fullscreen]
+        description: Target cast window mode.
+      - id: 0x02
+        name: fullscreen
+        type: bool
+        required: false
+        description: Whether the cast window should be fullscreen.
+      - id: 0x03
+        name: alwaysOnTop
+        type: bool
+        required: false
+        description: Whether the cast window should stay above normal windows.
+      - id: 0x04
+        name: bounds
+        type: CastRect
+        required: false
+        description: Optional target normal-mode window bounds.
+
+  CastWindowState:
+    kind: object
+    description: Cast window visibility, mode, and bounds state.
+    fields:
+      - id: 0x01
+        name: hasWindow
+        type: bool
+        required: true
+        description: Whether a cast window currently exists.
+      - id: 0x02
+        name: visible
+        type: bool
+        required: true
+        description: Whether the cast window is visible.
+      - id: 0x03
+        name: mode
+        type: enum
+        required: true
+        enum: [normal, fullscreen]
+        description: Current cast window mode.
+      - id: 0x04
+        name: fullscreen
+        type: bool
+        required: true
+        description: Whether the cast window is fullscreen.
+      - id: 0x05
+        name: alwaysOnTop
+        type: bool
+        required: true
+        description: Whether the cast window is topmost.
+      - id: 0x06
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id associated with the window.
+      - id: 0x07
+        name: bounds
+        type: CastRect
+        required: false
+        description: Current window bounds when available.
+      - id: 0x0A
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Field names changed by the latest operation or event.
+      - id: 0x0B
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this window state.
+
+  CastWindowChangedEvent:
+    kind: object
+    description: Event payload for cast window state changes.
+    fields:
+      - id: 0x01
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Field names changed by this event.
+      - id: 0x02
+        name: state
+        type: CastWindowState
+        required: true
+        description: Window state after the change.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        enum: [externalSet, localUi, sessionStarted, sessionStopped, unknown]
+        description: Change reason.
+      - id: 0x04
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this event.
+
+  CastGetBackendStatusParams:
+    kind: object
+    description: Selector for cast backend status.
+    fields:
+      - id: 0x01
+        name: includeLastError
+        type: bool
+        required: false
+        default: false
+        description: Whether to include the last backend error summary.
+
+  CastRestartBackendParams:
+    kind: object
+    description: Request to restart the cast backend.
+    fields:
+      - id: 0x01
+        name: reason
+        type: enum
+        required: false
+        enum: [manualRecovery, configChanged, backendUnhealthy, unknown]
+        description: Caller-visible restart reason.
+      - id: 0x02
+        name: force
+        type: bool
+        required: false
+        default: false
+        description: Whether the backend adapter may force cleanup before restart.
+
+  CastBackendStatus:
+    kind: object
+    description: Cast backend state, process summary, discoverability, and last error.
+    fields:
+      - id: 0x01
+        name: backendType
+        type: enum
+        required: true
+        enum: [uxplay, unknown]
+        description: Backend implementation type.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        enum: [starting, ready, restarting, exited, failed, disabled]
+        description: Backend runtime state.
+      - id: 0x03
+        name: discoverable
+        type: bool
+        required: true
+        description: Whether the cast service is discoverable by sources.
+      - id: 0x04
+        name: pid
+        type: uint32
+        required: false
+        description: Backend process id when available.
+      - id: 0x05
+        name: version
+        type: string
+        required: false
+        max_length: 128
+        description: Backend version or build identifier.
+      - id: 0x06
+        name: activeSessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Active cast session id currently owned by the backend.
+      - id: 0x07
+        name: restartInProgress
+        type: bool
+        required: true
+        default: false
+        description: Whether a backend restart is currently in progress.
+      - id: 0x08
+        name: lastError
+        type: CastLastError
+        required: false
+        description: Last backend error summary when requested and available.
+      - id: 0x09
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this backend status.
+
+  CastRestartBackendResult:
+    kind: object
+    description: Result of requesting a cast backend restart.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the receiver accepted the restart request.
+      - id: 0x02
+        name: backendType
+        type: enum
+        required: true
+        enum: [uxplay, unknown]
+        description: Backend implementation affected by the restart.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        enum: [starting, ready, restarting, exited, failed, disabled]
+        description: Backend state after accepting the restart request.
+      - id: 0x04
+        name: restartId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local restart operation id.
+      - id: 0x05
+        name: activeSessionEnded
+        type: bool
+        required: true
+        description: Whether an active cast session was ended by the restart.
+      - id: 0x06
+        name: endedSessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Session ended by the restart.
+      - id: 0x07
+        name: sessionStopReason
+        type: enum
+        required: false
+        enum: [backendRestart, backendExited, error, unknown]
+        description: Session stop reason reported for the ended session.
+      - id: 0x08
+        name: estimatedReadyInMs
+        type: uint32
+        required: false
+        description: Estimated backend recovery time in milliseconds.
+      - id: 0x09
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this restart result.
+
+  CastBackendChangedEvent:
+    kind: object
+    description: Event payload for cast backend state changes.
+    fields:
+      - id: 0x01
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Field names changed by this event.
+      - id: 0x02
+        name: state
+        type: CastBackendStatus
+        required: true
+        description: Backend status after the change.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        enum: [manualRecovery, configChanged, backendUnhealthy, backendExited, unknown]
+        description: Change reason.
+      - id: 0x04
+        name: restartId
+        type: string
+        required: false
+        max_length: 128
+        description: Restart operation id when this event is restart-related.
+      - id: 0x05
+        name: activeSessionEnded
+        type: bool
+        required: false
+        description: Whether this backend change ended an active session.
+      - id: 0x06
+        name: endedSessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Session ended by this backend change.
+      - id: 0x07
+        name: updatedAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this event.
+
+  CastGetFlowControlStateParams:
+    kind: object
+    description: Selector for cast receiver flow control state.
+    fields:
+      - id: 0x01
+        name: includeStats
+        type: bool
+        required: false
+        default: true
+        description: Whether to include low-frequency diagnostic counters.
+      - id: 0x02
+        name: includePolicy
+        type: bool
+        required: false
+        default: true
+        description: Whether to include current flow policy fields.
+      - id: 0x03
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id.
+
+  CastSetRenderFpsParams:
+    kind: object
+    description: Request to set receiver-local target render fps.
+    fields:
+      - id: 0x01
+        name: fps
+        type: number
+        required: true
+        min: 0
+        description: Target local render fps; zero means uncapped.
+      - id: 0x02
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id.
+      - id: 0x03
+        name: scope
+        type: enum
+        required: false
+        enum: [currentSession, default]
+        description: State target hint; this is not an authorization scope.
+
+  CastSetFlowPolicyParams:
+    kind: object
+    description: Request to update receiver-local queue, late-frame, drop, and overlay policy.
+    fields:
+      - id: 0x01
+        name: videoQueueFrames
+        type: uint32
+        required: false
+        min: 1
+        description: Maximum queued video frames.
+      - id: 0x02
+        name: lateFrameThresholdMs
+        type: uint32
+        required: false
+        description: Late-frame threshold in milliseconds.
+      - id: 0x03
+        name: dropMode
+        type: enum
+        required: false
+        enum: [drop-late, drop-oldest, render-latest]
+        description: Local frame drop policy.
+      - id: 0x04
+        name: overlayEnabled
+        type: bool
+        required: false
+        description: Whether receiver diagnostics overlay is enabled.
+      - id: 0x05
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Optional receiver-local session id.
+      - id: 0x06
+        name: scope
+        type: enum
+        required: false
+        enum: [currentSession, default]
+        description: State target hint; this is not an authorization scope.
+
+  CastFlowControlState:
+    kind: object
+    description: Receiver-local cast flow control policy and low-frequency statistics.
+    fields:
+      - id: 0x01
+        name: targetRenderFps
+        type: number
+        required: true
+        min: 0
+        description: Configured target render fps; zero means uncapped.
+      - id: 0x02
+        name: inputFps
+        type: number
+        required: false
+        min: 0
+        description: Estimated incoming media frame rate.
+      - id: 0x03
+        name: renderFps
+        type: number
+        required: false
+        min: 0
+        description: Estimated local render frame rate.
+      - id: 0x04
+        name: dropMode
+        type: enum
+        required: true
+        enum: [drop-late, drop-oldest, render-latest]
+        description: Local frame drop policy.
+      - id: 0x05
+        name: videoQueueFrames
+        type: uint32
+        required: true
+        min: 1
+        description: Maximum queued video frames.
+      - id: 0x06
+        name: videoQueueDepth
+        type: uint32
+        required: false
+        description: Current queued video frame depth.
+      - id: 0x07
+        name: audioQueueDepth
+        type: uint32
+        required: false
+        description: Current queued audio frame depth when known.
+      - id: 0x08
+        name: lateFrameThresholdMs
+        type: uint32
+        required: true
+        description: Late-frame threshold in milliseconds.
+      - id: 0x09
+        name: overlayEnabled
+        type: bool
+        required: true
+        description: Whether diagnostics overlay is enabled.
+      - id: 0x0A
+        name: droppedFrames
+        type: uint64
+        required: false
+        description: Low-frequency dropped-frame counter.
+      - id: 0x0B
+        name: lateFrames
+        type: uint64
+        required: false
+        description: Low-frequency late-frame counter.
+      - id: 0x0C
+        name: keyframeRequestCount
+        type: uint32
+        required: false
+        description: Internal keyframe requests triggered by receiver policy.
+      - id: 0x0D
+        name: keyFrameOnDropBurst
+        type: bool
+        required: false
+        description: Whether the receiver may internally request a keyframe after a drop burst.
+      - id: 0x0E
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Field names changed by the latest operation or event.
+      - id: 0x0F
+        name: sampledAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this flow sample.
+
+  CastFlowControlChangedEvent:
+    kind: object
+    description: Event payload for cast flow control changes or low-frequency diagnostic samples.
+    fields:
+      - id: 0x01
+        name: changedFields
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Field names changed or sampled by this event.
+      - id: 0x02
+        name: state
+        type: CastFlowControlState
+        required: true
+        description: Flow control state after the change or sample.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        enum: [manualFlowControl, diagnosticsSample, sessionStarted, sessionStopped, unknown]
+        description: Change or sampling reason.
+      - id: 0x04
+        name: sampledAt
+        type: string
+        required: false
+        max_length: 64
+        description: Timestamp for this event.
+
+  CastGetStatusParams:
+    kind: object
+    description: Selector for current cast receiver snapshot.
+    fields:
+      - id: 0x01
+        name: include
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional status sections to include.
+      - id: 0x02
+        name: includeSensitive
+        type: bool
+        required: false
+        default: false
+        description: Whether authorized callers request sensitive summary fields.
+
+  CastReceiverSummary:
+    kind: object
+    description: Snapshot receiver role and protocol-neutral phase summary.
+    fields:
+      - id: 0x01
+        name: role
+        type: enum
+        required: true
+        enum: [receiver]
+        description: Cast endpoint role.
+      - id: 0x02
+        name: protocols
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported or active cast protocol paths.
+      - id: 0x03
+        name: state
+        type: enum
+        required: true
+        enum: [disabled, starting, ready, busy, failed]
+        description: Receiver service availability state.
+      - id: 0x04
+        name: receiverPhase
+        type: enum
+        required: true
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Protocol-neutral receiver phase.
+
+  CastSessionStatusSummary:
+    kind: object
+    description: Snapshot active session summary for status views.
+    fields:
+      - id: 0x01
+        name: sessionId
+        type: string
+        required: false
+        max_length: 128
+        description: Receiver-local session id.
+      - id: 0x02
+        name: receiverPhase
+        type: enum
+        required: false
+        enum: [idle, incoming, authenticating, streamStarting, streaming, rendering, interrupted, stopping, ended, failed]
+        description: Protocol-neutral receiver phase.
+      - id: 0x03
+        name: sessionState
+        type: enum
+        required: false
+        enum: [idle, incoming, waitingForPassword, authenticated, preparing, casting, interrupted, stopping, ended, failed]
+        description: Backend-specific session state.
+      - id: 0x04
+        name: protocol
+        type: enum
+        required: false
+        enum: [airplay, hid, unknown]
+        description: Protocol path represented by the active session.
+      - id: 0x05
+        name: sourceName
+        type: string
+        required: false
+        max_length: 128
+        description: User-visible source name.
+
+  CastPinCodeStatusSummary:
+    kind: object
+    description: Snapshot PIN summary for status views.
+    fields:
+      - id: 0x01
+        name: enabled
+        type: bool
+        required: true
+        description: Whether PIN protection is enabled.
+      - id: 0x02
+        name: hasPinCode
+        type: bool
+        required: true
+        description: Whether a current PIN exists.
+      - id: 0x03
+        name: pinDisplay
+        type: enum
+        required: false
+        enum: [hidden, authorizedClients, localUi, both]
+        description: Where the current PIN may be displayed.
+      - id: 0x04
+        name: pinCode
+        type: string
+        required: false
+        description: Plaintext PIN value when visible to the caller.
+      - id: 0x05
+        name: redacted
+        type: bool
+        required: false
+        description: Whether sensitive fields were withheld.
+      - id: 0x06
+        name: visibility
+        type: enum
+        required: false
+        enum: [hidden, authorizedOnly, localUi, both]
+        description: Visibility policy applied to this summary.
+
+  CastStatus:
+    kind: object
+    description: Current cast receiver snapshot for reconnect and event-loss recovery.
+    fields:
+      - id: 0x01
+        name: receiver
+        type: CastReceiverSummary
+        required: true
+        description: Receiver role and phase summary.
+      - id: 0x02
+        name: session
+        type: CastSessionStatusSummary
+        required: false
+        description: Active session summary.
+      - id: 0x03
+        name: pinCode
+        type: CastPinCodeStatusSummary
+        required: false
+        description: PIN protection summary.
+      - id: 0x04
+        name: audio
+        type: CastAudioState
+        required: false
+        description: Local audio summary.
+      - id: 0x05
+        name: window
+        type: CastWindowState
+        required: false
+        description: Cast window summary.
+      - id: 0x06
+        name: backend
+        type: CastBackendStatus
+        required: false
+        description: Backend summary.
+      - id: 0x07
+        name: flowControl
+        type: CastFlowControlState
+        required: false
+        description: Flow control summary.
+      - id: 0x08
+        name: sampledAt
+        type: string
+        required: true
+        max_length: 64
+        description: Timestamp for this status snapshot.
+      - id: 0x09
+        name: redacted
+        type: bool
+        required: false
+        description: Whether any sensitive snapshot fields were withheld.
+
+  CastSessionCapability:
+    kind: object
+    description: Capability descriptor for cast.session.
+    fields:
+      - id: 0x01
+        name: protocols
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Cast protocol paths represented by the receiver.
+      - id: 0x02
+        name: receiverPhases
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Supported protocol-neutral receiver phases.
+      - id: 0x03
+        name: supportsAirPlayName
+        type: bool
+        required: false
+        default: true
+        description: Whether AirPlay display name query and update are supported.
+      - id: 0x04
+        name: supportsStopSession
+        type: bool
+        required: false
+        default: true
+        description: Whether active cast sessions can be stopped through cast.stopSession.
+      - id: 0x05
+        name: backendTypes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Backend implementations represented by this receiver.
+
+  CastAudioCapability:
+    kind: object
+    description: Capability descriptor for cast.audio.
+    fields:
+      - id: 0x01
+        name: defaultEnabled
+        type: bool
+        required: false
+        default: false
+        description: Default local playback enablement for received cast audio.
+      - id: 0x02
+        name: supportsMute
+        type: bool
+        required: false
+        default: true
+        description: Whether local mute state can be controlled separately.
+      - id: 0x03
+        name: reportsEffectivePlayback
+        type: bool
+        required: false
+        default: true
+        description: Whether the receiver reports effective local playback state.
+
+  CastPinCodeCapability:
+    kind: object
+    description: Capability descriptor for cast.pinCode.
+    fields:
+      - id: 0x01
+        name: defaultEnabled
+        type: bool
+        required: false
+        default: true
+        description: Whether PIN protection is enabled by default.
+      - id: 0x02
+        name: supportsPlaintextResponse
+        type: bool
+        required: false
+        default: true
+        description: Whether authorized responses or events may carry plaintext PIN values.
+      - id: 0x03
+        name: supportedPinDisplays
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: PIN display policies supported by the receiver.
+      - id: 0x04
+        name: supportsGeneratedPin
+        type: bool
+        required: false
+        default: true
+        description: Whether the receiver can generate a default PIN.
+      - id: 0x05
+        name: redactionRequired
+        type: bool
+        required: false
+        default: true
+        description: Whether logs, diagnostics, and error summaries must redact PIN values.
+
+  CastWindowCapability:
+    kind: object
+    description: Capability descriptor for cast.window.
+    fields:
+      - id: 0x01
+        name: supportsFullscreen
+        type: bool
+        required: false
+        default: true
+        description: Whether fullscreen window mode is supported.
+      - id: 0x02
+        name: supportsAlwaysOnTop
+        type: bool
+        required: false
+        default: true
+        description: Whether topmost window state is supported.
+      - id: 0x03
+        name: supportsNormalRestore
+        type: bool
+        required: false
+        default: true
+        description: Whether normal mode can restore remembered normal-mode bounds.
+      - id: 0x04
+        name: noWindowPolicy
+        type: enum
+        required: false
+        enum: [reject, remember, runtimeDefault]
+        description: Receiver policy when a window command is received without an active cast window.
+
+  CastBackendCapability:
+    kind: object
+    description: Capability descriptor for cast.backend.
+    fields:
+      - id: 0x01
+        name: backendTypes
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Backend implementations controlled by the receiver.
+      - id: 0x02
+        name: supportsRestart
+        type: bool
+        required: false
+        default: true
+        description: Whether cast.restartBackend is supported.
+      - id: 0x03
+        name: reportsProcess
+        type: bool
+        required: false
+        default: true
+        description: Whether backend process metadata such as pid may be reported.
+      - id: 0x04
+        name: supportsLastError
+        type: bool
+        required: false
+        default: true
+        description: Whether last backend error summaries are available.
+
+  CastFlowControlCapability:
+    kind: object
+    description: Capability descriptor for cast.flowControl.
+    fields:
+      - id: 0x01
+        name: supportsRenderFps
+        type: bool
+        required: false
+        default: true
+        description: Whether receiver-local target render fps can be controlled.
+      - id: 0x02
+        name: supportsQueuePolicy
+        type: bool
+        required: false
+        default: true
+        description: Whether queue and late-frame policy can be controlled.
+      - id: 0x03
+        name: supportsOverlay
+        type: bool
+        required: false
+        default: true
+        description: Whether diagnostics overlay can be controlled.
+      - id: 0x04
+        name: supportsStats
+        type: bool
+        required: false
+        default: true
+        description: Whether low-frequency flow diagnostics are reported.
+      - id: 0x05
+        name: exposesExternalKeyframeRequest
+        type: bool
+        required: false
+        default: false
+        description: Whether a public keyframe request method is exposed; current draft keeps this false.
+
+  CastStatusCapability:
+    kind: object
+    description: Capability descriptor for cast.status snapshot query.
+    fields:
+      - id: 0x01
+        name: sections
+        type: array
+        array:
+          item_type: string
+        required: true
+        description: Status snapshot sections the receiver can report.
+      - id: 0x02
+        name: supportsSensitiveRedaction
+        type: bool
+        required: false
+        default: true
+        description: Whether sensitive status fields can be withheld and marked redacted.
+
+capabilities:
+  - id: 0x1601
+    name: cast.session
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports cast receiver session phase, AirPlay name, and session stop control.
+    type: object
+    schema: CastSessionCapability
+
+  - id: 0x1602
+    name: cast.audio
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports local cast audio playback and mute control.
+    type: object
+    schema: CastAudioCapability
+
+  - id: 0x1603
+    name: cast.pinCode
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports cast PIN protection, PIN state, and authentication events.
+    type: object
+    schema: CastPinCodeCapability
+
+  - id: 0x1604
+    name: cast.window
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports cast window state query and mode control.
+    type: object
+    schema: CastWindowCapability
+
+  - id: 0x1605
+    name: cast.backend
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports cast backend status query and restart control.
+    type: object
+    schema: CastBackendCapability
+
+  - id: 0x1606
+    name: cast.flowControl
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports receiver-local cast render fps, queue, drop, overlay, and diagnostics control.
+    type: object
+    schema: CastFlowControlCapability
+
+  - id: 0x1607
+    name: cast.status
+    domain: cast
+    status: draft
+    since: 1.0.0
+    description: Device supports current cast receiver status snapshot query.
+    type: object
+    schema: CastStatusCapability

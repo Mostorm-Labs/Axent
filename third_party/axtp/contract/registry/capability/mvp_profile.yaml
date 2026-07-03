@@ -1,0 +1,14 @@
+mvp:
+  methods: []
+  events: []
+  errors:
+    - SUCCESS
+    - RPC_METHOD_NOT_FOUND
+    - RPC_PARAM_INVALID
+    - STREAM_NOT_FOUND
+    - STREAM_CRC_ERROR
+    - BUSY
+  capabilities:
+    - protocol.payload.control
+    - protocol.payload.rpc
+    - protocol.payload.stream

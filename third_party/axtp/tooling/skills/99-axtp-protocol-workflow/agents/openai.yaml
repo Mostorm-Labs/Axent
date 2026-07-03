@@ -1,0 +1,5 @@
+interface:
+  display_name: "99 AXTP Protocol Workflow"
+  short_description: "Stage 99: route AXTP lifecycle work"
+  default_prompt: "Use $axtp-protocol-workflow to route this AXTP protocol task to the correct lifecycle stage."
+

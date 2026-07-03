@@ -1,0 +1,12 @@
+.DS_Store
+generators/node_modules/
+generators/dist/
+tooling/generators/node_modules/
+tooling/generators/dist/
+runtimes/**/node_modules/
+runtimes/**/dist/
+runtimes/**/.dart_tool/
+build/
+runtimes/**/build/
+dist/
+outputs/

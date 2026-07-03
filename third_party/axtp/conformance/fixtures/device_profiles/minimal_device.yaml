@@ -1,0 +1,17 @@
+id: minimal_device
+name: Minimal AXTP Audio Device
+capabilities:
+  - id: audio.algorithm
+    methods:
+      - audio.getAlgorithmConfig
+    events: []
+
+methods:
+  audio.getAlgorithmConfig:
+    result:
+      noiseSuppression:
+        enabled: true
+        level: 1
+      echoCancellation:
+        enabled: true
+        nlpLevel: 1

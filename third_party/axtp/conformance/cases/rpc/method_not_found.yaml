@@ -1,0 +1,31 @@
+id: rpc.method_not_found
+title: Unknown method returns RPC_METHOD_NOT_FOUND
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  method: vendor.missing
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 2
+      method: vendor.missing
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 2
+        statusCode: RPC_METHOD_NOT_FOUND
+
+assertions:
+  - response.requestId == request.requestId
+  - response.statusCode == RPC_METHOD_NOT_FOUND

@@ -1,0 +1,38 @@
+id: rpc.invalid_params
+title: Invalid parameters use standard RPC parameter errors
+since: spec/v0.0.2
+level: core
+profiles:
+  - core
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  method: audio.setAlgorithmConfig
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 3
+      method: audio.setAlgorithmConfig
+      params:
+        config:
+          noiseSuppression:
+            level: 999
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 3
+        statusCode:
+          oneOf:
+            - RPC_PARAM_INVALID
+            - OUT_OF_RANGE
+            - INVALID_ARGUMENT
+
+assertions:
+  - response.requestId == request.requestId
+  - response.statusCode != SUCCESS

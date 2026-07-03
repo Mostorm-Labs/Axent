@@ -1,0 +1,4 @@
+id: framed-binary
+title: AXTP Standard Framed Binary Conformance
+since: spec/v0.0.2
+description: Standard frame, CONTROL handshake/heartbeat/close, RPC, and STREAM data-plane behavior.

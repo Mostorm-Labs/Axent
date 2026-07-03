@@ -1,0 +1,4 @@
+id: stream
+title: AXTP Stream Conformance
+since: spec/v0.0.2
+description: Phase 1 STREAM header and data-plane behavior for standard framed transports.

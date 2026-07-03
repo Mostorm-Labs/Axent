@@ -1,0 +1,35 @@
+id: session.request_before_identified
+title: Request before IDENTIFIED is rejected
+since: spec/v0.0.2
+level: websocket-jsonrpc
+profiles:
+  - websocket-jsonrpc
+
+given:
+  transport: websocket_jsonrpc
+  session:
+    state: connected
+
+steps:
+  - direction: client_to_server
+    jsonrpc:
+      sid: ""
+      op: REQUEST
+      d:
+        id: 700
+        method: audio.getAlgorithmConfig
+        params: {}
+
+  - direction: server_to_client
+    expect:
+      jsonrpc:
+        op: REQUEST_RESPONSE
+        d:
+          id: 700
+          status:
+            ok: false
+            code: CONTROL_OPEN_REQUIRED
+
+assertions:
+  - response.d.id == request.d.id
+  - response.d.status.code == CONTROL_OPEN_REQUIRED

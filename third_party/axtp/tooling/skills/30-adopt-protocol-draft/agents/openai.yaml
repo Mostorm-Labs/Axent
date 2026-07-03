@@ -1,0 +1,4 @@
+interface:
+  display_name: "30 Adopt Protocol Draft"
+  short_description: "Stage 30: adopt reviewed AXTP protocol drafts"
+  default_prompt: "Adopt this reviewed AXTP workspace/protocol draft into specs alignment and registry YAML facts."

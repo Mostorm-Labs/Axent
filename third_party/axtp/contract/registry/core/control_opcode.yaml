@@ -1,0 +1,81 @@
+control_opcodes:
+  - id: 0x01
+    name: OPEN
+    domain: control
+    status: mvp
+    description: Start AXTP link negotiation.
+  - id: 0x02
+    name: ACCEPT
+    domain: control
+    status: mvp
+    description: Accept AXTP link negotiation.
+  - id: 0x03
+    name: READY
+    domain: control
+    status: reserved
+    description: Reserved for future three-way handshake. Current version must silently ignore.
+  - id: 0x04
+    name: HEARTBEAT
+    domain: control
+    status: mvp
+    description: Keep session alive.
+  - id: 0x05
+    name: HEARTBEAT_ACK
+    domain: control
+    status: mvp
+    description: Heartbeat response.
+  - id: 0x06
+    name: ACK
+    domain: control
+    status: p1
+    description: Reserved positive transport acknowledgement for future reliable transfer profiles.
+  - id: 0x07
+    name: NACK
+    domain: control
+    status: p1
+    description: Reserved negative transport acknowledgement for future reliable transfer profiles.
+  - id: 0x08
+    name: RESUME
+    domain: control
+    status: p1
+    description: Resume suspended session after transport reconnect.
+  - id: 0x09
+    name: RESUME_ACK
+    domain: control
+    status: p1
+    description: Resume acknowledgement.
+  - id: 0x0A
+    name: CLOSE
+    domain: control
+    status: mvp
+    description: Close AXTP session.
+  - id: 0x0B
+    name: CLOSE_ACK
+    domain: control
+    status: mvp
+    description: Close acknowledgement.
+  - id: 0x0C
+    name: SESSION_RESET
+    domain: control
+    status: p1
+    description: Force reset session state.
+  - id: 0x0D
+    name: WINDOW_UPDATE
+    domain: control
+    status: p1
+    description: Update receive window for flow control.
+  - id: 0x0E
+    name: PING
+    domain: control
+    status: p1
+    description: RTT measurement probe.
+  - id: 0x0F
+    name: PONG
+    domain: control
+    status: p1
+    description: RTT measurement response.
+  - id: 0x10
+    name: GOAWAY
+    domain: control
+    status: p2
+    description: Signal intent to close, reject new messages.

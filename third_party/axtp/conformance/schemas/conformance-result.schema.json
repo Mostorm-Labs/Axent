@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axtp.dev/schemas/conformance-result.schema.json",
+  "type": "object",
+  "required": ["runtime", "runtimeVersion", "specTag", "summary", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "runtime": { "type": "string", "minLength": 1 },
+    "runtimeVersion": { "type": "string", "minLength": 1 },
+    "specTag": { "type": "string", "pattern": "^spec/v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "profile": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": ["total", "passed", "failed", "skipped"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "unsupported": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["passed", "failed", "skipped", "unsupported"]
+          },
+          "durationMs": { "type": "number", "minimum": 0 },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

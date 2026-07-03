@@ -1,0 +1,6 @@
+id: ota_device
+name: AXTP OTA Placeholder Device
+capabilities: []
+methods: {}
+notes:
+  - Placeholder only. No OTA stream method is required by spec/v0.0.2.

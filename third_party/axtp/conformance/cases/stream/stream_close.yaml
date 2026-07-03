@@ -1,0 +1,31 @@
+id: stream.stream_close
+title: Media STREAM close releases stream context
+since: spec/v0.0.2
+level: stream
+profiles:
+  - stream
+  - framed-binary
+
+given:
+  stream:
+    streamId: 9
+    state: open
+
+steps:
+  - direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 201
+      method: video.closeStream
+      params:
+        streamId: 9
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 201
+        statusCode: SUCCESS
+
+assertions:
+  - stream.state == closed
