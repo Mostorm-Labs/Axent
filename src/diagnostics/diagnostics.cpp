@@ -34,6 +34,11 @@ nlohmann::json Diagnostics::collect(const std::string& device_id, bool include_s
         {"deviceId", device_id},
         {"capabilities", capability_list},
         {"auditLog", audit_log},
+        {"logging", {
+                        {"minimumLevel", log_level_name(logger_.config().minimum_level)},
+                        {"filePath", logger_.file_path()},
+                        {"droppedCount", logger_.dropped_count()},
+                    }},
         {"flowControl", {{"dropped", 0}, {"paused", false}}},
         {"firmwareTasks", nlohmann::json::array()},
         {"platform", {{"product", "Axent"}}},

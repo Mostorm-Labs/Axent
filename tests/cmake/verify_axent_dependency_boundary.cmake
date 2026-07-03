@@ -102,31 +102,60 @@ function(assert_text_appears_before text before_text after_text message)
     endif()
 endfunction()
 
+function(assert_file_contains file_path pattern message)
+    if(NOT EXISTS "${file_path}")
+        message(FATAL_ERROR "Missing ${file_path}")
+    endif()
+
+    file(READ "${file_path}" file_contents)
+    if(NOT "${file_contents}" MATCHES "${pattern}")
+        message(FATAL_ERROR "${message}")
+    endif()
+endfunction()
+
+assert_file_contains(
+    "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake"
+    "AXENT_USE_EXTERNAL_AXTP_RUNTIME"
+    "Axent must expose a parent-provided AXTP runtime option"
+)
+
+assert_file_contains(
+    "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake"
+    "axtp::runtime"
+    "Axent external runtime mode must validate axtp::runtime"
+)
+
+assert_file_contains(
+    "${AXENT_REPO_ROOT}/CMakeLists.txt"
+    "AXENT_BUILD_TESTING"
+    "Axent must allow parent projects to disable Axent tests"
+)
+
 assert_text_contains(
     "${axent_effective_deps}"
-    "add_subdirectory\\(third_party/IXWebSocket EXCLUDE_FROM_ALL\\)"
+    "add_subdirectory\\(\"\\$\\{AXENT_THIRD_PARTY_DIR\\}/IXWebSocket\" \"\\$\\{CMAKE_CURRENT_BINARY_DIR\\}/third_party/IXWebSocket\" EXCLUDE_FROM_ALL\\)"
     "Axent must add IXWebSocket before axtp-cpp-runtime"
 )
 assert_text_contains(
     "${axent_effective_deps}"
-    "add_subdirectory\\(third_party/hidapi EXCLUDE_FROM_ALL\\)"
+    "add_subdirectory\\(\"\\$\\{AXENT_THIRD_PARTY_DIR\\}/hidapi\" \"\\$\\{CMAKE_CURRENT_BINARY_DIR\\}/third_party/hidapi\" EXCLUDE_FROM_ALL\\)"
     "Axent must add hidapi before axtp-cpp-runtime"
 )
 assert_text_contains(
     "${axent_effective_deps}"
-    "add_subdirectory\\(third_party/axtp-cpp-runtime\\)"
+    "add_subdirectory\\(\"\\$\\{AXENT_THIRD_PARTY_DIR\\}/axtp-cpp-runtime\" \"\\$\\{CMAKE_CURRENT_BINARY_DIR\\}/third_party/axtp-cpp-runtime\"\\)"
     "Axent must add axtp-cpp-runtime"
 )
 assert_text_appears_before(
     "${axent_effective_deps}"
-    "add_subdirectory(third_party/IXWebSocket EXCLUDE_FROM_ALL)"
-    "add_subdirectory(third_party/axtp-cpp-runtime)"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/IXWebSocket\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/IXWebSocket\" EXCLUDE_FROM_ALL)"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "Axent must add IXWebSocket before axtp-cpp-runtime"
 )
 assert_text_appears_before(
     "${axent_effective_deps}"
-    "add_subdirectory(third_party/hidapi EXCLUDE_FROM_ALL)"
-    "add_subdirectory(third_party/axtp-cpp-runtime)"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/hidapi\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/hidapi\" EXCLUDE_FROM_ALL)"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "Axent must add hidapi before axtp-cpp-runtime"
 )
 assert_text_contains(
@@ -168,5 +197,67 @@ foreach(required_file
         message(FATAL_ERROR "Required dependency path is missing: ${required_file}")
     endif()
 endforeach()
+
+set(parent_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/axent-parent-runtime-fixture")
+file(REMOVE_RECURSE "${parent_fixture_dir}")
+file(MAKE_DIRECTORY "${parent_fixture_dir}")
+file(WRITE "${parent_fixture_dir}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.21)
+project(axent_parent_runtime_fixture LANGUAGES CXX)
+
+add_library(axtp_core INTERFACE)
+add_library(axtp::core ALIAS axtp_core)
+add_library(axtp_json_rpc INTERFACE)
+add_library(axtp::json_rpc ALIAS axtp_json_rpc)
+add_library(axtp_runtime INTERFACE)
+add_library(axtp::runtime ALIAS axtp_runtime)
+add_library(axtp_sdk INTERFACE)
+add_library(axtp::sdk ALIAS axtp_sdk)
+
+set(AXENT_USE_EXTERNAL_AXTP_RUNTIME ON CACHE BOOL "" FORCE)
+set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS OFF CACHE BOOL "" FORCE)
+set(AXENT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+]=])
+file(APPEND "${parent_fixture_dir}/CMakeLists.txt" "add_subdirectory(\"${AXENT_REPO_ROOT}\" axent)\n")
+file(APPEND "${parent_fixture_dir}/CMakeLists.txt" [=[
+
+if(NOT TARGET axent::libaxent)
+    message(FATAL_ERROR "Expected axent::libaxent target")
+endif()
+]=])
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -S "${parent_fixture_dir}" -B "${parent_fixture_dir}/build"
+    RESULT_VARIABLE parent_fixture_result
+    OUTPUT_VARIABLE parent_fixture_output
+    ERROR_VARIABLE parent_fixture_error
+)
+if(NOT parent_fixture_result EQUAL 0)
+    message(FATAL_ERROR
+        "Axent parent-provided runtime fixture failed.\n"
+        "stdout:\n${parent_fixture_output}\n"
+        "stderr:\n${parent_fixture_error}"
+    )
+endif()
+
+execute_process(
+    COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${parent_fixture_dir}/build" -N
+    RESULT_VARIABLE parent_fixture_ctest_result
+    OUTPUT_VARIABLE parent_fixture_ctest_output
+    ERROR_VARIABLE parent_fixture_ctest_error
+)
+if(NOT parent_fixture_ctest_result EQUAL 0)
+    message(FATAL_ERROR
+        "Axent parent-provided runtime fixture test listing failed.\n"
+        "stdout:\n${parent_fixture_ctest_output}\n"
+        "stderr:\n${parent_fixture_ctest_error}"
+    )
+endif()
+if(NOT "${parent_fixture_ctest_output}" MATCHES "Total Tests: 0")
+    message(FATAL_ERROR
+        "AXENT_BUILD_TESTING=OFF must not import Axent tests.\n"
+        "ctest -N output:\n${parent_fixture_ctest_output}"
+    )
+endif()
 
 message(STATUS "Axent dependency boundary check passed")

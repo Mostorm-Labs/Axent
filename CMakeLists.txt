@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+option(AXENT_BUILD_TESTING "Build Axent test executables" ${BUILD_TESTING})
 include(cmake/CompilerWarnings.cmake)
 include(cmake/AxentDependencies.cmake)
 
@@ -13,7 +14,6 @@ add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
     src/control/control_plane.cpp
-    src/control/websocket_server.cpp
     src/core/json.cpp
     src/core/device_manager.cpp
     src/core/session_manager.cpp
@@ -26,6 +26,7 @@ add_library(libaxent
     src/config/config.cpp
     src/diagnostics/diagnostics.cpp
     src/firmware/firmware_task.cpp
+    src/cli/options.cpp
     src/logging/logger.cpp
     src/adapters/axdp_adapter.cpp
     src/adapters/axtp_adapter.cpp
@@ -38,7 +39,6 @@ add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
 target_link_libraries(libaxent
     PUBLIC axtp::core axtp::json_rpc axtp::runtime axtp::sdk
-    PRIVATE axtp::transport_websocket_ix
 )
 if(AXENT_HAS_AXDP_HEADERS)
     target_include_directories(libaxent PRIVATE third_party/axdp/include)
@@ -49,15 +49,29 @@ if(AXENT_HAS_TEA_MACOS_SDK)
 endif()
 axent_enable_warnings(libaxent)
 
-add_executable(axentd src/daemon/main.cpp)
-target_link_libraries(axentd PRIVATE axent::libaxent axtp::transport_websocket_ix)
-axent_enable_warnings(axentd)
+set(AXENT_HAS_WEBSOCKET_TRANSPORT OFF)
+if(TARGET axtp::transport_websocket_ix)
+    set(AXENT_HAS_WEBSOCKET_TRANSPORT ON)
+    add_library(axent_websocket_control
+        src/control/websocket_server.cpp
+    )
+    target_include_directories(axent_websocket_control PUBLIC include)
+    target_link_libraries(axent_websocket_control
+        PUBLIC axent::libaxent
+        PRIVATE axtp::transport_websocket_ix
+    )
+    axent_enable_warnings(axent_websocket_control)
+
+    add_executable(axentd src/daemon/main.cpp)
+    target_link_libraries(axentd PRIVATE axent_websocket_control)
+    axent_enable_warnings(axentd)
+endif()
 
 add_executable(axent src/cli/main.cpp)
 target_link_libraries(axent PRIVATE axent::libaxent)
 axent_enable_warnings(axent)
 
-if(BUILD_TESTING)
+if(AXENT_BUILD_TESTING)
     add_test(
         NAME axent_dependency_boundary
         COMMAND ${CMAKE_COMMAND}
@@ -105,6 +119,16 @@ if(BUILD_TESTING)
     axent_enable_warnings(diagnostics_config_test)
     add_test(NAME diagnostics_config_test COMMAND diagnostics_config_test)
 
+    add_executable(logging_foundation_test tests/logging_foundation_test.cpp)
+    target_link_libraries(logging_foundation_test PRIVATE axent::libaxent)
+    axent_enable_warnings(logging_foundation_test)
+    add_test(NAME logging_foundation_test COMMAND logging_foundation_test)
+
+    add_executable(cli_options_test tests/cli_options_test.cpp)
+    target_link_libraries(cli_options_test PRIVATE axent::libaxent)
+    axent_enable_warnings(cli_options_test)
+    add_test(NAME cli_options_test COMMAND cli_options_test)
+
     add_executable(broker_flow_test tests/broker_flow_test.cpp)
     target_link_libraries(broker_flow_test PRIVATE axent::libaxent)
     axent_enable_warnings(broker_flow_test)
@@ -115,10 +139,12 @@ if(BUILD_TESTING)
     axent_enable_warnings(protocol_codecs_test)
     add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
 
-    add_executable(websocket_server_test tests/websocket_server_test.cpp)
-    target_link_libraries(websocket_server_test PRIVATE axent::libaxent axtp::transport_websocket_ix)
-    axent_enable_warnings(websocket_server_test)
-    add_test(NAME websocket_server_test COMMAND websocket_server_test)
+    if(AXENT_HAS_WEBSOCKET_TRANSPORT)
+        add_executable(websocket_server_test tests/websocket_server_test.cpp)
+        target_link_libraries(websocket_server_test PRIVATE axent_websocket_control axtp::transport_websocket_ix)
+        axent_enable_warnings(websocket_server_test)
+        add_test(NAME websocket_server_test COMMAND websocket_server_test)
+    endif()
 
     add_executable(cli_smoke_test tests/cli_smoke_test.cpp)
     axent_enable_warnings(cli_smoke_test)

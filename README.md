@@ -38,4 +38,17 @@ Developer smoke:
     build/axent status --offline
     build/axentd --foreground
 
+## Logging And CLI
+
+`axent` and `axentd` share Axent-native logging options:
+
+    build/axent --version
+    build/axent status --offline --log --debug
+    build/axentd --foreground --bind 127.0.0.1 --port 6060 --log --log-level debug
+
+`--log` enables file logging, `--debug` maps to `--log-level debug`, and
+`--log-dir` selects the log directory. The logger supports level filtering,
+structured in-memory diagnostics, checkpoints, bounded memory records, and
+rotating file segments without adding a third-party logging dependency.
+
 The development profile binds WebSocket to LAN by default and has no authentication. Use only on trusted networks until the hardening stage adds authentication and authorization.
