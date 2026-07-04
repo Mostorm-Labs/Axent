@@ -181,6 +181,15 @@ std::vector<DeviceSnapshot> AxentHost::discover_devices() const
     return impl_->devices ? impl_->devices->list() : std::vector<DeviceSnapshot>{};
 }
 
+TransportDiagnostics AxentHost::transport_diagnostics() const
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (const auto* adapter = dynamic_cast<const AxtpAdapter*>(impl_->axtp_adapter.get())) {
+        return adapter->diagnostics();
+    }
+    return {};
+}
+
 void AxentHost::upsert_device(DeviceSnapshot snapshot)
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
