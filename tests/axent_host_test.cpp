@@ -282,6 +282,103 @@ std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& cons
     return std::nullopt;
 }
 
+class RecordingMediaSink final : public axent::IMediaFrameSink {
+public:
+    void on_media_frame(axent::MediaFrame frame) override
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        frames_.push_back(std::move(frame));
+        if (block_next_frame_) {
+            block_next_frame_ = false;
+            frame_blocked_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this]() {
+                return unblock_frames_;
+            });
+        }
+        cv_.notify_all();
+    }
+
+    void on_media_event(axent::MediaEvent event) override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(event);
+        cv_.notify_all();
+    }
+
+    void block_next_frame()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        block_next_frame_ = true;
+        frame_blocked_ = false;
+        unblock_frames_ = false;
+    }
+
+    bool wait_for_frames(std::size_t minimum)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [this, minimum]() {
+            return frames_.size() >= minimum;
+        });
+    }
+
+    bool wait_for_frame_blocked()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            return frame_blocked_;
+        });
+    }
+
+    void unblock_frames()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            unblock_frames_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    bool wait_for_closed()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            for (const auto& event : events_) {
+                if (event.kind == axent::MediaEventKind::Closed) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    bool has_drop_event() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& event : events_) {
+            if (event.kind == axent::MediaEventKind::Dropped) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::vector<axent::MediaFrame> frames() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frames_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<axent::MediaFrame> frames_;
+    std::vector<axent::MediaEvent> events_;
+    bool block_next_frame_ = false;
+    bool frame_blocked_ = false;
+    bool unblock_frames_ = false;
+};
+
 } // namespace
 
 int main()
@@ -356,6 +453,9 @@ int main()
     auto control_frame = make_media_frame(77);
     require(!host.publish_media_frame(same_client_control_lease.session_id, control_frame),
             "control lease publish should fail");
+    require(host.subscribe_media(same_client_control_lease.session_id,
+                                 std::make_shared<RecordingMediaSink>()) == nullptr,
+            "control lease should not create media subscription");
 
     host.release_session(same_client_control_lease.session_id, "control session done");
 
@@ -383,6 +483,23 @@ int main()
     require(!host.publish_media_frame(lease.session_id, early_frame),
             "publish before media consumer should fail");
 
+    require(host.subscribe_media("missing-session", std::make_shared<RecordingMediaSink>()) == nullptr,
+            "missing session should not create media subscription");
+
+    auto push_sink = std::make_shared<RecordingMediaSink>();
+    axent::MediaSubscriptionOptions push_options;
+    push_options.max_frames = 4;
+    auto push_subscription = host.subscribe_media(lease.session_id, push_sink, push_options);
+    require(push_subscription != nullptr, "media subscription should be created");
+
+    auto push_frame = make_media_frame(100);
+    require(host.publish_media_frame(lease.session_id, push_frame),
+            "push-only publish should succeed");
+    require(push_sink->wait_for_frames(1), "push sink should receive a frame without relay");
+    auto push_frames = push_sink->frames();
+    require(push_frames.front().sequence_id == 100, "push sink sequence mismatch");
+    require(push_frames.front().session_id == lease.session_id, "push sink session mismatch");
+
     axent::MediaRelayOptions relay_options;
     relay_options.max_frames = 1;
     auto consumer = host.create_media_consumer(lease.session_id, relay_options);
@@ -403,12 +520,47 @@ int main()
     const auto relay_stats = consumer->stats();
     require(relay_stats.published_frames == 2, "relay published count mismatch");
     require(relay_stats.dropped_frames == 1, "relay dropped count mismatch");
+    require(push_sink->wait_for_frames(3), "push sink should keep receiving alongside relay");
+
+    auto slow_sink = std::make_shared<RecordingMediaSink>();
+    axent::MediaSubscriptionOptions slow_options;
+    slow_options.max_frames = 1;
+    auto slow_subscription = host.subscribe_media(lease.session_id, slow_sink, slow_options);
+    require(slow_subscription != nullptr, "slow media subscription should be created");
+    slow_sink->block_next_frame();
+    auto slow_first_frame = make_media_frame(200);
+    require(host.publish_media_frame(lease.session_id, slow_first_frame),
+            "slow subscription first publish should succeed");
+    require(slow_sink->wait_for_frame_blocked(), "slow sink should block on first frame");
+
+    const auto publish_start = std::chrono::steady_clock::now();
+    for (std::uint64_t sequence = 201; sequence <= 205; ++sequence) {
+        require(host.publish_media_frame(lease.session_id, make_media_frame(sequence)),
+                "publish should not require relay read or sink progress");
+    }
+    const auto publish_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - publish_start);
+    require(publish_elapsed < std::chrono::milliseconds(200),
+            "slow sink should not block media publishing");
+
+    slow_sink->unblock_frames();
+    require(slow_sink->wait_for_frames(2), "slow sink should receive latest queued frame after unblock");
+    require(slow_sink->has_drop_event(), "slow sink should observe a drop event");
+    const auto slow_stats = slow_subscription->stats();
+    require(slow_stats.received_frames >= 6, "slow subscription received count mismatch");
+    require(slow_stats.dropped_frames >= 4, "slow subscription should drop stale frames");
+    auto slow_frames = slow_sink->frames();
+    require(slow_frames.back().sequence_id == 205, "slow subscription should retain newest frame");
+    require(axent::has_flag(slow_frames.back().flags, axent::MediaFrameFlag::Discontinuity),
+            "slow subscription retained frame should mark discontinuity");
 
     const auto result = host.call(lease.session_id, "status.get", {});
     require(result.status == axent::ControlStatus::Ok, "host call should dispatch through broker");
     require(result.body.at("health") == "ok", "host call result mismatch");
 
     host.release_session(lease.session_id, "test complete");
+    require(push_sink->wait_for_closed(), "push subscription should close on release");
+    require(slow_sink->wait_for_closed(), "slow subscription should close on release");
     require(!host.publish_media_frame(lease.session_id, frame), "publish after release should fail");
     require(!consumer->read().has_value(), "consumer should not read after media release");
 

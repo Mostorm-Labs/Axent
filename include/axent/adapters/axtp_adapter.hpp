@@ -59,6 +59,7 @@ public:
     void record_hid_trace(const axtp::HidReportTrace& trace);
     TransportDiagnostics diagnostics() const;
     void set_media_frame_callback(MediaFrameCallback callback);
+    bool open_session(const std::string& device_id, std::string& error);
     bool open_session_for_test(const std::string& device_id, std::string& error);
 
 private:

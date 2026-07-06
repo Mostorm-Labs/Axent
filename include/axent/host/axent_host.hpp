@@ -12,6 +12,7 @@
 #include "axent/core/types.hpp"
 #include "axent/media/media_frame.hpp"
 #include "axent/media/media_relay.hpp"
+#include "axent/media/media_subscription.hpp"
 
 namespace axent {
 
@@ -79,6 +80,9 @@ public:
 
     std::unique_ptr<MediaConsumer> create_media_consumer(const std::string& session_id,
                                                          MediaRelayOptions options);
+    MediaSubscriptionPtr subscribe_media(const std::string& session_id,
+                                         std::shared_ptr<IMediaFrameSink> sink,
+                                         MediaSubscriptionOptions options = {});
     bool publish_media_frame(const std::string& session_id, MediaFrame frame);
 
     ControlResult call(const std::string& session_id,

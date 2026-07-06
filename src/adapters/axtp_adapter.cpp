@@ -392,10 +392,15 @@ void AxtpAdapter::reset_session_for_device(const std::string& device_id)
     drop_pending_media_frames_for_device(device_id);
 }
 
-bool AxtpAdapter::open_session_for_test(const std::string& device_id, std::string& error)
+bool AxtpAdapter::open_session(const std::string& device_id, std::string& error)
 {
     std::lock_guard<std::mutex> session_lock(session_mutex_);
     return ensure_session_locked(device_id, error);
+}
+
+bool AxtpAdapter::open_session_for_test(const std::string& device_id, std::string& error)
+{
+    return open_session(device_id, error);
 }
 
 std::thread AxtpAdapter::request_stop_session_pump_locked()
