@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 
+#include "axent/cli/axtp_cli.hpp"
 #include "axent/cli/options.hpp"
 #include "axent/logging/logger.hpp"
 #include "axent/version.hpp"
@@ -61,6 +62,10 @@ int main(int argc, char** argv)
     if (parsed.options.command == "diagnostics") {
         std::cout << "axent diagnostics: requested\n";
         return 0;
+    }
+    if (parsed.options.command == "axtp") {
+        const std::string executable_path = argc > 0 && argv[0] != nullptr ? argv[0] : "axent";
+        return axent::run_axtp_cli(parsed.options.command_args, executable_path, std::cout, std::cerr);
     }
 
     std::cerr << "unknown option or command: " << parsed.options.command << "\n" << axent::axent_usage();

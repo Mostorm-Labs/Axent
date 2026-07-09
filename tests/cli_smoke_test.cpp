@@ -56,7 +56,12 @@ CommandResult run_command(const std::string& command)
 {
     std::array<char, 256> buffer{};
     CommandResult result;
-    FILE* pipe = AXENT_POPEN(command.c_str(), "r");
+#ifdef _WIN32
+    const std::string popen_command = "call " + command;
+#else
+    const std::string& popen_command = command;
+#endif
+    FILE* pipe = AXENT_POPEN(popen_command.c_str(), "r");
     if (pipe == nullptr) {
         result.code = -1;
         return result;
@@ -103,6 +108,30 @@ int main(int argc, char** argv)
     }
     if (!std::filesystem::exists(log_dir / "axent.log")) {
         return fail("status command did not create axent.log");
+    }
+
+    const auto axtp_ping = run_command(axent + " axtp ping");
+    if (axtp_ping.code != 0) {
+        return fail("axent axtp ping exited with non-zero status");
+    }
+    if (axtp_ping.output.find("\"ok\":true") == std::string::npos) {
+        return fail("axent axtp ping did not report ok");
+    }
+
+    const auto axtp_methods = run_command(axent + " axtp list-methods");
+    if (axtp_methods.code != 0) {
+        return fail("axent axtp list-methods exited with non-zero status");
+    }
+    if (axtp_methods.output.find("audio.getAlgorithmConfig") == std::string::npos) {
+        return fail("axent axtp list-methods did not include generated methods");
+    }
+
+    const auto axtp_call = run_command(axent + " axtp -c audio.getAlgorithmConfig -o json");
+    if (axtp_call.code != 0) {
+        return fail("axent axtp mock call exited with non-zero status");
+    }
+    if (axtp_call.output.find("noiseSuppression") == std::string::npos) {
+        return fail("axent axtp mock call did not include mock result");
     }
 
     std::filesystem::remove_all(log_dir);

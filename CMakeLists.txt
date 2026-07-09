@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(CTest)
 option(AXENT_BUILD_TESTING "Build Axent test executables" ${BUILD_TESTING})
 include(cmake/CompilerWarnings.cmake)
@@ -26,6 +30,7 @@ add_library(libaxent
     src/config/config.cpp
     src/diagnostics/diagnostics.cpp
     src/firmware/firmware_task.cpp
+    src/cli/axtp_cli.cpp
     src/cli/options.cpp
     src/logging/logger.cpp
     src/adapters/axdp_adapter.cpp
@@ -44,6 +49,18 @@ target_link_libraries(libaxent
 if(TARGET axtp::transport_hidapi)
     target_link_libraries(libaxent PRIVATE axtp::transport_hidapi)
     target_compile_definitions(libaxent PRIVATE AXENT_HAS_AXTP_HID_TRANSPORT=1)
+endif()
+set(AXENT_HAS_AXTP_DIRECT_CLI OFF)
+if(TARGET axtp::transport_hidapi AND
+   TARGET axtp::transport_tcp_native AND
+   TARGET axtp::transport_websocket_ix)
+    set(AXENT_HAS_AXTP_DIRECT_CLI ON)
+    target_link_libraries(libaxent
+        PRIVATE
+            axtp::transport_tcp_native
+            axtp::transport_websocket_ix
+    )
+    target_compile_definitions(libaxent PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
 endif()
 if(AXENT_HAS_AXDP_HEADERS)
     target_include_directories(libaxent PRIVATE third_party/axdp/include)
@@ -133,6 +150,13 @@ if(AXENT_BUILD_TESTING)
     target_link_libraries(cli_options_test PRIVATE axent::libaxent)
     axent_enable_warnings(cli_options_test)
     add_test(NAME cli_options_test COMMAND cli_options_test)
+
+    if(AXENT_HAS_AXTP_DIRECT_CLI)
+        add_executable(axtp_cli_runner_test tests/axtp_cli_runner_test.cpp)
+        target_link_libraries(axtp_cli_runner_test PRIVATE axent::libaxent)
+        axent_enable_warnings(axtp_cli_runner_test)
+        add_test(NAME axtp_cli_runner_test COMMAND axtp_cli_runner_test)
+    endif()
 
     add_executable(broker_flow_test tests/broker_flow_test.cpp)
     target_link_libraries(broker_flow_test PRIVATE axent::libaxent)

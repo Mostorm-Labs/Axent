@@ -39,6 +39,43 @@ void test_axent_common_options_and_status_command()
     require(result.options.offline, "--offline should be accepted after status");
 }
 
+void test_axent_axtp_preserves_subcommand_arguments()
+{
+    std::vector<std::string> args = {
+        "axent",
+        "axtp",
+        "-c",
+        "audio.getAlgorithmConfig",
+        "--json",
+        R"({"value":1})",
+        "-o",
+        "json"};
+    auto pointers = argv(args);
+
+    const auto result = axent::parse_axent_cli(static_cast<int>(args.size()), pointers.data());
+
+    require(result.status == axent::CliParseStatus::Ok, "axent axtp parse should succeed");
+    require(result.options.command == "axtp", "axtp command should be selected");
+    require(!result.options.common.json_output, "axtp --json should not be parsed as Axent global JSON");
+    require(result.options.command_args.size() == args.size() - 2, "axtp args should be preserved");
+    require(result.options.command_args[0] == "-c", "axtp first arg mismatch");
+    require(result.options.command_args[3] == R"({"value":1})", "axtp JSON body should be preserved");
+}
+
+void test_axent_global_json_before_axtp()
+{
+    std::vector<std::string> args = {"axent", "--json", "axtp", "ping"};
+    auto pointers = argv(args);
+
+    const auto result = axent::parse_axent_cli(static_cast<int>(args.size()), pointers.data());
+
+    require(result.status == axent::CliParseStatus::Ok, "axent --json axtp parse should succeed");
+    require(result.options.common.json_output, "global --json before axtp should remain global");
+    require(result.options.command == "axtp", "axtp command should be selected after global options");
+    require(result.options.command_args.size() == 1, "axtp ping should be preserved");
+    require(result.options.command_args[0] == "ping", "axtp ping arg mismatch");
+}
+
 void test_axentd_options()
 {
     std::vector<std::string> args = {
@@ -228,6 +265,8 @@ void test_invalid_port_reports_error()
 int main()
 {
     test_axent_common_options_and_status_command();
+    test_axent_axtp_preserves_subcommand_arguments();
+    test_axent_global_json_before_axtp();
     test_axentd_options();
     test_axentd_real_adapter_defaults_and_precedence();
     test_invalid_log_level_reports_error();

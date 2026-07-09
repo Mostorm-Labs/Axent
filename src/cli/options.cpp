@@ -142,7 +142,8 @@ bool parse_sized_option(int argc,
 
 bool is_axent_command(const std::string& token)
 {
-    return token == "status" || token == "list" || token == "reload" || token == "diagnostics";
+    return token == "status" || token == "list" || token == "reload" || token == "diagnostics" ||
+           token == "axtp";
 }
 
 template <typename T>
@@ -194,6 +195,13 @@ CliParseResult<AxentCliOptions> parse_axent_cli(int argc, char** argv)
         }
         result.options.command = token;
         saw_command = true;
+
+        if (token == "axtp") {
+            for (++i; i < argc; ++i) {
+                result.options.command_args.emplace_back(argv[i]);
+            }
+            break;
+        }
     }
 
     if (!saw_command) {
@@ -375,6 +383,7 @@ std::string axent_usage()
         << "  list\n"
         << "  reload\n"
         << "  diagnostics\n"
+        << "  axtp [axtp-options] <axtp-command>\n"
         << "\n"
         << "Options:\n"
         << "  -h, --help\n"

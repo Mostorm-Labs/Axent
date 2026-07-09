@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "axent/adapters/axtp_adapter.hpp"
 #include "axent/logging/logger.hpp"
@@ -27,6 +28,7 @@ struct CommonCliOptions {
 struct AxentCliOptions {
     CommonCliOptions common;
     std::string command = "help";
+    std::vector<std::string> command_args;
     bool offline = false;
 };
 
