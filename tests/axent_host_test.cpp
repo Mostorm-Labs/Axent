@@ -495,6 +495,13 @@ int main()
     auto push_frame = make_media_frame(100);
     require(host.publish_media_frame(lease.session_id, push_frame),
             "push-only publish should succeed");
+    auto immediate_push_frames = push_sink->frames();
+    require(immediate_push_frames.size() == 1, "direct push sink should receive before publish returns");
+    const auto push_stats = push_subscription->stats();
+    require(push_stats.received_frames == 1, "direct push received count mismatch");
+    require(push_stats.delivered_frames == 1, "direct push delivered count mismatch");
+    require(push_stats.queued_frames == 0, "direct push should not queue frames");
+    require(push_stats.queued_bytes == 0, "direct push should not queue bytes");
     require(push_sink->wait_for_frames(1), "push sink should receive a frame without relay");
     auto push_frames = push_sink->frames();
     require(push_frames.front().sequence_id == 100, "push sink sequence mismatch");
@@ -524,6 +531,7 @@ int main()
 
     auto slow_sink = std::make_shared<RecordingMediaSink>();
     axent::MediaSubscriptionOptions slow_options;
+    slow_options.dispatch = axent::MediaSubscriptionDispatch::AsyncQueued;
     slow_options.max_frames = 1;
     auto slow_subscription = host.subscribe_media(lease.session_id, slow_sink, slow_options);
     require(slow_subscription != nullptr, "slow media subscription should be created");
@@ -626,8 +634,17 @@ int main()
     real_relay_options.max_frames = 4;
     auto real_consumer = real_host.create_media_consumer(media_lease.session_id, real_relay_options);
     require(real_consumer != nullptr, "real media consumer should be created");
+    auto real_push_sink = std::make_shared<RecordingMediaSink>();
+    auto real_push_subscription = real_host.subscribe_media(media_lease.session_id, real_push_sink);
+    require(real_push_subscription != nullptr, "real media direct subscription should be created");
 
     scripted->injectStream(0x1001, 9, 9000, {0x00, 0x00, 0x01, 0x65});
+    require(real_push_sink->wait_for_frames(1), "real adapter stream should reach direct subscription");
+    const auto real_push_frames = real_push_sink->frames();
+    require(real_push_frames.front().session_id == media_lease.session_id,
+            "direct subscription session mismatch");
+    require(real_push_frames.front().device_id == real_device.id,
+            "direct subscription device mismatch");
 
     const auto media_frame = wait_for_media_frame(*real_consumer);
     require(media_frame.has_value(), "real adapter stream should reach host media relay");

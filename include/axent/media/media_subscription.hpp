@@ -14,6 +14,11 @@ enum class MediaDeliveryMode {
     LosslessBounded,
 };
 
+enum class MediaSubscriptionDispatch {
+    Direct,
+    AsyncQueued,
+};
+
 enum class MediaEventKind {
     Closed,
     Dropped,
@@ -27,6 +32,7 @@ struct MediaEvent {
 
 struct MediaSubscriptionOptions {
     MediaDeliveryMode delivery_mode = MediaDeliveryMode::LatestDecodable;
+    MediaSubscriptionDispatch dispatch = MediaSubscriptionDispatch::Direct;
     std::size_t max_frames = 2;
     std::size_t max_bytes = 2 * 1024 * 1024;
 };

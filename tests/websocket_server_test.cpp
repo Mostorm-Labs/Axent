@@ -149,17 +149,23 @@ int main()
 
     requester.send_text(
         R"({"jsonrpc":"2.0","id":1,"method":"status.get","params":{"deviceId":"mock-device-001"}})");
+    requester.send_text(
+        R"({"jsonrpc":"2.0","id":2,"method":"devices.list","params":{}})");
 
-    require(requester.wait_for_messages(1, std::chrono::seconds(3)), "requesting client should receive a response");
+    require(requester.wait_for_messages(2, std::chrono::seconds(3)), "requesting client should receive responses");
     require(!passive.wait_for_any_message(std::chrono::milliseconds(250)),
             "passive client should not receive another client's response");
 
     const auto requester_messages = requester.messages();
-    require(requester_messages.size() == 1, "requesting client should receive exactly one response");
-    const auto response = nlohmann::json::parse(requester_messages.front());
+    require(requester_messages.size() == 2, "requesting client should receive exactly two responses");
+    const auto response = nlohmann::json::parse(requester_messages[0]);
     require(response.at("jsonrpc") == "2.0", "response should be JSON-RPC 2.0");
     require(response.at("id") == 1, "response should preserve the numeric JSON-RPC id");
     require(response.at("result").at("health") == "ok", "response should contain the status result");
+    const auto second_response = nlohmann::json::parse(requester_messages[1]);
+    require(second_response.at("jsonrpc") == "2.0", "second response should be JSON-RPC 2.0");
+    require(second_response.at("id") == 2, "second response should preserve the numeric JSON-RPC id");
+    require(second_response.at("result").at("devices").is_array(), "second response should contain device list");
     require(passive.is_open(), "passive client should remain connected");
 
     server.stop();

@@ -78,12 +78,20 @@ private:
 
         void start()
         {
+            if (options_.dispatch == MediaSubscriptionDispatch::Direct) {
+                return;
+            }
             auto self = shared_from_this();
             worker_ = std::thread([self]() { self->run(); });
         }
 
         void publish(MediaFrame frame)
         {
+            if (options_.dispatch == MediaSubscriptionDispatch::Direct) {
+                publish_direct(std::move(frame));
+                return;
+            }
+
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (closed_) {
@@ -163,6 +171,25 @@ private:
         }
 
     private:
+        void publish_direct(MediaFrame frame)
+        {
+            std::shared_ptr<IMediaFrameSink> sink;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (closed_) {
+                    return;
+                }
+                ++stats_.received_frames;
+                sink = sink_;
+            }
+
+            if (sink) {
+                sink->on_media_frame(std::move(frame));
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++stats_.delivered_frames;
+            }
+        }
+
         bool over_limit_locked() const
         {
             const bool frame_limited = options_.max_frames != 0 && queue_.size() > options_.max_frames;
