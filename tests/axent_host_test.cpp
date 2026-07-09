@@ -1,7 +1,13 @@
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -66,6 +72,14 @@ axtp::Bytes encode_rpc(axtp::RpcPayload payload)
     return writer.bytes;
 }
 
+axtp::Bytes encode_stream(axtp::StreamPayload payload)
+{
+    CapturingByteWriter writer;
+    axtp::OutboundProcessor outbound(writer);
+    outbound.sendStream(std::move(payload));
+    return writer.bytes;
+}
+
 class ScriptedAxtpTransport : public axtp::ITransport {
 public:
     void bind(axtp::IByteSink& sink) override
@@ -83,7 +97,57 @@ public:
         open_ = false;
     }
 
-    void poll() override {}
+    void poll() override
+    {
+        std::queue<axtp::Bytes> pending;
+        {
+            std::lock_guard<std::mutex> lock(rx_mutex_);
+            pending.swap(rx_queue_);
+        }
+        while (!pending.empty()) {
+            inject(pending.front());
+            pending.pop();
+        }
+    }
+
+    void injectStream(std::uint32_t stream_id,
+                      std::uint32_t sequence_id,
+                      std::uint64_t cursor,
+                      axtp::Bytes data)
+    {
+        axtp::StreamPayload stream;
+        stream.streamId = stream_id;
+        stream.seqId = sequence_id;
+        stream.cursor = cursor;
+        stream.data = std::move(data);
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        rx_queue_.push(encode_stream(std::move(stream)));
+    }
+
+    void blockAfterNextStream()
+    {
+        std::lock_guard<std::mutex> lock(block_mutex_);
+        block_after_next_stream_ = true;
+        stream_blocked_ = false;
+        unblock_stream_ = false;
+    }
+
+    bool waitForStreamBlocked()
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        return block_cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            return stream_blocked_;
+        });
+    }
+
+    void unblockStream()
+    {
+        {
+            std::lock_guard<std::mutex> lock(block_mutex_);
+            unblock_stream_ = true;
+        }
+        block_cv_.notify_all();
+    }
 
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
@@ -146,9 +210,31 @@ private:
         if (sink_ != nullptr) {
             sink_->onBytes(bytes.data(), bytes.size());
         }
+        maybeBlockAfterStreamInject();
+    }
+
+    void maybeBlockAfterStreamInject()
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        if (!block_after_next_stream_) {
+            return;
+        }
+        block_after_next_stream_ = false;
+        stream_blocked_ = true;
+        block_cv_.notify_all();
+        block_cv_.wait(lock, [this]() {
+            return unblock_stream_;
+        });
     }
 
     axtp::IByteSink* sink_ = nullptr;
+    std::mutex rx_mutex_;
+    std::queue<axtp::Bytes> rx_queue_;
+    std::mutex block_mutex_;
+    std::condition_variable block_cv_;
+    bool block_after_next_stream_ = false;
+    bool stream_blocked_ = false;
+    bool unblock_stream_ = false;
     bool open_ = false;
 };
 
@@ -182,6 +268,116 @@ axent::DeviceSnapshot make_second_mock_device()
     device.status.health = "ok";
     return device;
 }
+
+std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& consumer)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto frame = consumer.read();
+        if (frame.has_value()) {
+            return frame;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return std::nullopt;
+}
+
+class RecordingMediaSink final : public axent::IMediaFrameSink {
+public:
+    void on_media_frame(axent::MediaFrame frame) override
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        frames_.push_back(std::move(frame));
+        if (block_next_frame_) {
+            block_next_frame_ = false;
+            frame_blocked_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this]() {
+                return unblock_frames_;
+            });
+        }
+        cv_.notify_all();
+    }
+
+    void on_media_event(axent::MediaEvent event) override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(event);
+        cv_.notify_all();
+    }
+
+    void block_next_frame()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        block_next_frame_ = true;
+        frame_blocked_ = false;
+        unblock_frames_ = false;
+    }
+
+    bool wait_for_frames(std::size_t minimum)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [this, minimum]() {
+            return frames_.size() >= minimum;
+        });
+    }
+
+    bool wait_for_frame_blocked()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            return frame_blocked_;
+        });
+    }
+
+    void unblock_frames()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            unblock_frames_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    bool wait_for_closed()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            for (const auto& event : events_) {
+                if (event.kind == axent::MediaEventKind::Closed) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    bool has_drop_event() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& event : events_) {
+            if (event.kind == axent::MediaEventKind::Dropped) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::vector<axent::MediaFrame> frames() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frames_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<axent::MediaFrame> frames_;
+    std::vector<axent::MediaEvent> events_;
+    bool block_next_frame_ = false;
+    bool frame_blocked_ = false;
+    bool unblock_frames_ = false;
+};
 
 } // namespace
 
@@ -257,6 +453,9 @@ int main()
     auto control_frame = make_media_frame(77);
     require(!host.publish_media_frame(same_client_control_lease.session_id, control_frame),
             "control lease publish should fail");
+    require(host.subscribe_media(same_client_control_lease.session_id,
+                                 std::make_shared<RecordingMediaSink>()) == nullptr,
+            "control lease should not create media subscription");
 
     host.release_session(same_client_control_lease.session_id, "control session done");
 
@@ -284,6 +483,30 @@ int main()
     require(!host.publish_media_frame(lease.session_id, early_frame),
             "publish before media consumer should fail");
 
+    require(host.subscribe_media("missing-session", std::make_shared<RecordingMediaSink>()) == nullptr,
+            "missing session should not create media subscription");
+
+    auto push_sink = std::make_shared<RecordingMediaSink>();
+    axent::MediaSubscriptionOptions push_options;
+    push_options.max_frames = 4;
+    auto push_subscription = host.subscribe_media(lease.session_id, push_sink, push_options);
+    require(push_subscription != nullptr, "media subscription should be created");
+
+    auto push_frame = make_media_frame(100);
+    require(host.publish_media_frame(lease.session_id, push_frame),
+            "push-only publish should succeed");
+    auto immediate_push_frames = push_sink->frames();
+    require(immediate_push_frames.size() == 1, "direct push sink should receive before publish returns");
+    const auto push_stats = push_subscription->stats();
+    require(push_stats.received_frames == 1, "direct push received count mismatch");
+    require(push_stats.delivered_frames == 1, "direct push delivered count mismatch");
+    require(push_stats.queued_frames == 0, "direct push should not queue frames");
+    require(push_stats.queued_bytes == 0, "direct push should not queue bytes");
+    require(push_sink->wait_for_frames(1), "push sink should receive a frame without relay");
+    auto push_frames = push_sink->frames();
+    require(push_frames.front().sequence_id == 100, "push sink sequence mismatch");
+    require(push_frames.front().session_id == lease.session_id, "push sink session mismatch");
+
     axent::MediaRelayOptions relay_options;
     relay_options.max_frames = 1;
     auto consumer = host.create_media_consumer(lease.session_id, relay_options);
@@ -304,12 +527,48 @@ int main()
     const auto relay_stats = consumer->stats();
     require(relay_stats.published_frames == 2, "relay published count mismatch");
     require(relay_stats.dropped_frames == 1, "relay dropped count mismatch");
+    require(push_sink->wait_for_frames(3), "push sink should keep receiving alongside relay");
+
+    auto slow_sink = std::make_shared<RecordingMediaSink>();
+    axent::MediaSubscriptionOptions slow_options;
+    slow_options.dispatch = axent::MediaSubscriptionDispatch::AsyncQueued;
+    slow_options.max_frames = 1;
+    auto slow_subscription = host.subscribe_media(lease.session_id, slow_sink, slow_options);
+    require(slow_subscription != nullptr, "slow media subscription should be created");
+    slow_sink->block_next_frame();
+    auto slow_first_frame = make_media_frame(200);
+    require(host.publish_media_frame(lease.session_id, slow_first_frame),
+            "slow subscription first publish should succeed");
+    require(slow_sink->wait_for_frame_blocked(), "slow sink should block on first frame");
+
+    const auto publish_start = std::chrono::steady_clock::now();
+    for (std::uint64_t sequence = 201; sequence <= 205; ++sequence) {
+        require(host.publish_media_frame(lease.session_id, make_media_frame(sequence)),
+                "publish should not require relay read or sink progress");
+    }
+    const auto publish_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - publish_start);
+    require(publish_elapsed < std::chrono::milliseconds(200),
+            "slow sink should not block media publishing");
+
+    slow_sink->unblock_frames();
+    require(slow_sink->wait_for_frames(2), "slow sink should receive latest queued frame after unblock");
+    require(slow_sink->has_drop_event(), "slow sink should observe a drop event");
+    const auto slow_stats = slow_subscription->stats();
+    require(slow_stats.received_frames >= 6, "slow subscription received count mismatch");
+    require(slow_stats.dropped_frames >= 4, "slow subscription should drop stale frames");
+    auto slow_frames = slow_sink->frames();
+    require(slow_frames.back().sequence_id == 205, "slow subscription should retain newest frame");
+    require(axent::has_flag(slow_frames.back().flags, axent::MediaFrameFlag::Discontinuity),
+            "slow subscription retained frame should mark discontinuity");
 
     const auto result = host.call(lease.session_id, "status.get", {});
     require(result.status == axent::ControlStatus::Ok, "host call should dispatch through broker");
     require(result.body.at("health") == "ok", "host call result mismatch");
 
     host.release_session(lease.session_id, "test complete");
+    require(push_sink->wait_for_closed(), "push subscription should close on release");
+    require(slow_sink->wait_for_closed(), "slow subscription should close on release");
     require(!host.publish_media_frame(lease.session_id, frame), "publish after release should fail");
     require(!consumer->read().has_value(), "consumer should not read after media release");
 
@@ -366,6 +625,53 @@ int main()
     require(real_call.body.at("via") == "axtp", "real AXTP host call response mismatch");
     require(scripted != nullptr && scripted->saw_business_request,
             "real AXTP host call should use scripted transport");
+
+    real_request.media = true;
+    const auto media_lease = real_host.acquire_session(real_request);
+    require(media_lease.acquired, "real AXTP media lease should be acquired");
+
+    axent::MediaRelayOptions real_relay_options;
+    real_relay_options.max_frames = 4;
+    auto real_consumer = real_host.create_media_consumer(media_lease.session_id, real_relay_options);
+    require(real_consumer != nullptr, "real media consumer should be created");
+    auto real_push_sink = std::make_shared<RecordingMediaSink>();
+    auto real_push_subscription = real_host.subscribe_media(media_lease.session_id, real_push_sink);
+    require(real_push_subscription != nullptr, "real media direct subscription should be created");
+
+    scripted->injectStream(0x1001, 9, 9000, {0x00, 0x00, 0x01, 0x65});
+    require(real_push_sink->wait_for_frames(1), "real adapter stream should reach direct subscription");
+    const auto real_push_frames = real_push_sink->frames();
+    require(real_push_frames.front().session_id == media_lease.session_id,
+            "direct subscription session mismatch");
+    require(real_push_frames.front().device_id == real_device.id,
+            "direct subscription device mismatch");
+
+    const auto media_frame = wait_for_media_frame(*real_consumer);
+    require(media_frame.has_value(), "real adapter stream should reach host media relay");
+    require(media_frame->session_id == media_lease.session_id, "media relay session mismatch");
+    require(media_frame->device_id == real_device.id, "media relay device mismatch");
+    require(media_frame->stream_id == 0x1001, "media relay stream mismatch");
+    require(media_frame->codec == axent::MediaCodec::H264, "media relay codec mismatch");
+
+    scripted->blockAfterNextStream();
+    scripted->injectStream(0x1001, 10, 10000, {0x00, 0x00, 0x01, 0x41});
+    require(scripted->waitForStreamBlocked(), "stale stream should be queued before adapter drain");
+    std::thread release_thread([&real_host, &media_lease]() {
+        real_host.release_session(media_lease.session_id, "replace media lease");
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    scripted->unblockStream();
+    release_thread.join();
+
+    const auto replacement_lease = real_host.acquire_session(real_request);
+    require(replacement_lease.acquired, "replacement media lease should be acquired");
+    auto replacement_consumer = real_host.create_media_consumer(replacement_lease.session_id, real_relay_options);
+    require(replacement_consumer != nullptr, "replacement media consumer should be created");
+
+    const auto stale_frame = wait_for_media_frame(*replacement_consumer);
+    require(!stale_frame.has_value(), "queued frame from released media lease must not reach replacement lease");
+
+    real_host.release_session(replacement_lease.session_id, "replacement media lease done");
     real_host.stop();
 
     return 0;

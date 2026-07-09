@@ -12,6 +12,7 @@
 #include "axent/core/types.hpp"
 #include "axent/media/media_frame.hpp"
 #include "axent/media/media_relay.hpp"
+#include "axent/media/media_subscription.hpp"
 
 namespace axent {
 
@@ -72,12 +73,16 @@ public:
     bool running() const;
 
     std::vector<DeviceSnapshot> discover_devices() const;
+    TransportDiagnostics transport_diagnostics() const;
     void upsert_device(DeviceSnapshot snapshot);
     SessionLease acquire_session(const SessionAcquireRequest& request);
     void release_session(const std::string& session_id, const std::string& reason);
 
     std::unique_ptr<MediaConsumer> create_media_consumer(const std::string& session_id,
                                                          MediaRelayOptions options);
+    MediaSubscriptionPtr subscribe_media(const std::string& session_id,
+                                         std::shared_ptr<IMediaFrameSink> sink,
+                                         MediaSubscriptionOptions options = {});
     bool publish_media_frame(const std::string& session_id, MediaFrame frame);
 
     ControlResult call(const std::string& session_id,
@@ -90,6 +95,8 @@ public:
     Broker& broker();
 
 private:
+    bool publish_media_frame_for_device(std::string device_id, MediaFrame frame);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

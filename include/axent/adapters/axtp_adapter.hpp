@@ -1,18 +1,26 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <queue>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #include "axent/core/adapter.hpp"
+#include "axent/media/media_frame.hpp"
 #include "axent/transport/types.hpp"
 
 namespace axtp {
+struct BrokerContext;
 class ITransport;
 class HidTransport;
 struct HidDeviceInfo;
 struct HidReportTrace;
 struct HidTransportOptions;
+struct StreamPayload;
 namespace sdk {
 class AxtpClient;
 } // namespace sdk
@@ -24,9 +32,12 @@ struct AxtpAdapterConfig {
     TransportSelector selector;
 };
 
+class AxentHost;
+
 class AxtpAdapter final : public Adapter {
 public:
     using TransportFactory = std::function<std::unique_ptr<axtp::ITransport>(const axtp::HidTransportOptions&)>;
+    using MediaFrameCallback = std::function<void(std::string device_id, MediaFrame frame)>;
 
     AxtpAdapter();
     explicit AxtpAdapter(AxtpAdapterConfig config);
@@ -47,18 +58,40 @@ public:
     bool matches_selector(const axtp::HidDeviceInfo& device) const;
     void record_hid_trace(const axtp::HidReportTrace& trace);
     TransportDiagnostics diagnostics() const;
+    void set_media_frame_callback(MediaFrameCallback callback);
+    bool open_session(const std::string& device_id, std::string& error);
+    bool open_session_for_test(const std::string& device_id, std::string& error);
 
 private:
+    friend class AxentHost;
+
+    std::thread request_stop_session_pump_locked();
     bool ensure_session_locked(const std::string& device_id, std::string& error);
     void refresh_diagnostics_locked();
+    void drop_pending_media_frames_for_device(const std::string& device_id);
+    void reset_session_for_device(const std::string& device_id);
+    void handle_stream_payload(const std::string& device_id,
+                               const axtp::BrokerContext& context,
+                               const axtp::StreamPayload& stream);
+    MediaFrame frame_from_stream(const std::string& device_id,
+                                 const axtp::StreamPayload& stream) const;
+    void drain_pending_media_callbacks();
 
     AxtpAdapterConfig config_;
     TransportFactory transport_factory_;
+    MediaFrameCallback media_frame_callback_;
+    mutable std::mutex media_callback_mutex_;
+    std::mutex pending_media_mutex_;
+    std::queue<std::pair<std::string, MediaFrame>> pending_media_frames_;
     mutable std::mutex mutex_;
+    mutable std::mutex session_mutex_;
+    mutable std::mutex client_mutex_;
     TransportDiagnostics diagnostics_;
     std::unique_ptr<axtp::sdk::AxtpClient> client_;
     axtp::ITransport* active_transport_ = nullptr;
     std::string active_device_id_;
+    std::atomic<bool> stop_session_pump_{false};
+    std::thread session_pump_;
 };
 
 } // namespace axent

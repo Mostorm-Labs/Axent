@@ -1,5 +1,11 @@
+#include <chrono>
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include <queue>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -71,6 +77,14 @@ axtp::Bytes encode_rpc(axtp::RpcPayload payload)
     return writer.bytes;
 }
 
+axtp::Bytes encode_stream(axtp::StreamPayload payload)
+{
+    CapturingByteWriter writer;
+    axtp::OutboundProcessor outbound(writer);
+    outbound.sendStream(std::move(payload));
+    return writer.bytes;
+}
+
 class ScriptedAxtpTransport : public axtp::ITransport {
 public:
     void bind(axtp::IByteSink& sink) override
@@ -88,7 +102,32 @@ public:
         open_ = false;
     }
 
-    void poll() override {}
+    void poll() override
+    {
+        std::queue<axtp::Bytes> pending;
+        {
+            std::lock_guard<std::mutex> lock(rx_mutex_);
+            pending.swap(rx_queue_);
+        }
+        while (!pending.empty()) {
+            inject(pending.front());
+            pending.pop();
+        }
+    }
+
+    void injectStream(std::uint32_t stream_id,
+                      std::uint32_t sequence_id,
+                      std::uint64_t cursor,
+                      axtp::Bytes data)
+    {
+        axtp::StreamPayload stream;
+        stream.streamId = stream_id;
+        stream.seqId = sequence_id;
+        stream.cursor = cursor;
+        stream.data = std::move(data);
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        rx_queue_.push(encode_stream(std::move(stream)));
+    }
 
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
@@ -161,6 +200,8 @@ private:
     }
 
     axtp::IByteSink* sink_ = nullptr;
+    std::mutex rx_mutex_;
+    std::queue<axtp::Bytes> rx_queue_;
     bool open_ = false;
 };
 
@@ -175,6 +216,23 @@ axent::TransportSelector na20_selector()
     selector.input_report_size = 0;
     selector.output_report_size = 0;
     return selector;
+}
+
+bool wait_for_frames(const std::vector<axent::MediaFrame>& frames,
+                     std::mutex& frames_mutex,
+                     std::size_t expected_count)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(frames_mutex);
+            if (frames.size() >= expected_count) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
 }
 
 } // namespace
@@ -309,6 +367,104 @@ int main()
     require(scripted->saw_identify, "AXTP session should send identify");
     require(scripted->saw_business_request, "AXTP call should send a business request");
     require(scripted->last_business_sid == "axent-session-1", "business request should use app-ready sid");
+
+    std::mutex frames_mutex;
+    std::vector<axent::MediaFrame> frames;
+    axent::AxtpAdapterConfig media_config = axent::AxtpAdapter::na20_defaults();
+    ScriptedAxtpTransport* media_scripted = nullptr;
+    axent::AxtpAdapter media_adapter(media_config, [&](const axtp::HidTransportOptions&) {
+        auto transport = std::make_unique<ScriptedAxtpTransport>();
+        media_scripted = transport.get();
+        return transport;
+    });
+
+    media_adapter.set_media_frame_callback([&frames, &frames_mutex](std::string device_id, axent::MediaFrame frame) {
+        frame.device_id = std::move(device_id);
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        frames.push_back(std::move(frame));
+    });
+
+    std::string error;
+    require(media_adapter.open_session_for_test("hid:0581:2581:NA20-SERIAL", error),
+            "scripted adapter session should open");
+    require(media_scripted != nullptr, "scripted media transport should be constructed");
+
+    media_scripted->injectStream(0x1001, 3, 777000, {0x00, 0x00, 0x01, 0x65});
+    require(wait_for_frames(frames, frames_mutex, 1), "video stream should publish a frame");
+
+    axent::MediaFrame received_frame;
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        require(frames.size() == 1, "stream payload should publish one media frame");
+        received_frame = frames.front();
+    }
+    require(received_frame.device_id == "hid:0581:2581:NA20-SERIAL", "device id mismatch");
+    require(received_frame.stream_id == 0x1001, "stream id mismatch");
+    require(received_frame.kind == axent::MediaKind::Video, "stream kind mismatch");
+    require(received_frame.codec == axent::MediaCodec::H264, "codec mismatch");
+    require(received_frame.sequence_id == 3, "sequence mismatch");
+    require(received_frame.cursor == 777000, "cursor mismatch");
+    require(received_frame.timestamp_us == 777000, "timestamp mismatch");
+    require(axent::has_flag(received_frame.flags, axent::MediaFrameFlag::EndOfFrame),
+            "end-of-frame flag missing");
+
+    media_scripted->injectStream(0x2001, 4, 888000, {0x11, 0x22, 0x33, 0x44});
+    require(wait_for_frames(frames, frames_mutex, 2), "audio stream should publish a frame");
+
+    axent::MediaFrame received_audio_frame;
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        require(frames.size() == 2, "audio stream should append one media frame");
+        received_audio_frame = frames.back();
+    }
+    require(received_audio_frame.device_id == "hid:0581:2581:NA20-SERIAL", "audio device id mismatch");
+    require(received_audio_frame.stream_id == 0x2001, "audio stream id mismatch");
+    require(received_audio_frame.kind == axent::MediaKind::Audio, "audio stream kind mismatch");
+    require(received_audio_frame.codec == axent::MediaCodec::Aac, "audio codec mismatch");
+    require(received_audio_frame.sequence_id == 4, "audio sequence mismatch");
+    require(received_audio_frame.cursor == 888000, "audio cursor mismatch");
+    require(received_audio_frame.timestamp_us == 888000, "audio timestamp mismatch");
+    require(axent::has_flag(received_audio_frame.flags, axent::MediaFrameFlag::EndOfFrame),
+            "audio end-of-frame flag missing");
+
+    std::mutex reentrant_frames_mutex;
+    std::vector<axent::MediaFrame> reentrant_frames;
+    ScriptedAxtpTransport* reentrant_scripted = nullptr;
+    axent::AxtpAdapter reentrant_adapter(media_config, [&](const axtp::HidTransportOptions&) {
+        auto transport = std::make_unique<ScriptedAxtpTransport>();
+        reentrant_scripted = transport.get();
+        return transport;
+    });
+    std::atomic<bool> reentrant_call_succeeded{false};
+    reentrant_adapter.set_media_frame_callback(
+        [&reentrant_adapter,
+         &reentrant_call_succeeded,
+         &reentrant_frames,
+         &reentrant_frames_mutex](std::string device_id, axent::MediaFrame frame) {
+            frame.device_id = std::move(device_id);
+            {
+                std::lock_guard<std::mutex> lock(reentrant_frames_mutex);
+                reentrant_frames.push_back(std::move(frame));
+            }
+            const auto result =
+                reentrant_adapter.call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+            reentrant_call_succeeded.store(result.status == axent::ControlStatus::Ok
+                && result.body.value("ok", false));
+        });
+
+    require(reentrant_adapter.open_session_for_test("hid:0581:2581:NA20-SERIAL", error),
+            "reentrant scripted adapter session should open");
+    require(reentrant_scripted != nullptr, "reentrant scripted transport should be constructed");
+    reentrant_scripted->injectStream(0x1001, 5, 999000, {0x00, 0x00, 0x01, 0x65});
+    const auto reentrant_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!reentrant_call_succeeded.load() && std::chrono::steady_clock::now() < reentrant_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    {
+        std::lock_guard<std::mutex> lock(reentrant_frames_mutex);
+        require(reentrant_frames.size() == 1, "reentrant callback should receive one media frame");
+    }
+    require(reentrant_call_succeeded.load(), "media callback should be able to re-enter adapter call");
 
     return 0;
 }

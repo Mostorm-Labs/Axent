@@ -34,6 +34,7 @@ add_library(libaxent
     src/adapters/tea_adapter.cpp
     src/host/axent_host.cpp
     src/media/media_relay.cpp
+    src/media/media_subscription.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)

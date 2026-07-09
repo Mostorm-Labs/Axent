@@ -1,9 +1,13 @@
 #include "axent/adapters/axtp_adapter.hpp"
 
+#include <chrono>
 #include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #include "axtp_runtime.hpp"
 #include "axtp_sdk.hpp"
@@ -105,7 +109,21 @@ AxtpAdapter::AxtpAdapter(AxtpAdapterConfig config, TransportFactory transport_fa
     }
 }
 
-AxtpAdapter::~AxtpAdapter() = default;
+AxtpAdapter::~AxtpAdapter()
+{
+    std::thread pump;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pump = request_stop_session_pump_locked();
+    }
+    if (pump.joinable()) {
+        pump.join();
+    }
+    std::lock_guard<std::mutex> client_lock(client_mutex_);
+    if (client_) {
+        client_->close();
+    }
+}
 
 AxtpAdapterConfig AxtpAdapter::na20_defaults()
 {
@@ -217,20 +235,28 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
 ControlResult AxtpAdapter::call(const std::string& device_id, const std::string& method, const nlohmann::json& params)
 {
     std::string error;
-    if (!ensure_session_locked(device_id, error)) {
-        return {ControlStatus::Unavailable, {{"error", error}}};
-    }
-
-    axtp::sdk::CallOptions options;
-    options.timeout = std::chrono::milliseconds(5000);
-    const std::string params_text = params.is_null() ? std::string("{}") : params.dump();
-    const std::string body = client_->callJson(method, params_text, options);
+    std::string body;
+    axtp::sdk::SdkError last_error;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        refresh_diagnostics_locked();
-    }
+        std::lock_guard<std::mutex> session_lock(session_mutex_);
+        if (!ensure_session_locked(device_id, error)) {
+            return {ControlStatus::Unavailable, {{"error", error}}};
+        }
 
-    const auto& last_error = client_->lastError();
+        {
+            std::lock_guard<std::mutex> client_lock(client_mutex_);
+            if (client_ == nullptr) {
+                return {ControlStatus::Unavailable, {{"error", "AXTP session is unavailable"}}};
+            }
+            axtp::sdk::CallOptions options;
+            options.timeout = std::chrono::milliseconds(5000);
+            const std::string params_text = params.is_null() ? std::string("{}") : params.dump();
+            body = client_->callJson(method, params_text, options);
+            last_error = client_->lastError();
+        }
+    }
+    drain_pending_media_callbacks();
+
     if (!last_error.ok()) {
         return {ControlStatus::Unavailable,
                 {{"error", last_error.message.empty() ? error_name(last_error.code) : last_error.message},
@@ -313,12 +339,106 @@ TransportDiagnostics AxtpAdapter::diagnostics() const
     return diagnostics_;
 }
 
+void AxtpAdapter::set_media_frame_callback(MediaFrameCallback callback)
+{
+    std::lock_guard<std::mutex> lock(media_callback_mutex_);
+    media_frame_callback_ = std::move(callback);
+}
+
+void AxtpAdapter::drop_pending_media_frames_for_device(const std::string& device_id)
+{
+    std::lock_guard<std::mutex> lock(pending_media_mutex_);
+    std::queue<std::pair<std::string, MediaFrame>> retained;
+    while (!pending_media_frames_.empty()) {
+        auto entry = std::move(pending_media_frames_.front());
+        pending_media_frames_.pop();
+        if (entry.first != device_id) {
+            retained.push(std::move(entry));
+        }
+    }
+    pending_media_frames_.swap(retained);
+}
+
+void AxtpAdapter::reset_session_for_device(const std::string& device_id)
+{
+    std::thread stopped_pump;
+    {
+        std::lock_guard<std::mutex> session_lock(session_mutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (active_device_id_ != device_id) {
+                drop_pending_media_frames_for_device(device_id);
+                return;
+            }
+            stopped_pump = request_stop_session_pump_locked();
+        }
+        if (stopped_pump.joinable()) {
+            stopped_pump.join();
+        }
+        {
+            std::lock_guard<std::mutex> client_lock(client_mutex_);
+            if (client_ != nullptr) {
+                client_->close();
+                client_.reset();
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_transport_ = nullptr;
+            active_device_id_.clear();
+            diagnostics_.open = false;
+        }
+    }
+    drop_pending_media_frames_for_device(device_id);
+}
+
+bool AxtpAdapter::open_session(const std::string& device_id, std::string& error)
+{
+    std::lock_guard<std::mutex> session_lock(session_mutex_);
+    return ensure_session_locked(device_id, error);
+}
+
+bool AxtpAdapter::open_session_for_test(const std::string& device_id, std::string& error)
+{
+    return open_session(device_id, error);
+}
+
+std::thread AxtpAdapter::request_stop_session_pump_locked()
+{
+    stop_session_pump_.store(true);
+    if (!session_pump_.joinable()) {
+        return {};
+    }
+    return std::move(session_pump_);
+}
+
 bool AxtpAdapter::ensure_session_locked(const std::string& device_id, std::string& error)
 {
+    std::thread stopped_pump;
     {
+        std::lock_guard<std::mutex> client_lock(client_mutex_);
         std::lock_guard<std::mutex> lock(mutex_);
         if (client_ != nullptr && client_->isConnected() && client_->isAppReady() && active_device_id_ == device_id) {
             return true;
+        }
+        stopped_pump = request_stop_session_pump_locked();
+    }
+    if (stopped_pump.joinable()) {
+        stopped_pump.join();
+    }
+    {
+        std::lock_guard<std::mutex> client_lock(client_mutex_);
+        if (client_ != nullptr) {
+            client_->close();
+            client_.reset();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_transport_ != nullptr || !active_device_id_.empty()) {
+            active_transport_ = nullptr;
+            active_device_id_.clear();
+            diagnostics_.open = false;
         }
     }
     if (config_.selector.kind != TransportKind::Hid) {
@@ -340,6 +460,10 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id, std::strin
     client_options.autoOpen = true;
     client_options.autoIdentify = false;
     auto client = std::make_unique<axtp::sdk::AxtpClient>(client_options);
+    client->setStreamHandler(
+        [this, device_id](const axtp::BrokerContext& context, const axtp::StreamPayload& stream) {
+            handle_stream_payload(device_id, context, stream);
+        });
     auto* active_transport = transport.get();
     client->attachTransport(std::move(transport));
 
@@ -350,6 +474,7 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id, std::strin
         last_ready_event = "app-ready:" + event.stage + ":" + event.action;
     };
     const auto ready = client->ensureAppReady(ready_options);
+    std::unique_lock<std::mutex> client_lock(client_mutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         client_ = std::move(client);
@@ -362,9 +487,12 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id, std::strin
     if (!ready.ok) {
         error = "AXTP app-ready failed at " + ready.stage + ": " + error_name(ready.statusCode);
         {
-            std::lock_guard<std::mutex> lock(mutex_);
             client_->close();
             client_.reset();
+        }
+        client_lock.unlock();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
             active_transport_ = nullptr;
             active_device_id_.clear();
             diagnostics_.open = false;
@@ -377,8 +505,80 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id, std::strin
         active_device_id_ = device_id;
         diagnostics_.open = true;
         diagnostics_.last_event = "app-ready";
+        stop_session_pump_.store(false);
+        session_pump_ = std::thread([this]() {
+            while (!stop_session_pump_.load()) {
+                {
+                    std::lock_guard<std::mutex> client_lock(client_mutex_);
+                    if (client_ == nullptr) {
+                        break;
+                    }
+                    client_->poll();
+                }
+                drain_pending_media_callbacks();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        });
     }
     return true;
+}
+
+MediaFrame AxtpAdapter::frame_from_stream(const std::string& device_id,
+                                          const axtp::StreamPayload& stream) const
+{
+    MediaFrame frame;
+    frame.device_id = device_id;
+    frame.stream_id = stream.streamId;
+    frame.sequence_id = stream.seqId;
+    frame.cursor = stream.cursor;
+    frame.timestamp_us = stream.cursor;
+    frame.payload = stream.data;
+    frame.flags = MediaFrameFlag::EndOfFrame;
+    if ((stream.streamId & 0xF000U) == 0x1000U) {
+        frame.kind = MediaKind::Video;
+        frame.codec = MediaCodec::H264;
+    } else if ((stream.streamId & 0xF000U) == 0x2000U) {
+        frame.kind = MediaKind::Audio;
+        frame.codec = MediaCodec::Aac;
+    } else {
+        frame.kind = MediaKind::Unknown;
+        frame.codec = MediaCodec::Opaque;
+    }
+    return frame;
+}
+
+void AxtpAdapter::handle_stream_payload(const std::string& device_id,
+                                        const axtp::BrokerContext&,
+                                        const axtp::StreamPayload& stream)
+{
+    std::lock_guard<std::mutex> lock(pending_media_mutex_);
+    pending_media_frames_.emplace(device_id, frame_from_stream(device_id, stream));
+}
+
+void AxtpAdapter::drain_pending_media_callbacks()
+{
+    std::queue<std::pair<std::string, MediaFrame>> frames;
+    {
+        std::lock_guard<std::mutex> lock(pending_media_mutex_);
+        frames.swap(pending_media_frames_);
+    }
+    if (frames.empty()) {
+        return;
+    }
+
+    MediaFrameCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(media_callback_mutex_);
+        callback = media_frame_callback_;
+    }
+    if (!callback) {
+        return;
+    }
+    while (!frames.empty()) {
+        auto entry = std::move(frames.front());
+        frames.pop();
+        callback(entry.first, std::move(entry.second));
+    }
 }
 
 void AxtpAdapter::refresh_diagnostics_locked()
