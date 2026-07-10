@@ -166,7 +166,20 @@ public:
                 response.bodyEncoding = axtp::RpcBodyEncoding::None;
                 response.meta.sourceProtocol = axtp::SourceProtocol::JsonRpc;
                 response.meta.jsonSid = rpc.meta.jsonSid;
-                const std::string body = R"({"ok":true})";
+                std::string body = R"({"ok":true})";
+                if (rpc.methodOrEventId ==
+                    static_cast<std::uint32_t>(axtp::MethodId::VideoGetStreamCapabilities)) {
+                    body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast","currentState":"receiving"}]})";
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::AudioGetStreamCapabilities)) {
+                    body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast_audio","currentState":"receiving","channels":[2],"sampleRates":[48000]}]})";
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::VideoOpenStream)) {
+                    body = R"({"streamId":1,"state":"streaming","source":"wireless_cast","codec":"h264"})";
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::AudioOpenStream)) {
+                    body = R"({"streamId":2,"state":"streaming","source":"wireless_cast_audio","codec":"aac","transportFormat":"adts"})";
+                }
                 response.body = axtp::Bytes(body.begin(), body.end());
                 inject(encode_rpc(response));
             }
@@ -342,6 +355,7 @@ int main()
     require(diagnostics.write_errors == 1, "write error count mismatch");
     require(diagnostics.dropped_reports == 1, "dropped report count mismatch");
     require(diagnostics.last_event == "dropped-report-id", "last event should track last trace");
+    require(diagnostics.last_error == "write failed", "last HID error should keep the latest error message");
 
     axent::AxtpAdapter unavailable_adapter(defaults, [](const axtp::HidTransportOptions&) {
         return std::unique_ptr<axtp::ITransport>{};
@@ -388,8 +402,12 @@ int main()
     require(media_adapter.open_session_for_test("hid:0581:2581:NA20-SERIAL", error),
             "scripted adapter session should open");
     require(media_scripted != nullptr, "scripted media transport should be constructed");
+    const auto media_diagnostics = media_adapter.diagnostics();
+    require(media_diagnostics.active_video_stream_id == 1, "video stream id should be registered from openStream");
+    require(media_diagnostics.active_audio_stream_id == 2, "audio stream id should be registered from openStream");
+    require(media_diagnostics.active_media_streams == 2, "active media stream count mismatch");
 
-    media_scripted->injectStream(0x1001, 3, 777000, {0x00, 0x00, 0x01, 0x65});
+    media_scripted->injectStream(1, 3, 777000, {0x00, 0x00, 0x01, 0x65});
     require(wait_for_frames(frames, frames_mutex, 1), "video stream should publish a frame");
 
     axent::MediaFrame received_frame;
@@ -399,7 +417,7 @@ int main()
         received_frame = frames.front();
     }
     require(received_frame.device_id == "hid:0581:2581:NA20-SERIAL", "device id mismatch");
-    require(received_frame.stream_id == 0x1001, "stream id mismatch");
+    require(received_frame.stream_id == 1, "stream id mismatch");
     require(received_frame.kind == axent::MediaKind::Video, "stream kind mismatch");
     require(received_frame.codec == axent::MediaCodec::H264, "codec mismatch");
     require(received_frame.sequence_id == 3, "sequence mismatch");
@@ -408,7 +426,7 @@ int main()
     require(axent::has_flag(received_frame.flags, axent::MediaFrameFlag::EndOfFrame),
             "end-of-frame flag missing");
 
-    media_scripted->injectStream(0x2001, 4, 888000, {0x11, 0x22, 0x33, 0x44});
+    media_scripted->injectStream(2, 4, 888000, {0x11, 0x22, 0x33, 0x44});
     require(wait_for_frames(frames, frames_mutex, 2), "audio stream should publish a frame");
 
     axent::MediaFrame received_audio_frame;
@@ -418,7 +436,7 @@ int main()
         received_audio_frame = frames.back();
     }
     require(received_audio_frame.device_id == "hid:0581:2581:NA20-SERIAL", "audio device id mismatch");
-    require(received_audio_frame.stream_id == 0x2001, "audio stream id mismatch");
+    require(received_audio_frame.stream_id == 2, "audio stream id mismatch");
     require(received_audio_frame.kind == axent::MediaKind::Audio, "audio stream kind mismatch");
     require(received_audio_frame.codec == axent::MediaCodec::Aac, "audio codec mismatch");
     require(received_audio_frame.sequence_id == 4, "audio sequence mismatch");

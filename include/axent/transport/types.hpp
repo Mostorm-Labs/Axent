@@ -60,6 +60,10 @@ struct TransportDiagnostics {
     std::uint64_t dropped_reports = 0;
     std::uint64_t queued_reports = 0;
     std::string last_event;
+    std::string last_error;
+    std::uint32_t active_video_stream_id = 0;
+    std::uint32_t active_audio_stream_id = 0;
+    std::uint32_t active_media_streams = 0;
 };
 
 } // namespace axent
