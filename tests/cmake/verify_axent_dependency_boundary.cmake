@@ -4,6 +4,11 @@ endif()
 
 set(axent_deps_file "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake")
 set(gitmodules_file "${AXENT_REPO_ROOT}/.gitmodules")
+set(axent_roadmap_doc "${AXENT_REPO_ROOT}/docs/ROADMAP.md")
+set(axent_architecture_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_ARCHITECTURE.md")
+set(axent_host_model_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_HOST_MODEL.md")
+set(axent_extension_model_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_EXTENSION_MODEL.md")
+set(axent_codex_guardrails_doc "${AXENT_REPO_ROOT}/docs/dev/CODEX_GUARDRAILS.md")
 
 if(NOT EXISTS "${axent_deps_file}")
     message(FATAL_ERROR "Missing ${axent_deps_file}")
@@ -112,6 +117,152 @@ function(assert_file_contains file_path pattern message)
         message(FATAL_ERROR "${message}")
     endif()
 endfunction()
+
+function(assert_file_does_not_contain file_path pattern message)
+    if(NOT EXISTS "${file_path}")
+        message(FATAL_ERROR "Missing ${file_path}")
+    endif()
+
+    file(READ "${file_path}" file_contents)
+    if("${file_contents}" MATCHES "${pattern}")
+        message(FATAL_ERROR "${message}: ${file_path}")
+    endif()
+endfunction()
+
+function(assert_files_do_not_contain files_variable pattern message)
+    foreach(file_path IN LISTS ${files_variable})
+        assert_file_does_not_contain("${file_path}" "${pattern}" "${message}")
+    endforeach()
+endfunction()
+
+assert_file_contains(
+    "${axent_roadmap_doc}"
+    "Axent 演进 Roadmap"
+    "Axent roadmap documentation must exist"
+)
+
+assert_file_contains(
+    "${axent_roadmap_doc}"
+    "Phase 0：架构冻结与文档约束"
+    "Axent roadmap must start with architecture freeze and guardrails"
+)
+
+assert_file_contains(
+    "${axent_roadmap_doc}"
+    "Phase 7：axentd Device Host"
+    "Axent roadmap must include axentd Device Host"
+)
+
+assert_file_contains(
+    "${axent_roadmap_doc}"
+    "Phase 8：Nearcast 接入 Axent"
+    "Axent roadmap must include Nearcast integration through Axent"
+)
+
+assert_file_contains(
+    "${axent_architecture_doc}"
+    "Axent is a device-control runtime core with a stable extension model"
+    "Axent architecture documentation must define the runtime core model"
+)
+
+assert_file_contains(
+    "${axent_architecture_doc}"
+    "Product differences go through extensions or hosts"
+    "Axent architecture documentation must define the product boundary rule"
+)
+
+assert_file_contains(
+    "${axent_host_model_doc}"
+    "axent daemon"
+    "Axent host model must document the daemon host command"
+)
+
+assert_file_contains(
+    "${axent_host_model_doc}"
+    "axent run nearcast"
+    "Axent host model must document product host launch semantics"
+)
+
+assert_file_contains(
+    "${axent_host_model_doc}"
+    "axent up --with daemon,nearcast"
+    "Axent host model must document supervisor startup semantics"
+)
+
+assert_file_contains(
+    "${axent_extension_model_doc}"
+    "Device Adapter"
+    "Axent extension model must define Device Adapters"
+)
+
+assert_file_contains(
+    "${axent_extension_model_doc}"
+    "Product Extension"
+    "Axent extension model must define Product Extensions"
+)
+
+assert_file_contains(
+    "${axent_extension_model_doc}"
+    "Stream Provider"
+    "Axent extension model must define Stream Providers"
+)
+
+assert_file_contains(
+    "${axent_codex_guardrails_doc}"
+    "Axent Core must not contain product-specific names"
+    "Codex guardrails must prohibit product-specific core logic"
+)
+
+assert_file_contains(
+    "${axent_codex_guardrails_doc}"
+    "axent --daemon --nearcast"
+    "Codex guardrails must reject ambiguous mixed host flags"
+)
+
+file(GLOB_RECURSE axent_core_boundary_files LIST_DIRECTORIES false
+    "${AXENT_REPO_ROOT}/include/axent/core/*.hpp"
+    "${AXENT_REPO_ROOT}/src/core/*.cpp"
+)
+
+file(GLOB_RECURSE axent_code_boundary_files LIST_DIRECTORIES false
+    "${AXENT_REPO_ROOT}/include/axent/*.hpp"
+    "${AXENT_REPO_ROOT}/src/*.cpp"
+    "${AXENT_REPO_ROOT}/tests/*.cpp"
+    "${AXENT_REPO_ROOT}/tests/*.hpp"
+)
+
+file(GLOB_RECURSE axent_cli_boundary_files LIST_DIRECTORIES false
+    "${AXENT_REPO_ROOT}/include/axent/cli/*.hpp"
+    "${AXENT_REPO_ROOT}/src/cli/*.cpp"
+)
+
+set(axent_forbidden_product_terms "[Nn]ear[Cc]ast|Launcher|Signage|CastSession|Preview UI|PreviewUI|Renderer")
+set(axent_forbidden_core_include_pattern "#[ \t]*include[ \t]*[<\"]axent/(adapters|cli|control|daemon|host)/")
+set(axent_forbidden_mixed_host_flags "--daemon|--nearcast")
+
+assert_files_do_not_contain(
+    axent_core_boundary_files
+    "${axent_forbidden_product_terms}"
+    "Axent Core must not contain product-specific terms"
+)
+
+assert_files_do_not_contain(
+    axent_core_boundary_files
+    "${axent_forbidden_core_include_pattern}"
+    "Axent Core must not include upper-layer module headers"
+)
+
+assert_files_do_not_contain(
+    axent_code_boundary_files
+    "axent[ \t]+--daemon[ \t]+--nearcast|axent[ \t]+--nearcast[ \t]+--daemon"
+    "Axent code must not document or implement ambiguous mixed host commands"
+)
+
+assert_files_do_not_contain(
+    axent_cli_boundary_files
+    "${axent_forbidden_mixed_host_flags}"
+    "Axent CLI must not expose ambiguous mixed host flags"
+)
 
 assert_file_contains(
     "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake"
