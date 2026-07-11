@@ -1,7 +1,7 @@
 [submodule "third_party/axtp-cpp-runtime"]
 	path = third_party/axtp-cpp-runtime
 	url = https://github.com/Mostorm-Labs/axtp-cpp-runtime.git
-	branch = codex/clean-runtime-boundaries
+	branch = main
 [submodule "third_party/IXWebSocket"]
 	path = third_party/IXWebSocket
 	url = https://github.com/machinezone/IXWebSocket.git
