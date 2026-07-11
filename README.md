@@ -41,6 +41,8 @@ architecture base for the new core.
 New targets:
 
 - `libaxent`: first-stage library target
+- `axent::axtp_tooling`: shared AXTP control and diagnostic command runner
+- `axtpctl`: canonical AXTP control and diagnostic CLI
 - `axentd`: daemon and WebSocket control plane
 - `axent`: local management CLI and future host launcher
 
@@ -65,9 +67,53 @@ git submodule update --init --recursive
 cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+build/axtpctl -t mock ping
 build/axent status --offline
 build/axentd --foreground
 ```
+
+## AXTP Control Tool
+
+`axtpctl` is the canonical AXTP control and diagnostic CLI maintained by Axent:
+
+```bash
+build/axtpctl -t mock ping
+build/axtpctl list-methods
+build/axtpctl -c network.getApConfig
+build/axtpctl -t mock -o json firmware update --file firmware.bin --chunk-size 1024
+```
+
+`axent axtp` remains a compatibility alias and delegates to the same
+`axent::axtp_tooling` implementation:
+
+```bash
+build/axent axtp -t mock ping
+build/axent axtp -c network.getApConfig
+```
+
+The shared tooling defaults target the current NA20 development device:
+
+```text
+transport: hid
+VID/PID: 0x0581:0x2581
+usage page/usage: 0x81:0x82
+timeout: 5000 ms
+output: json
+```
+
+Use `-t mock` explicitly for offline examples and tests. No serial number is
+configured by default; when multiple NA20 devices are attached, select one with
+`--hid-serial <serial>` or `--hid-path <path>`.
+
+JSON RPC calls preserve the AXTP `sid` / `op` / `d` response envelope. The `d`
+object contains the request `id`, mandatory `status`, and a `result` only for a
+successful response. Tool-only commands such as `ping`, `list-hid`, and
+`firmware update` use their own diagnostic output schemas.
+
+The tooling target does not link `libaxent` or Axent Core. It currently uses
+the AXTP runtime profiles and concrete transport targets as transitional
+private dependencies. The concrete transports and profile coordinators will
+move behind Axent-owned targets in later boundary migrations.
 
 ## Logging And CLI
 

@@ -21,13 +21,14 @@ Nearcast 是基于 Axent 的产品应用 / 投屏产品 Host。
 
 ```text
 axtp-cpp-runtime
-  ↓
-Axent Core
-  ↓
+  ↓ 协议原语与当前过渡 profile
+Axent
+├── Axent Core
+├── axent::axtp_tooling
+├── axtpctl（主要 AXTP CLI）
+├── axent axtp（兼容入口）
 ├── axentd Device Host
-├── Nearcast Product Host
-├── axent CLI
-└── future products / launcher / signage / diagnostic tools
+└── Nearcast Product Host
 ```
 
 最终目标不是让每个项目依赖后随意修改 Axent，而是让 Axent 形成稳定平台：
@@ -56,6 +57,19 @@ Phase 9：StreamPlane 与低延迟拉流
 Phase 10：Composite Host 可选模式
 Phase 11：稳定化、CI、文档、发布
 ```
+
+近期边界迁移按以下顺序独立实施，避免一次改动同时扩大多个回归面：
+
+```text
+1. Axent 持有 canonical axtpctl 与共享 AXTP tooling。
+2. HID / TCP / WebSocket concrete transport target 迁入 Axent。
+3. Media / Firmware profile 的 Host 流程编排迁入 Axent。
+4. axtp-cpp-runtime 最终只保留协议、RPC、STREAM 与生成代码原语。
+```
+
+当前 cpp-runtime 中的 `axtpctl`、`axtp_toolkit` 与 mediahost demo 不再作为
+Axent 的构建或依赖来源；现有 media / firmware profile 和 transport target
+仍属于明确记录的过渡依赖。
 
 ## Phase 0：架构冻结与文档约束
 
@@ -111,6 +125,7 @@ axent/
     stream/
     control/
     host/
+    tooling/
 
   src/
     core/
@@ -148,6 +163,8 @@ axent_adapter_tea
 
 axentd
 axent_cli
+axent_axtp_tooling
+axtpctl
 ```
 
 当前仓库仍处于 first-stage `libaxent` 聚合 target 阶段。后续拆分 target 时，必须保持依赖方向清晰。
@@ -630,6 +647,7 @@ libaxent-core
 libaxent-client
 axentd
 axent CLI
+axtpctl
 headers
 examples
 test fake adapter

@@ -9,7 +9,10 @@ differences can live outside the core.
 
 ```text
 Axent Hosts
-  axentd, axent CLI, product hosts, diagnostic tools
+  axentd, product hosts
+
+Axent Tooling and Client Surfaces
+  axtpctl, axent axtp compatibility alias, diagnostic tools, client APIs
 
 Axent Extension Layer
   Device Adapters, Product Extensions, Control Endpoints,
@@ -26,6 +29,22 @@ Protocol and transport runtimes
 The dependency direction must flow downward through stable contracts. Axent Core
 must not know about product hosts, product workflows, UI policy, renderers, or
 product-specific command names.
+
+## Tooling Boundary
+
+Axent owns the canonical `axtpctl` executable and the shared
+`axent::axtp_tooling` command runner. `axtpctl` is the primary command; `axent
+axtp` is a compatibility alias backed by exactly the same runner.
+
+The tooling layer may depend on protocol APIs and concrete transports, but it
+must not depend on `libaxent`, Axent Core internals, product hosts, or the
+retired cpp-runtime `axtp_toolkit`. Axent Core must not include tooling headers.
+
+The current cpp-runtime checkout still contains transitional concrete
+transport targets plus media and firmware profile coordinators. It is therefore
+not yet a protocol-only library. Their ownership will be migrated separately;
+the retired cpp-runtime `axtpctl`, `axtp_toolkit`, and mediahost demo are not
+build or dependency sources for Axent.
 
 ## Core Responsibilities
 

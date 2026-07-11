@@ -1,4 +1,4 @@
-#include "axent/cli/axtp_cli.hpp"
+#include "axent/tooling/axtp_cli.hpp"
 
 #include <ostream>
 
@@ -7,12 +7,21 @@
 namespace axent {
 
 int run_axtp_cli(const std::vector<std::string>&,
-                 const std::string&,
+                 const AxtpCliInvocation&,
                  std::ostream&,
                  std::ostream& err)
 {
     err << "AXTP direct CLI unavailable in this build\n";
     return 4;
+}
+
+int run_axtp_cli(const std::vector<std::string>& args,
+                 const std::string& executable_path,
+                 std::ostream& out,
+                 std::ostream& err)
+{
+    return run_axtp_cli(
+        args, AxtpCliInvocation{"axent axtp", executable_path, "axent-axtp"}, out, err);
 }
 
 } // namespace axent
@@ -56,12 +65,19 @@ int run_axtp_cli(const std::vector<std::string>&,
 #include "transports/tcp/native/tcp_transport.hpp"
 #include "transports/websocket/ix/websocket_transport.hpp"
 
+#if defined(AXENT_HAS_AXTP_FIRMWARE_PROFILE)
+#include "profiles/firmware/firmware_profile.hpp"
+#endif
+
+#include "md5.hpp"
+
 namespace axent {
 namespace {
 
 constexpr std::uint32_t k_default_hid_vendor_id = 0x0581;
 constexpr std::uint32_t k_default_hid_product_id = 0x2581;
 constexpr std::uint32_t k_default_hid_usage_page = 0x81;
+constexpr std::uint32_t k_default_hid_usage = 0x82;
 
 enum class OutputFormat {
     Pretty,
@@ -71,8 +87,10 @@ enum class OutputFormat {
 };
 
 struct CliOptions {
-    std::string transport = "mock";
+    std::string transport = "hid";
+    std::string display_name = "axtpctl";
     std::string executable_path;
+    std::string log_stem = "axtpctl";
     std::string endpoint;
     std::string host = "127.0.0.1";
     std::string path;
@@ -80,7 +98,7 @@ struct CliOptions {
     std::string wire = "websocket-json-rpc";
     std::string encoding = "json";
     std::string registry_file;
-    std::string output = "pretty";
+    std::string output = "json";
     std::string sid = "00000000";
     std::optional<std::string> shortcut_method;
     std::optional<std::string> json;
@@ -90,7 +108,7 @@ struct CliOptions {
     std::optional<std::uint32_t> vid = k_default_hid_vendor_id;
     std::optional<std::uint32_t> pid = k_default_hid_product_id;
     std::optional<std::uint32_t> usage_page = k_default_hid_usage_page;
-    std::optional<std::uint32_t> usage;
+    std::optional<std::uint32_t> usage = k_default_hid_usage;
     std::uint32_t timeout_ms = 5000;
     std::uint32_t report_id = 0x05;
     std::uint32_t input_report_size = 255;
@@ -138,30 +156,30 @@ bool is_option(const std::string& text)
     return !text.empty() && text[0] == '-';
 }
 
-void print_usage(std::ostream& out)
+void print_usage(const std::string& display_name, std::ostream& out)
 {
-    out << "Usage: axent axtp [options] <command>\n"
-        << "       axent axtp -c <method> [--json JSON|--json-file FILE]\n"
+    out << "Usage: " << display_name << " [options] <command>\n"
+        << "       " << display_name << " -c <method> [--json JSON|--json-file FILE]\n"
         << "\n"
         << "Options:\n"
         << "  -c, --command <method>       Call an AXTP method by name\n"
         << "  -j, --json <json>            JSON params for the method call\n"
         << "  -f, --json-file <path>       Read JSON params from file\n"
-        << "  -t, --transport <kind>       Select transport: hid, tcp, websocket, mock\n"
-        << "  -o, --output <format>        Output format: pretty, json, hex, file\n"
+        << "  -t, --transport <kind>       Select transport: hid, tcp, websocket, mock; default hid\n"
+        << "  -o, --output <format>        Output format: pretty, json, hex, file; default json\n"
         << "      --host <host>            TCP or WebSocket bind host\n"
         << "      --port <port>            TCP or WebSocket port\n"
         << "      --vid, --hid-vid <hex>   HID vendor id, default 0x0581\n"
         << "      --pid, --hid-pid <hex>   HID product id, default 0x2581\n"
         << "      --usage-page <hex|dec>   HID usage page filter, default 0x81\n"
-        << "      --usage <hex|dec>        HID usage filter\n"
+        << "      --usage <hex|dec>        HID usage filter, default 0x82\n"
         << "      --path, --hid-path <path> HID path from list-hid\n"
-        << "      --serial, --hid-serial <value> HID serial value for VID/PID open\n"
+        << "      --serial, --hid-serial <value> Select one device by HID serial\n"
         << "      --endpoint <value>       Transport endpoint value\n"
         << "      --wire <mode>            Wire mode: framed-binary, websocket-json-rpc\n"
         << "      --encoding <format>      RPC encoding: json, tlv, raw\n"
         << "      --registry-file <file>   Load an additional method registry JSON file\n"
-        << "      --timeout <ms>           RPC timeout in milliseconds\n"
+        << "      --timeout <ms>           RPC timeout in milliseconds, default 5000\n"
         << "      --report-id, --hid-report-id <id> HID report id, default 0x05\n"
         << "      --input-report-size, --hid-input-report-size <n> HIDAPI input buffer bytes incl report id\n"
         << "      --read-buffer-size, --hid-read-buffer-size <n> HIDAPI read buffer bytes\n"
@@ -181,6 +199,7 @@ void print_usage(std::ostream& out)
         << "  capability methods\n"
         << "  list-methods\n"
         << "  handshake\n"
+        << "  firmware update --file PATH [--file-id ID] [--target TARGET]\n"
         << "  list-hid [--vid VID --pid PID --usage-page PAGE --usage USAGE]\n"
         << "  read-hid [--path PATH] [--timeout MS]\n"
         << "  ping\n"
@@ -753,6 +772,14 @@ nlohmann::json parse_json_value_or_string(const axtp::Bytes& bytes)
     }
 }
 
+std::optional<std::string> json_field_string(const nlohmann::json& object, const char* field)
+{
+    if (!object.is_object() || !object.contains(field) || !object[field].is_string()) {
+        return std::nullopt;
+    }
+    return object[field].get<std::string>();
+}
+
 bool validate_json(std::string_view text, std::ostream& err)
 {
     try {
@@ -768,6 +795,12 @@ bool validate_json(std::string_view text, std::ostream& err)
 void print_json_object(const nlohmann::json& object, OutputFormat, std::ostream& out)
 {
     out << object.dump() << "\n";
+}
+
+nlohmann::json encode_json_rpc_response(const axtp::RpcPayload& response)
+{
+    const auto encoded = axtp::JsonRpcEncoder{}.encode(response);
+    return nlohmann::json::parse(encoded.begin(), encoded.end());
 }
 
 void install_mock_handlers(axtp::sdk::AxtpClient& client)
@@ -788,6 +821,46 @@ void install_mock_handlers(axtp::sdk::AxtpClient& client)
                           });
     client.registerMethod(static_cast<std::uint32_t>(axtp::MethodId::AudioResetAlgorithmConfig),
                           [](const axtp::RpcPayload&) { return axtp::Bytes{}; });
+    client.registerMethod(
+        static_cast<std::uint32_t>(axtp::MethodId::FirmwareBeginUpdate),
+        [](const axtp::RpcPayload& request) {
+            std::string file_id = "firmware";
+            const auto params = parse_json_value_or_string(request.body);
+            if (params.is_object() && params.contains("manifest") &&
+                params["manifest"].is_object() && params["manifest"].contains("files") &&
+                params["manifest"]["files"].is_array() &&
+                !params["manifest"]["files"].empty()) {
+                if (const auto parsed =
+                        json_field_string(params["manifest"]["files"].front(), "fileId")) {
+                    file_id = *parsed;
+                }
+            }
+
+            auto response = nlohmann::json::object();
+            response["updateSessionId"] = "mock-update-1";
+            response["state"] = "receiving";
+            response["streams"] =
+                nlohmann::json::array({{{"fileId", file_id}, {"streamId", 0x1001}}});
+            response["chunkSize"] = 4;
+            const auto body = response.dump();
+            return axtp::Bytes(body.begin(), body.end());
+        });
+    client.registerMethod(
+        static_cast<std::uint32_t>(axtp::MethodId::FirmwareFinishUpdate),
+        [](const axtp::RpcPayload& request) {
+            std::string update_session_id = "mock-update-1";
+            const auto params = parse_json_value_or_string(request.body);
+            if (const auto parsed = json_field_string(params, "updateSessionId")) {
+                update_session_id = *parsed;
+            }
+
+            auto response = nlohmann::json::object();
+            response["updateSessionId"] = update_session_id;
+            response["accepted"] = true;
+            response["state"] = "verifying";
+            const auto body = response.dump();
+            return axtp::Bytes(body.begin(), body.end());
+        });
 }
 
 bool has_hid_target(const HidOpenOptions& options)
@@ -1214,7 +1287,8 @@ int print_app_ready_result(const axtp::sdk::AppReadyResult& result,
 
 LocalLogger make_logger(const CliOptions& options)
 {
-    return LocalLogger(options.executable_path, "axent-axtp", options.log_enabled, options.log_body);
+    return LocalLogger(
+        options.executable_path, options.log_stem, options.log_enabled, options.log_body);
 }
 
 int call_method(const CliOptions& options, std::ostream& out, std::ostream& err)
@@ -1272,7 +1346,7 @@ int call_method(const CliOptions& options, std::ostream& out, std::ostream& err)
     }
     if (!method_id.has_value()) {
         err << "Unknown method: " << *method_name
-            << "\nRun `axent axtp list-methods` to view available methods.\n";
+            << "\nRun `" << options.display_name << " list-methods` to view available methods.\n";
         return 3;
     }
 
@@ -1337,21 +1411,19 @@ int call_method(const CliOptions& options, std::ostream& out, std::ostream& err)
         return response.statusCode == axtp::ErrorCode::Success ? 0 : 4;
     }
 
+    if (response.encoding == axtp::RpcEncoding::Json) {
+        const auto output = encode_json_rpc_response(response);
+        const bool ok = output.at("d").at("status").at("ok").get<bool>();
+        print_json_object(output, output_format, out);
+        return ok ? 0 : 4;
+    }
+
     auto output = nlohmann::json::object();
     output["ok"] = response.statusCode == axtp::ErrorCode::Success;
-    if (method_name.has_value()) {
-        output["method"] = *method_name;
-    }
     output["methodId"] = *method_id;
     output["requestId"] = response.requestId;
     if (response.statusCode == axtp::ErrorCode::Success) {
-        if (!response.body.empty()) {
-            if (response.encoding == axtp::RpcEncoding::Json) {
-                output["result"] = parse_json_value_or_string(response.body);
-            } else {
-                output["resultHex"] = to_hex(response.body);
-            }
-        }
+        output["resultHex"] = to_hex(response.body);
     } else {
         auto error = nlohmann::json::object();
         error["code"] = error_name(response.statusCode);
@@ -1361,6 +1433,138 @@ int call_method(const CliOptions& options, std::ostream& out, std::ostream& err)
     }
     print_json_object(output, output_format, out);
     return response.statusCode == axtp::ErrorCode::Success ? 0 : 4;
+}
+
+int firmware_update_command(const CliOptions& options, std::ostream& out, std::ostream& err)
+{
+    if (options.command.size() < 2 || options.command[1] != "update") {
+        err << "firmware requires subcommand: update\n";
+        return 2;
+    }
+
+#if !defined(AXENT_HAS_AXTP_FIRMWARE_PROFILE)
+    (void)out;
+    err << "firmware update unavailable in this build\n";
+    return 4;
+#else
+    if (options.transport == "websocket" || options.transport == "ws") {
+        err << "firmware update requires a framed-binary transport\n";
+        return 2;
+    }
+
+    const auto file_path = option_value(options.command, "--file");
+    if (!file_path.has_value() || file_path->empty()) {
+        err << "firmware update requires --file\n";
+        return 2;
+    }
+    const auto image = read_binary_file(*file_path);
+    if (!image.has_value()) {
+        err << "failed to read firmware file: " << *file_path << "\n";
+        return 2;
+    }
+
+    std::uint32_t chunk_size = 1024;
+    if (const auto raw_chunk_size = option_value(options.command, "--chunk-size")) {
+        const auto parsed = parse_uint32(*raw_chunk_size);
+        if (!parsed.has_value() || *parsed == 0) {
+            err << "invalid --chunk-size\n";
+            return 2;
+        }
+        chunk_size = *parsed;
+    }
+
+    const auto output_format = parse_output_format(options.output);
+    const auto file_id = option_value(options.command, "--file-id").value_or("firmware");
+    const auto target = option_value(options.command, "--target");
+    const auto package_id = option_value(options.command, "--package-id");
+    const auto version = option_value(options.command, "--version");
+    const auto md5 = tooling_detail::md5_hex(image->data(), image->size());
+
+    auto logger = make_logger(options);
+    std::mutex trace_mutex;
+    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axtp::HidReportTrace& trace) {
+        logger.write(hid_trace_line(trace, logger.include_body()));
+        if (options.verbose) {
+            std::lock_guard<std::mutex> lock(trace_mutex);
+            print_hid_trace(trace, parse_output_format(options.output), logger.include_body(), out);
+        }
+    };
+
+    axtp::sdk::ClientOptions client_options;
+    client_options.autoIdentify = !options.no_app_ready;
+    axtp::sdk::AxtpClient client(client_options);
+    if (!attach_transport(options, client, hid_trace, err)) {
+        err << "failed to connect transport: " << options.transport << "\n";
+        return 4;
+    }
+    if (options.transport == "mock") {
+        install_mock_handlers(client);
+    }
+
+    if (is_hid_transport(options) && !options.no_app_ready) {
+        axtp::sdk::AppReadyOptions app_options;
+        app_options.timeout = std::chrono::milliseconds(options.timeout_ms);
+        app_options.randomSeed = options.random_seed;
+        app_options.trace = [&logger, &options, &err](const axtp::sdk::AppReadyTraceEvent& event) {
+            logger.write(app_ready_trace_line(event, logger.include_body()));
+            print_app_ready_trace(event, logger.include_body(), options.verbose, err);
+        };
+        const auto ready = client.ensureAppReady(app_options);
+        if (!ready.ok) {
+            return print_app_ready_result(
+                ready, std::chrono::milliseconds(0), output_format, out, err);
+        }
+    }
+
+    axtp::sdk::CallOptions call_options;
+    call_options.timeout = std::chrono::milliseconds(options.timeout_ms);
+    call_options.encoding = axtp::RpcEncoding::Json;
+
+    axtp::firmware::FirmwareUpdateRequest update_request;
+    update_request.file.fileId = file_id;
+    update_request.file.data = *image;
+    update_request.file.md5 = md5;
+    update_request.preferredChunkSize = chunk_size;
+    if (target.has_value()) {
+        update_request.file.target = *target;
+    }
+    if (package_id.has_value()) {
+        update_request.packageId = *package_id;
+    }
+    if (version.has_value()) {
+        update_request.version = *version;
+    }
+    if (options.no_app_ready) {
+        update_request.jsonSid = options.sid;
+    }
+
+    axtp::firmware::FirmwareUpdateProfile profile(client);
+    const auto result = profile.update(update_request, call_options);
+
+    auto output = nlohmann::json::object();
+    output["ok"] = result.ok;
+    output["method"] = "firmware.update";
+    output["file"] = *file_path;
+    output["fileId"] = file_id;
+    output["size"] = image->size();
+    output["md5"] = md5;
+    output["updateSessionId"] = result.updateSessionId;
+    output["streamId"] = result.streamId;
+    output["chunkSize"] = result.chunkSize;
+    output["chunks"] = result.chunks;
+    output["begin"] = result.begin;
+    output["finish"] = result.finish;
+    if (!result.ok) {
+        auto error = nlohmann::json::object();
+        error["code"] = error_name(result.status);
+        error["numericCode"] = static_cast<std::uint16_t>(result.status);
+        error["message"] = error_name(result.status);
+        error["method"] = result.failedMethod;
+        output["error"] = std::move(error);
+    }
+    print_json_object(output, output_format, out);
+    return result.ok ? 0 : 4;
+#endif
 }
 
 int list_hid_devices_command(const CliOptions& options, std::ostream& out, std::ostream& err)
@@ -1530,7 +1734,7 @@ int ping(const CliOptions& options, std::ostream& out)
 int run_command(const CliOptions& options, std::ostream& out, std::ostream& err)
 {
     if (options.command.empty() || options.command[0] == "help") {
-        print_usage(out);
+        print_usage(options.display_name, out);
         return 0;
     }
     if (options.command[0] == "call") {
@@ -1548,6 +1752,9 @@ int run_command(const CliOptions& options, std::ostream& out, std::ostream& err)
     if (options.command[0] == "handshake") {
         return handshake_command(options, out, err);
     }
+    if (options.command[0] == "firmware") {
+        return firmware_update_command(options, out, err);
+    }
     if (options.command[0] == "capability" && options.command.size() >= 2 &&
         options.command[1] == "methods") {
         return print_capability_methods(out);
@@ -1561,28 +1768,40 @@ int run_command(const CliOptions& options, std::ostream& out, std::ostream& err)
     }
 
     err << "unknown command\n";
-    print_usage(err);
+    print_usage(options.display_name, err);
     return 2;
 }
 
 } // namespace
 
 int run_axtp_cli(const std::vector<std::string>& args,
-                 const std::string& executable_path,
+                 const AxtpCliInvocation& invocation,
                  std::ostream& out,
                  std::ostream& err)
 {
     try {
         CliOptions options;
-        options.executable_path = executable_path;
+        options.display_name = invocation.display_name.empty() ? "axtpctl" : invocation.display_name;
+        options.executable_path = invocation.executable_path;
+        options.log_stem = invocation.log_stem.empty() ? "axtpctl" : invocation.log_stem;
         if (!parse_axtp_options(args, options, err)) {
             return 2;
         }
         return run_command(options, out, err);
     } catch (const std::exception& ex) {
-        err << "axent axtp: " << ex.what() << "\n";
+        err << (invocation.display_name.empty() ? "axtpctl" : invocation.display_name)
+            << ": " << ex.what() << "\n";
         return 1;
     }
+}
+
+int run_axtp_cli(const std::vector<std::string>& args,
+                 const std::string& executable_path,
+                 std::ostream& out,
+                 std::ostream& err)
+{
+    return run_axtp_cli(
+        args, AxtpCliInvocation{"axent axtp", executable_path, "axent-axtp"}, out, err);
 }
 
 } // namespace axent

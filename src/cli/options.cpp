@@ -383,7 +383,7 @@ std::string axent_usage()
         << "  list\n"
         << "  reload\n"
         << "  diagnostics\n"
-        << "  axtp [axtp-options] <axtp-command>\n"
+        << "  axtp [axtp-options] <axtp-command>  Compatibility alias for axtpctl\n"
         << "\n"
         << "Options:\n"
         << "  -h, --help\n"

@@ -3,6 +3,8 @@ if(NOT DEFINED AXENT_REPO_ROOT)
 endif()
 
 set(axent_deps_file "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake")
+set(axent_cmake_file "${AXENT_REPO_ROOT}/CMakeLists.txt")
+set(axent_readme "${AXENT_REPO_ROOT}/README.md")
 set(gitmodules_file "${AXENT_REPO_ROOT}/.gitmodules")
 set(axent_roadmap_doc "${AXENT_REPO_ROOT}/docs/ROADMAP.md")
 set(axent_architecture_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_ARCHITECTURE.md")
@@ -172,6 +174,18 @@ assert_file_contains(
 )
 
 assert_file_contains(
+    "${axent_architecture_doc}"
+    "Axent owns the canonical `axtpctl` executable"
+    "Axent architecture documentation must define axtpctl ownership"
+)
+
+assert_file_contains(
+    "${axent_readme}"
+    "`axtpctl` is the canonical AXTP control and diagnostic CLI maintained by Axent"
+    "Axent README must make axtpctl the primary AXTP CLI"
+)
+
+assert_file_contains(
     "${axent_host_model_doc}"
     "axent daemon"
     "Axent host model must document the daemon host command"
@@ -219,6 +233,12 @@ assert_file_contains(
     "Codex guardrails must reject ambiguous mixed host flags"
 )
 
+assert_file_contains(
+    "${axent_codex_guardrails_doc}"
+    "Axent owns the canonical `axtpctl`"
+    "Codex guardrails must protect canonical axtpctl ownership"
+)
+
 file(GLOB_RECURSE axent_core_boundary_files LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/include/axent/core/*.hpp"
     "${AXENT_REPO_ROOT}/src/core/*.cpp"
@@ -233,11 +253,14 @@ file(GLOB_RECURSE axent_code_boundary_files LIST_DIRECTORIES false
 
 file(GLOB_RECURSE axent_cli_boundary_files LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/include/axent/cli/*.hpp"
+    "${AXENT_REPO_ROOT}/include/axent/tooling/*.hpp"
     "${AXENT_REPO_ROOT}/src/cli/*.cpp"
+    "${AXENT_REPO_ROOT}/src/tooling/*.cpp"
+    "${AXENT_REPO_ROOT}/src/tooling/*.hpp"
 )
 
 set(axent_forbidden_product_terms "[Nn]ear[Cc]ast|Launcher|Signage|CastSession|Preview UI|PreviewUI|Renderer")
-set(axent_forbidden_core_include_pattern "#[ \t]*include[ \t]*[<\"]axent/(adapters|cli|control|daemon|host)/")
+set(axent_forbidden_core_include_pattern "#[ \t]*include[ \t]*[<\"]axent/(adapters|cli|control|daemon|host|tooling)/")
 set(axent_forbidden_mixed_host_flags "--daemon|--nearcast")
 
 assert_files_do_not_contain(
@@ -277,10 +300,47 @@ assert_file_contains(
 )
 
 assert_file_contains(
-    "${AXENT_REPO_ROOT}/CMakeLists.txt"
+    "${axent_cmake_file}"
     "AXENT_BUILD_TESTING"
     "Axent must allow parent projects to disable Axent tests"
 )
+
+assert_file_contains(
+    "${axent_cmake_file}"
+    "add_library\\(axent_axtp_tooling STATIC"
+    "Axent must provide a shared AXTP tooling target"
+)
+
+assert_file_contains(
+    "${axent_cmake_file}"
+    "add_library\\(axent::axtp_tooling ALIAS axent_axtp_tooling\\)"
+    "Axent must expose the axent::axtp_tooling alias"
+)
+
+assert_file_contains(
+    "${axent_cmake_file}"
+    "add_executable\\(axtpctl src/cli/axtpctl_main.cpp\\)"
+    "Axent must own the axtpctl executable target"
+)
+
+assert_file_does_not_contain(
+    "${axent_cmake_file}"
+    "axtp_toolkit"
+    "Axent targets must not depend on the retired cpp-runtime toolkit"
+)
+
+if(EXISTS "${AXENT_REPO_ROOT}/src/cli/axtp_cli.cpp")
+    message(FATAL_ERROR "AXTP runner must live under src/tooling, not src/cli")
+endif()
+foreach(required_tooling_file
+        "include/axent/tooling/axtp_cli.hpp"
+        "include/axent/cli/axtp_cli.hpp"
+        "src/tooling/axtp_cli.cpp"
+        "src/cli/axtpctl_main.cpp")
+    if(NOT EXISTS "${AXENT_REPO_ROOT}/${required_tooling_file}")
+        message(FATAL_ERROR "Required AXTP tooling file is missing: ${required_tooling_file}")
+    endif()
+endforeach()
 
 assert_text_contains(
     "${axent_effective_deps}"
@@ -318,6 +378,11 @@ assert_text_contains(
     "${axent_effective_deps}"
     "set\\(AXTP_CPP_RUNTIME_BUILD_TOOLS OFF CACHE BOOL \"\" FORCE\\)"
     "Axent product builds must not build cpp-runtime tools"
+)
+assert_text_contains(
+    "${axent_effective_deps}"
+    "set\\(AXTP_CPP_RUNTIME_BUILD_MEDIAHOST OFF CACHE BOOL \"\" FORCE\\)"
+    "Axent product builds must not build the retired cpp-runtime mediahost demo"
 )
 assert_text_contains(
     "${axent_effective_deps}"
@@ -364,6 +429,14 @@ add_library(axtp_runtime INTERFACE)
 add_library(axtp::runtime ALIAS axtp_runtime)
 add_library(axtp_sdk INTERFACE)
 add_library(axtp::sdk ALIAS axtp_sdk)
+add_library(axtp_firmware_profile INTERFACE)
+add_library(axtp::firmware_profile ALIAS axtp_firmware_profile)
+add_library(axtp_transport_hidapi INTERFACE)
+add_library(axtp::transport_hidapi ALIAS axtp_transport_hidapi)
+add_library(axtp_transport_tcp_native INTERFACE)
+add_library(axtp::transport_tcp_native ALIAS axtp_transport_tcp_native)
+add_library(axtp_transport_websocket_ix INTERFACE)
+add_library(axtp::transport_websocket_ix ALIAS axtp_transport_websocket_ix)
 
 set(AXENT_USE_EXTERNAL_AXTP_RUNTIME ON CACHE BOOL "" FORCE)
 set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS OFF CACHE BOOL "" FORCE)
@@ -374,6 +447,38 @@ file(APPEND "${parent_fixture_dir}/CMakeLists.txt" [=[
 
 if(NOT TARGET axent::libaxent)
     message(FATAL_ERROR "Expected axent::libaxent target")
+endif()
+if(NOT TARGET axent::axtp_tooling)
+    message(FATAL_ERROR "Expected axent::axtp_tooling target")
+endif()
+if(NOT TARGET axtpctl)
+    message(FATAL_ERROR "Expected Axent-owned axtpctl target")
+endif()
+
+get_target_property(libaxent_sources libaxent SOURCES)
+if("${libaxent_sources}" MATCHES "axtp_cli\\.cpp")
+    message(FATAL_ERROR "libaxent must not compile the AXTP tooling runner")
+endif()
+
+get_target_property(tooling_links axent_axtp_tooling LINK_LIBRARIES)
+list(FIND tooling_links "libaxent" tooling_libaxent_index)
+list(FIND tooling_links "axent::libaxent" tooling_alias_index)
+if(NOT tooling_libaxent_index EQUAL -1 OR NOT tooling_alias_index EQUAL -1)
+    message(FATAL_ERROR "axent_axtp_tooling must not link Axent Core")
+endif()
+
+get_target_property(axent_links axent LINK_LIBRARIES)
+list(FIND axent_links "axent::libaxent" axent_core_index)
+list(FIND axent_links "axent::axtp_tooling" axent_tooling_index)
+if(axent_core_index EQUAL -1 OR axent_tooling_index EQUAL -1)
+    message(FATAL_ERROR "axent must link both libaxent and shared AXTP tooling")
+endif()
+
+get_target_property(axtpctl_links axtpctl LINK_LIBRARIES)
+list(FIND axtpctl_links "axent::axtp_tooling" axtpctl_tooling_index)
+list(FIND axtpctl_links "axent::libaxent" axtpctl_core_index)
+if(axtpctl_tooling_index EQUAL -1 OR NOT axtpctl_core_index EQUAL -1)
+    message(FATAL_ERROR "axtpctl must link tooling without linking Axent Core")
 endif()
 ]=])
 

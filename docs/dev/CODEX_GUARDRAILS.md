@@ -23,6 +23,9 @@ evolve through explicit boundaries.
 10. If a feature appears to require a Core change, classify it before editing:
     generic runtime primitive, device adapter feature, stream provider feature,
     control endpoint feature, product extension, or host-specific behavior.
+11. Axent owns the canonical `axtpctl` and `axent::axtp_tooling`; cpp-runtime
+    tools and the mediahost demo must remain disabled.
+12. AXTP tooling must not link `libaxent` or include Axent Core internals.
 
 ## Forbidden In Core
 
@@ -42,6 +45,7 @@ Do not include upper-layer module headers from Core:
 - `axent/control/...`
 - `axent/daemon/...`
 - `axent/host/...`
+- `axent/tooling/...`
 
 ## Change Classification
 
@@ -56,6 +60,25 @@ Do not include upper-layer module headers from Core:
 | `nearcast.startCast`, `nearcast.stopCast`, product status | Product Extension or Product Host |
 | UI, renderer, decoder, product state machine | Product Host |
 | One-command developer startup | `axent up` supervisor |
+| AXTP control, inspection, and diagnostics | `axent::axtp_tooling` / `axtpctl` |
+
+## AXTP Tooling Guardrails
+
+`axtpctl` is the primary CLI. `axent axtp` is a compatibility alias and must
+delegate to the same shared runner. Do not fork their parsers, command
+implementations, output formats, or exit-code behavior.
+
+```text
+axtpctl -----\
+              -> axent::axtp_tooling -> AXTP protocol/profile APIs + transports
+axent axtp --/
+
+Axent Core must not depend on axent::axtp_tooling.
+```
+
+Do not enable or link the retired cpp-runtime `axtpctl`, `axtp_toolkit`, or
+mediahost demo. Concrete transport targets and profile coordinators are current
+transition dependencies and must be migrated in dedicated boundary changes.
 
 ## Host Command Guardrails
 
