@@ -30,7 +30,6 @@ add_library(libaxent
     src/config/config.cpp
     src/diagnostics/diagnostics.cpp
     src/firmware/firmware_task.cpp
-    src/cli/axtp_cli.cpp
     src/cli/options.cpp
     src/logging/logger.cpp
     src/adapters/axdp_adapter.cpp
@@ -50,18 +49,48 @@ if(TARGET axtp::transport_hidapi)
     target_link_libraries(libaxent PRIVATE axtp::transport_hidapi)
     target_compile_definitions(libaxent PRIVATE AXENT_HAS_AXTP_HID_TRANSPORT=1)
 endif()
+
 set(AXENT_HAS_AXTP_DIRECT_CLI OFF)
 if(TARGET axtp::transport_hidapi AND
    TARGET axtp::transport_tcp_native AND
    TARGET axtp::transport_websocket_ix)
     set(AXENT_HAS_AXTP_DIRECT_CLI ON)
-    target_link_libraries(libaxent
+endif()
+
+if(TARGET axtpctl)
+    message(FATAL_ERROR
+        "The axtpctl target is owned by Axent. Disable the retired cpp-runtime tool target."
+    )
+endif()
+
+add_library(axent_axtp_tooling STATIC
+    src/tooling/axtp_cli.cpp
+    src/tooling/md5.cpp
+)
+add_library(axent::axtp_tooling ALIAS axent_axtp_tooling)
+target_include_directories(axent_axtp_tooling
+    PUBLIC include
+    PRIVATE src/tooling
+)
+if(AXENT_HAS_AXTP_DIRECT_CLI)
+    target_link_libraries(axent_axtp_tooling
         PRIVATE
+            axtp::core
+            axtp::json_rpc
+            axtp::runtime
+            axtp::sdk
+            axtp::transport_hidapi
             axtp::transport_tcp_native
             axtp::transport_websocket_ix
     )
-    target_compile_definitions(libaxent PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
+    target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
+    if(TARGET axtp::firmware_profile)
+        target_link_libraries(axent_axtp_tooling PRIVATE axtp::firmware_profile)
+        target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_FIRMWARE_PROFILE=1)
+    endif()
 endif()
+axent_enable_warnings(axent_axtp_tooling)
+
 if(AXENT_HAS_AXDP_HEADERS)
     target_include_directories(libaxent PRIVATE third_party/axdp/include)
 endif()
@@ -90,8 +119,14 @@ if(TARGET axtp::transport_websocket_ix)
 endif()
 
 add_executable(axent src/cli/main.cpp)
-target_link_libraries(axent PRIVATE axent::libaxent)
+target_link_libraries(axent PRIVATE axent::libaxent axent::axtp_tooling)
 axent_enable_warnings(axent)
+
+if(AXENT_HAS_AXTP_DIRECT_CLI)
+    add_executable(axtpctl src/cli/axtpctl_main.cpp)
+    target_link_libraries(axtpctl PRIVATE axent::axtp_tooling)
+    axent_enable_warnings(axtpctl)
+endif()
 
 if(AXENT_BUILD_TESTING)
     add_test(
@@ -153,7 +188,10 @@ if(AXENT_BUILD_TESTING)
 
     if(AXENT_HAS_AXTP_DIRECT_CLI)
         add_executable(axtp_cli_runner_test tests/axtp_cli_runner_test.cpp)
-        target_link_libraries(axtp_cli_runner_test PRIVATE axent::libaxent)
+        target_link_libraries(axtp_cli_runner_test PRIVATE axent::axtp_tooling axtp::core)
+        if(TARGET axtp::firmware_profile)
+            target_compile_definitions(axtp_cli_runner_test PRIVATE AXENT_HAS_AXTP_FIRMWARE_PROFILE=1)
+        endif()
         axent_enable_warnings(axtp_cli_runner_test)
         add_test(NAME axtp_cli_runner_test COMMAND axtp_cli_runner_test)
     endif()
@@ -177,7 +215,12 @@ if(AXENT_BUILD_TESTING)
 
     add_executable(cli_smoke_test tests/cli_smoke_test.cpp)
     axent_enable_warnings(cli_smoke_test)
-    add_test(NAME cli_smoke_test COMMAND cli_smoke_test $<TARGET_FILE:axent>)
+    if(AXENT_HAS_AXTP_DIRECT_CLI)
+        add_test(NAME cli_smoke_test
+            COMMAND cli_smoke_test $<TARGET_FILE:axent> $<TARGET_FILE:axtpctl>)
+    else()
+        add_test(NAME cli_smoke_test COMMAND cli_smoke_test $<TARGET_FILE:axent>)
+    endif()
 
     add_executable(adapter_skeleton_test tests/adapter_skeleton_test.cpp)
     target_link_libraries(adapter_skeleton_test PRIVATE axent::libaxent)
