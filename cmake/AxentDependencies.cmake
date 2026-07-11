@@ -118,6 +118,17 @@ if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
     axent_restore_variable(BUILD_SHARED_LIBS)
 endif()
 
+if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
+    axent_require_target(
+        ixwebsocket::ixwebsocket
+        "Axent must provide ixwebsocket::ixwebsocket before adding axtp-cpp-runtime."
+    )
+    axent_require_target(
+        hidapi::hidapi
+        "Axent must provide hidapi::hidapi before adding axtp-cpp-runtime."
+    )
+endif()
+
 if(AXENT_USE_EXTERNAL_AXTP_RUNTIME)
     axent_require_target(axtp::core "AXENT_USE_EXTERNAL_AXTP_RUNTIME requires axtp::core")
     axent_require_target(axtp::json_rpc "AXENT_USE_EXTERNAL_AXTP_RUNTIME requires axtp::json_rpc")
@@ -125,7 +136,6 @@ if(AXENT_USE_EXTERNAL_AXTP_RUNTIME)
     axent_require_target(axtp::sdk "AXENT_USE_EXTERNAL_AXTP_RUNTIME requires axtp::sdk")
 else()
     set(AXTP_CPP_RUNTIME_BUILD_SDK ON CACHE BOOL "" FORCE)
-    set(AXTP_CPP_RUNTIME_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
     set(AXTP_CPP_RUNTIME_BUILD_MEDIAHOST OFF CACHE BOOL "" FORCE)
     set(AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS OFF CACHE BOOL "" FORCE)
     set(AXTP_CPP_RUNTIME_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -140,17 +150,25 @@ else()
         message(FATAL_ERROR "Missing third_party/axtp-cpp-runtime. Run git submodule update --init --recursive.")
     endif()
 
-    if(AXTP_CPP_RUNTIME_BUILD_TOOLS OR
-       AXTP_CPP_RUNTIME_BUILD_MEDIAHOST OR
+    if(AXTP_CPP_RUNTIME_BUILD_MEDIAHOST OR
        AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS)
-        message(FATAL_ERROR "Axent owns AXTP tools and product hosts; cpp-runtime tools must stay disabled.")
+        message(FATAL_ERROR "Axent owns product hosts; cpp-runtime MediaHost and dependency fetching must stay disabled.")
     endif()
 endif()
-if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS AND NOT TARGET ixwebsocket::ixwebsocket)
-    message(FATAL_ERROR "Axent must provide ixwebsocket::ixwebsocket before adding axtp-cpp-runtime.")
-endif()
-if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS AND NOT TARGET hidapi::hidapi)
-    message(FATAL_ERROR "Axent must provide hidapi::hidapi before adding axtp-cpp-runtime.")
+
+if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
+    axent_require_target(
+        axtp::transport_hidapi
+        "Axent requires axtp::transport_hidapi after adding axtp-cpp-runtime."
+    )
+    axent_require_target(
+        axtp::transport_tcp_native
+        "Axent requires axtp::transport_tcp_native after adding axtp-cpp-runtime."
+    )
+    axent_require_target(
+        axtp::transport_websocket_ix
+        "Axent requires axtp::transport_websocket_ix after adding axtp-cpp-runtime."
+    )
 endif()
 
 set(AXENT_AXDP_ROOT "${AXENT_THIRD_PARTY_DIR}/axdp" CACHE PATH "AXDP source root")

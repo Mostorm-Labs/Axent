@@ -374,10 +374,10 @@ assert_text_contains(
     "function\\(axent_select_hidapi_target output_variable\\)"
     "Axent must normalize hidapi target names for cross-platform builds"
 )
-assert_text_contains(
+assert_text_does_not_contain(
     "${axent_effective_deps}"
-    "set\\(AXTP_CPP_RUNTIME_BUILD_TOOLS OFF CACHE BOOL \"\" FORCE\\)"
-    "Axent product builds must not build cpp-runtime tools"
+    "AXTP_CPP_RUNTIME_BUILD_TOOLS"
+    "Axent must not reference the removed cpp-runtime BUILD_TOOLS option"
 )
 assert_text_contains(
     "${axent_effective_deps}"
@@ -393,6 +393,36 @@ assert_text_does_not_contain(
     "${axent_effective_deps}"
     "set\\(AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS ON"
     "Axent must not enable cpp-runtime tool dependency fetching"
+)
+assert_text_appears_before(
+    "${axent_effective_deps}"
+    "axent_require_target(\n        ixwebsocket::ixwebsocket"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
+    "Axent must validate its IXWebSocket provider before adding axtp-cpp-runtime"
+)
+assert_text_appears_before(
+    "${axent_effective_deps}"
+    "axent_require_target(\n        hidapi::hidapi"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
+    "Axent must validate its hidapi provider before adding axtp-cpp-runtime"
+)
+assert_text_appears_before(
+    "${axent_effective_deps}"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
+    "axent_require_target(\n        axtp::transport_hidapi"
+    "Axent must validate the runtime HID wrapper after adding axtp-cpp-runtime"
+)
+assert_text_appears_before(
+    "${axent_effective_deps}"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
+    "axent_require_target(\n        axtp::transport_tcp_native"
+    "Axent must validate the runtime native TCP wrapper after adding axtp-cpp-runtime"
+)
+assert_text_appears_before(
+    "${axent_effective_deps}"
+    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
+    "axent_require_target(\n        axtp::transport_websocket_ix"
+    "Axent must validate the runtime IX wrapper after adding axtp-cpp-runtime"
 )
 assert_text_contains(
     "${axent_gitmodules}"
