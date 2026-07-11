@@ -110,6 +110,13 @@ int main()
     require(json_error.at("error").at("message") == "invalid_argument", "json-rpc error message mismatch");
     require(json_error.at("error").at("data").at("detail") == "bad params", "json-rpc error data mismatch");
 
+    axent::ControlResult busy_error;
+    busy_error.status = axent::ControlStatus::Busy;
+    const auto json_busy = axent::encode_control_response(json_rpc, busy_error);
+    require(json_busy.at("error").at("code") == -32005,
+            "json-rpc Busy must have a stable code distinct from NotFound");
+    require(json_busy.at("error").at("message") == "busy", "json-rpc Busy message mismatch");
+
     const auto legacy_error = axent::encode_control_response(legacy, error);
     require(legacy_error.at("d").at("status").at("result") == false, "legacy error result mismatch");
     require(legacy_error.at("d").at("status").at("code") == 500, "legacy error code mismatch");

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "axent/host/axent_host.hpp"
+#include "axent/testing/axtp_adapter_test_seam.hpp"
 
 #include "core/protocol/wire/inbound_processor.hpp"
 #include "core/protocol/wire/outbound_processor.hpp"
@@ -592,15 +593,19 @@ int main()
 
     axent::AxentHost real_host;
     ScriptedAxtpTransport* scripted = nullptr;
+    int transport_factory_calls = 0;
     axent::AxentHostOptions real_options;
     real_options.enable_mock_adapter = false;
     real_options.enable_axtp_adapter = true;
     real_options.axtp_adapter_factory = [&](axent::AxtpAdapterConfig config) {
-        return std::make_unique<axent::AxtpAdapter>(std::move(config), [&](const axtp::HidTransportOptions&) {
-            auto transport = std::make_unique<ScriptedAxtpTransport>();
-            scripted = transport.get();
-            return transport;
-        });
+        return axent::testing::AxtpAdapterTestSeam::make(
+            std::move(config),
+            [&](const axtp::HidTransportOptions&) {
+                ++transport_factory_calls;
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                scripted = transport.get();
+                return transport;
+            });
     };
     require(real_host.start(std::move(real_options)), "real AXTP host should start");
 
@@ -629,6 +634,29 @@ int main()
     real_request.media = true;
     const auto media_lease = real_host.acquire_session(real_request);
     require(media_lease.acquired, "real AXTP media lease should be acquired");
+
+    axent::DeviceSnapshot second_real_device = real_device;
+    second_real_device.id = "hid:0581:2581:NA20-SECOND";
+    second_real_device.identity.serial_number = "NA20-SECOND";
+    real_host.upsert_device(second_real_device);
+    axent::SessionAcquireRequest second_real_request;
+    second_real_request.client_id = "nearcast-second-real";
+    second_real_request.device_id = second_real_device.id;
+    second_real_request.media = true;
+    const auto busy_lease = real_host.acquire_session(second_real_request);
+    require(!busy_lease.acquired, "second real AXTP device must fail fast");
+    require(busy_lease.status == axent::ControlStatus::Busy,
+            "second real AXTP device must return typed Busy");
+    require(busy_lease.reason.find("AXTP session busy") != std::string::npos,
+            "second real AXTP Busy reason mismatch");
+    require(transport_factory_calls == 1,
+            "Busy acquisition must not construct a replacement transport");
+    const auto original_after_busy =
+        real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(original_after_busy.status == axent::ControlStatus::Ok,
+            "Busy acquisition must not disconnect the original AXTP session");
+    require(transport_factory_calls == 1,
+            "original session should remain attached after Busy acquisition");
 
     axent::MediaRelayOptions real_relay_options;
     real_relay_options.max_frames = 4;
@@ -663,6 +691,21 @@ int main()
     scripted->unblockStream();
     release_thread.join();
 
+    const auto factory_calls_after_media_release = transport_factory_calls;
+    const auto busy_after_media_release = real_host.acquire_session(second_real_request);
+    require(!busy_after_media_release.acquired,
+            "releasing A media lease must not let B replace a remaining A control lease");
+    require(busy_after_media_release.status == axent::ControlStatus::Busy,
+            "B must remain typed Busy while A still has a control lease");
+    require(transport_factory_calls == factory_calls_after_media_release,
+            "B Busy after A media release must not replace A transport");
+    const auto control_after_media_release =
+        real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(control_after_media_release.status == axent::ControlStatus::Ok,
+            "A control lease must remain usable after its media lease is released");
+    require(transport_factory_calls == factory_calls_after_media_release,
+            "A control call after media release must keep the existing transport");
+
     const auto replacement_lease = real_host.acquire_session(real_request);
     require(replacement_lease.acquired, "replacement media lease should be acquired");
     auto replacement_consumer = real_host.create_media_consumer(replacement_lease.session_id, real_relay_options);
@@ -672,6 +715,21 @@ int main()
     require(!stale_frame.has_value(), "queued frame from released media lease must not reach replacement lease");
 
     real_host.release_session(replacement_lease.session_id, "replacement media lease done");
+
+    const auto factory_calls_before_last_control_release = transport_factory_calls;
+    real_host.release_session(real_lease.session_id, "last A control lease done");
+    axent::SessionAcquireRequest second_control_request = second_real_request;
+    second_control_request.media = false;
+    const auto second_control_lease = real_host.acquire_session(second_control_request);
+    require(second_control_lease.acquired,
+            "B should acquire after A's last control-only lease is released");
+    const auto second_control_call =
+        real_host.call(second_control_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(second_control_call.status == axent::ControlStatus::Ok,
+            "B control lease should connect after A ownership is released");
+    require(transport_factory_calls == factory_calls_before_last_control_release + 1,
+            "B takeover should create exactly one new transport after A's final release");
+    real_host.release_session(second_control_lease.session_id, "B control lease done");
     real_host.stop();
 
     return 0;

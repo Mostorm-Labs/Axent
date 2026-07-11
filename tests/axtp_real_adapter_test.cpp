@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "axent/adapters/axtp_adapter.hpp"
+#include "axent/testing/axtp_adapter_test_seam.hpp"
 
 #include "core/protocol/wire/inbound_processor.hpp"
 #include "core/protocol/wire/outbound_processor.hpp"
@@ -273,7 +274,7 @@ int main()
     hid_device.interfaceNumber = 3;
     hid_device.busType = "usb";
 
-    const auto descriptor = axent::AxtpAdapter::descriptor_from_hid_device(hid_device);
+    const auto descriptor = axent::testing::AxtpAdapterTestSeam::descriptor_from_hid_device(hid_device);
     require(descriptor.id == "hid:0581:2581:NA20-SERIAL", "descriptor id should include VID/PID/serial");
     require(descriptor.online, "descriptor should be online");
     require(descriptor.kind == axent::TransportKind::Hid, "descriptor kind mismatch");
@@ -291,25 +292,30 @@ int main()
     require(snapshot.status.health == "ready", "snapshot health mismatch");
 
     axent::AxtpAdapter adapter(defaults);
-    require(adapter.matches_selector(hid_device), "default adapter should match NA20 device");
+    require(axent::testing::AxtpAdapterTestSeam::matches_selector(adapter, hid_device),
+            "default adapter should match NA20 device");
     auto wrong_usage = hid_device;
     wrong_usage.usagePage = 0x1234;
-    require(!adapter.matches_selector(wrong_usage), "usage page filter should reject mismatches");
+    require(!axent::testing::AxtpAdapterTestSeam::matches_selector(adapter, wrong_usage),
+            "usage page filter should reject mismatches");
 
     auto path_config = defaults;
     path_config.selector = na20_selector();
     path_config.selector.path = "specific-path";
     axent::AxtpAdapter path_adapter(path_config);
-    require(!path_adapter.matches_selector(hid_device), "path filter should reject different path");
+    require(!axent::testing::AxtpAdapterTestSeam::matches_selector(path_adapter, hid_device),
+            "path filter should reject different path");
     hid_device.path = "specific-path";
-    require(path_adapter.matches_selector(hid_device), "path filter should accept matching path");
+    require(axent::testing::AxtpAdapterTestSeam::matches_selector(path_adapter, hid_device),
+            "path filter should accept matching path");
 
     axtp::HidTransportOptions options;
     options.inputReportSize = 0;
     options.outputReportSize = 0;
     options.readBufferSize = 4096;
     options.reportId = 0x05;
-    auto mapped_options = axent::AxtpAdapter::hid_options_from_selector(na20_selector());
+    auto mapped_options =
+        axent::testing::AxtpAdapterTestSeam::hid_options_from_selector(na20_selector());
     require(mapped_options.vendorId == 0x0581, "mapped VID mismatch");
     require(mapped_options.productId == 0x2581, "mapped PID mismatch");
     require(mapped_options.usagePage == 0x0081, "mapped usage page mismatch");
@@ -328,26 +334,26 @@ int main()
     axtp::HidReportTrace timeout;
     timeout.kind = axtp::HidReportTraceKind::ReadTimeout;
     timeout.timeoutMs = 1000;
-    adapter.record_hid_trace(timeout);
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, timeout);
     axtp::HidReportTrace raw_read;
     raw_read.kind = axtp::HidReportTraceKind::ReadReport;
-    adapter.record_hid_trace(raw_read);
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, raw_read);
     axtp::HidReportTrace accepted;
     accepted.kind = axtp::HidReportTraceKind::AcceptedReport;
-    adapter.record_hid_trace(accepted);
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, accepted);
     axtp::HidReportTrace read_error;
     read_error.kind = axtp::HidReportTraceKind::ReadError;
     read_error.message = "read failed";
-    adapter.record_hid_trace(read_error);
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, read_error);
     axtp::HidReportTrace write_error;
     write_error.kind = axtp::HidReportTraceKind::WriteError;
     write_error.message = "write failed";
-    adapter.record_hid_trace(write_error);
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, write_error);
     axtp::HidReportTrace dropped;
     dropped.kind = axtp::HidReportTraceKind::DroppedReportId;
     dropped.reportId = 0x06;
     dropped.expectedReportId = 0x05;
-    adapter.record_hid_trace(dropped);
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, dropped);
 
     const auto diagnostics = adapter.diagnostics();
     require(diagnostics.read_reports == 1, "accepted report count should not double-count raw reads");
@@ -357,22 +363,26 @@ int main()
     require(diagnostics.last_event == "dropped-report-id", "last event should track last trace");
     require(diagnostics.last_error == "write failed", "last HID error should keep the latest error message");
 
-    axent::AxtpAdapter unavailable_adapter(defaults, [](const axtp::HidTransportOptions&) {
+    auto unavailable_adapter = axent::testing::AxtpAdapterTestSeam::make(
+        defaults, [](const axtp::HidTransportOptions&) {
         return std::unique_ptr<axtp::ITransport>{};
     });
-    const auto result = unavailable_adapter.call("hid:0581:2581:NA20-SERIAL", "status.get", {});
+    const auto result = unavailable_adapter->call("hid:0581:2581:NA20-SERIAL", "status.get", {});
     require(result.status == axent::ControlStatus::Unavailable,
             "real adapter without a transport should be unavailable");
     require(result.body.at("error") == "AXTP HID transport target is unavailable",
             "unavailable transport message mismatch");
 
     ScriptedAxtpTransport* scripted = nullptr;
-    axent::AxtpAdapter session_adapter(defaults, [&](const axtp::HidTransportOptions&) {
+    int session_transport_factory_calls = 0;
+    auto session_adapter = axent::testing::AxtpAdapterTestSeam::make(
+        defaults, [&](const axtp::HidTransportOptions&) {
+        ++session_transport_factory_calls;
         auto transport = std::make_unique<ScriptedAxtpTransport>();
         scripted = transport.get();
         return transport;
     });
-    const auto call_result = session_adapter.call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+    const auto call_result = session_adapter->call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
     require(call_result.status == axent::ControlStatus::Ok,
             std::string("scripted AXTP call should succeed: ") + call_result.body.dump());
     require(call_result.body.at("ok") == true, "scripted AXTP response should be parsed");
@@ -382,27 +392,39 @@ int main()
     require(scripted->saw_business_request, "AXTP call should send a business request");
     require(scripted->last_business_sid == "axent-session-1", "business request should use app-ready sid");
 
+    axent::testing::AxtpAdapterTestSeam::disconnect_session(*session_adapter);
+    std::string disconnected_error;
+    const auto disconnected_busy = session_adapter->open_session_status(
+        "hid:0581:2581:NA20-SECOND", disconnected_error);
+    require(disconnected_busy == axent::ControlStatus::Busy,
+            "a disconnected but unreleased AXTP owner must still reject a second device");
+    require(disconnected_error.find("AXTP session busy") != std::string::npos,
+            "disconnected AXTP owner Busy reason mismatch");
+    require(session_transport_factory_calls == 1,
+            "disconnected ownership must not construct a second transport before release");
+
     std::mutex frames_mutex;
     std::vector<axent::MediaFrame> frames;
     axent::AxtpAdapterConfig media_config = axent::AxtpAdapter::na20_defaults();
     ScriptedAxtpTransport* media_scripted = nullptr;
-    axent::AxtpAdapter media_adapter(media_config, [&](const axtp::HidTransportOptions&) {
+    auto media_adapter = axent::testing::AxtpAdapterTestSeam::make(
+        media_config, [&](const axtp::HidTransportOptions&) {
         auto transport = std::make_unique<ScriptedAxtpTransport>();
         media_scripted = transport.get();
         return transport;
     });
 
-    media_adapter.set_media_frame_callback([&frames, &frames_mutex](std::string device_id, axent::MediaFrame frame) {
+    media_adapter->set_media_frame_callback([&frames, &frames_mutex](std::string device_id, axent::MediaFrame frame) {
         frame.device_id = std::move(device_id);
         std::lock_guard<std::mutex> lock(frames_mutex);
         frames.push_back(std::move(frame));
     });
 
     std::string error;
-    require(media_adapter.open_session_for_test("hid:0581:2581:NA20-SERIAL", error),
+    require(media_adapter->open_session("hid:0581:2581:NA20-SERIAL", error),
             "scripted adapter session should open");
     require(media_scripted != nullptr, "scripted media transport should be constructed");
-    const auto media_diagnostics = media_adapter.diagnostics();
+    const auto media_diagnostics = media_adapter->diagnostics();
     require(media_diagnostics.active_video_stream_id == 1, "video stream id should be registered from openStream");
     require(media_diagnostics.active_audio_stream_id == 2, "audio stream id should be registered from openStream");
     require(media_diagnostics.active_media_streams == 2, "active media stream count mismatch");
@@ -448,13 +470,14 @@ int main()
     std::mutex reentrant_frames_mutex;
     std::vector<axent::MediaFrame> reentrant_frames;
     ScriptedAxtpTransport* reentrant_scripted = nullptr;
-    axent::AxtpAdapter reentrant_adapter(media_config, [&](const axtp::HidTransportOptions&) {
+    auto reentrant_adapter = axent::testing::AxtpAdapterTestSeam::make(
+        media_config, [&](const axtp::HidTransportOptions&) {
         auto transport = std::make_unique<ScriptedAxtpTransport>();
         reentrant_scripted = transport.get();
         return transport;
     });
     std::atomic<bool> reentrant_call_succeeded{false};
-    reentrant_adapter.set_media_frame_callback(
+    reentrant_adapter->set_media_frame_callback(
         [&reentrant_adapter,
          &reentrant_call_succeeded,
          &reentrant_frames,
@@ -465,12 +488,12 @@ int main()
                 reentrant_frames.push_back(std::move(frame));
             }
             const auto result =
-                reentrant_adapter.call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+                reentrant_adapter->call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
             reentrant_call_succeeded.store(result.status == axent::ControlStatus::Ok
                 && result.body.value("ok", false));
         });
 
-    require(reentrant_adapter.open_session_for_test("hid:0581:2581:NA20-SERIAL", error),
+    require(reentrant_adapter->open_session("hid:0581:2581:NA20-SERIAL", error),
             "reentrant scripted adapter session should open");
     require(reentrant_scripted != nullptr, "reentrant scripted transport should be constructed");
     reentrant_scripted->injectStream(0x1001, 5, 999000, {0x00, 0x00, 0x01, 0x65});

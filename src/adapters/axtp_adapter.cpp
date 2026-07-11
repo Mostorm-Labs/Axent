@@ -1,4 +1,7 @@
 #include "axent/adapters/axtp_adapter.hpp"
+#include "axent/testing/axtp_adapter_test_seam.hpp"
+
+#include "axtp_adapter_internal.hpp"
 
 #include <chrono>
 #include <iomanip>
@@ -255,24 +258,55 @@ std::unique_ptr<axtp::ITransport> make_default_hid_transport(axtp::HidTransportO
 
 } // namespace
 
+namespace detail {
+namespace {
+
+class DefaultAxtpAdapterRuntimeFactory final : public AxtpAdapterRuntimeFactory {
+public:
+    std::unique_ptr<axtp::ITransport> create(const axtp::HidTransportOptions& options) override
+    {
+        return make_default_hid_transport(options);
+    }
+};
+
+} // namespace
+
+std::shared_ptr<AxtpAdapterRuntimeFactory> make_default_axtp_runtime_factory()
+{
+    return std::make_shared<DefaultAxtpAdapterRuntimeFactory>();
+}
+
+} // namespace detail
+
+struct AxtpAdapter::RuntimeState {
+    explicit RuntimeState(std::shared_ptr<detail::AxtpAdapterRuntimeFactory> next_factory)
+        : factory(std::move(next_factory))
+    {
+    }
+
+    std::shared_ptr<detail::AxtpAdapterRuntimeFactory> factory;
+    std::unique_ptr<axtp::sdk::AxtpClient> client;
+    axtp::ITransport* active_transport = nullptr;
+};
+
 AxtpAdapter::AxtpAdapter()
     : AxtpAdapter(na20_defaults())
 {
 }
 
 AxtpAdapter::AxtpAdapter(AxtpAdapterConfig config)
-    : AxtpAdapter(std::move(config), {})
+    : AxtpAdapter(std::move(config), detail::make_default_axtp_runtime_factory())
 {
 }
 
-AxtpAdapter::AxtpAdapter(AxtpAdapterConfig config, TransportFactory transport_factory)
+AxtpAdapter::AxtpAdapter(
+    AxtpAdapterConfig config,
+    std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory)
     : config_(std::move(config))
-    , transport_factory_(std::move(transport_factory))
+    , runtime_(std::make_unique<RuntimeState>(std::move(runtime_factory)))
 {
-    if (!transport_factory_) {
-        transport_factory_ = [](const axtp::HidTransportOptions& options) {
-            return make_default_hid_transport(options);
-        };
+    if (!runtime_->factory) {
+        runtime_->factory = detail::make_default_axtp_runtime_factory();
     }
 }
 
@@ -287,8 +321,8 @@ AxtpAdapter::~AxtpAdapter()
         pump.join();
     }
     std::lock_guard<std::mutex> client_lock(client_mutex_);
-    if (client_) {
-        client_->close();
+    if (runtime_->client) {
+        runtime_->client->close();
     }
 }
 
@@ -308,7 +342,7 @@ AxtpAdapterConfig AxtpAdapter::na20_defaults()
     return config;
 }
 
-axtp::HidTransportOptions AxtpAdapter::hid_options_from_selector(const TransportSelector& selector)
+axtp::HidTransportOptions detail::hid_options_from_selector(const TransportSelector& selector)
 {
     axtp::HidTransportOptions options;
     options.vendorId = selector.vendor_id;
@@ -328,7 +362,7 @@ axtp::HidTransportOptions AxtpAdapter::hid_options_from_selector(const Transport
     return options;
 }
 
-TransportDescriptor AxtpAdapter::descriptor_from_hid_device(const axtp::HidDeviceInfo& device)
+TransportDescriptor detail::descriptor_from_hid_device(const axtp::HidDeviceInfo& device)
 {
     TransportDescriptor descriptor;
     descriptor.id = descriptor_id_for(device);
@@ -391,8 +425,8 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
 #if AXENT_HAS_AXTP_HID_TRANSPORT
     const auto hid_devices = axtp::enumerateHidDevices(config_.selector.vendor_id, config_.selector.product_id);
     for (const auto& device : hid_devices) {
-        if (matches_selector(device)) {
-            devices.push_back(snapshot_from_descriptor(descriptor_from_hid_device(device)));
+        if (detail::matches_selector(config_.selector, device)) {
+            devices.push_back(snapshot_from_descriptor(detail::descriptor_from_hid_device(device)));
         }
     }
 #endif
@@ -406,20 +440,21 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
     axtp::sdk::SdkError last_error;
     {
         std::lock_guard<std::mutex> session_lock(session_mutex_);
-        if (!ensure_session_locked(device_id, error, false)) {
-            return {ControlStatus::Unavailable, {{"error", error}}};
+        ControlStatus session_status = ControlStatus::Unavailable;
+        if (!ensure_session_locked(device_id, error, session_status, false)) {
+            return {session_status, {{"error", error}}};
         }
 
         {
             std::lock_guard<std::mutex> client_lock(client_mutex_);
-            if (client_ == nullptr) {
+            if (runtime_->client == nullptr) {
                 return {ControlStatus::Unavailable, {{"error", "AXTP session is unavailable"}}};
             }
             axtp::sdk::CallOptions options;
             options.timeout = std::chrono::milliseconds(5000);
             const std::string params_text = params.is_null() ? std::string("{}") : params.dump();
-            body = client_->callJson(method, params_text, options);
-            last_error = client_->lastError();
+            body = runtime_->client->callJson(method, params_text, options);
+            last_error = runtime_->client->lastError();
         }
     }
     drain_pending_media_callbacks();
@@ -445,9 +480,8 @@ ControlResult AxtpAdapter::start_firmware_update(const std::string&, const std::
     return {ControlStatus::Unavailable, {{"error", "AXTP firmware update skeleton only"}}};
 }
 
-bool AxtpAdapter::matches_selector(const axtp::HidDeviceInfo& device) const
+bool detail::matches_selector(const TransportSelector& selector, const axtp::HidDeviceInfo& device)
 {
-    const auto& selector = config_.selector;
     if (selector.kind != TransportKind::Hid) {
         return false;
     }
@@ -472,37 +506,33 @@ bool AxtpAdapter::matches_selector(const axtp::HidDeviceInfo& device) const
     return true;
 }
 
-void AxtpAdapter::record_hid_trace(const axtp::HidReportTrace& trace)
+void AxtpAdapter::record_transport_trace(const std::string& event_name,
+                                         bool accepted_read,
+                                         bool write_report,
+                                         bool read_error,
+                                         bool write_error,
+                                         bool dropped_report,
+                                         const std::string& message)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    diagnostics_.last_event = trace_event_name(trace.kind);
-    switch (trace.kind) {
-    case axtp::HidReportTraceKind::ReadReport:
-        break;
-    case axtp::HidReportTraceKind::AcceptedReport:
+    diagnostics_.last_event = event_name;
+    if (accepted_read) {
         ++diagnostics_.read_reports;
-        break;
-    case axtp::HidReportTraceKind::WriteReport:
+    }
+    if (write_report) {
         ++diagnostics_.write_reports;
-        break;
-    case axtp::HidReportTraceKind::ReadError:
+    }
+    if (read_error) {
         ++diagnostics_.read_errors;
-        if (!trace.message.empty()) {
-            diagnostics_.last_error = trace.message;
-        }
-        break;
-    case axtp::HidReportTraceKind::WriteError:
+    }
+    if (write_error) {
         ++diagnostics_.write_errors;
-        if (!trace.message.empty()) {
-            diagnostics_.last_error = trace.message;
-        }
-        break;
-    case axtp::HidReportTraceKind::DroppedReportId:
+    }
+    if (dropped_report) {
         ++diagnostics_.dropped_reports;
-        break;
-    case axtp::HidReportTraceKind::ReadTimeout:
-    case axtp::HidReportTraceKind::WriteFrame:
-        break;
+    }
+    if ((read_error || write_error) && !message.empty()) {
+        diagnostics_.last_error = message;
     }
 }
 
@@ -564,14 +594,14 @@ void AxtpAdapter::reset_session_for_device(const std::string& device_id)
         }
         {
             std::lock_guard<std::mutex> client_lock(client_mutex_);
-            if (client_ != nullptr) {
-                client_->close();
-                client_.reset();
+            if (runtime_->client != nullptr) {
+                runtime_->client->close();
+                runtime_->client.reset();
             }
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            active_transport_ = nullptr;
+            runtime_->active_transport = nullptr;
             active_device_id_.clear();
             diagnostics_.open = false;
         }
@@ -582,13 +612,15 @@ void AxtpAdapter::reset_session_for_device(const std::string& device_id)
 
 bool AxtpAdapter::open_session(const std::string& device_id, std::string& error)
 {
-    std::lock_guard<std::mutex> session_lock(session_mutex_);
-    return ensure_session_locked(device_id, error, true);
+    return open_session_status(device_id, error) == ControlStatus::Ok;
 }
 
-bool AxtpAdapter::open_session_for_test(const std::string& device_id, std::string& error)
+ControlStatus AxtpAdapter::open_session_status(const std::string& device_id, std::string& error)
 {
-    return open_session(device_id, error);
+    std::lock_guard<std::mutex> session_lock(session_mutex_);
+    ControlStatus status = ControlStatus::Unavailable;
+    (void)ensure_session_locked(device_id, error, status, true);
+    return status;
 }
 
 std::thread AxtpAdapter::request_stop_session_pump_locked()
@@ -602,8 +634,10 @@ std::thread AxtpAdapter::request_stop_session_pump_locked()
 
 bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                                         std::string& error,
+                                        ControlStatus& status,
                                         bool configure_media)
 {
+    status = ControlStatus::Unavailable;
     std::thread stopped_pump;
     {
         std::lock_guard<std::mutex> client_lock(client_mutex_);
@@ -611,16 +645,22 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         bool media_ready = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            session_ready = client_ != nullptr && client_->isConnected() && client_->isAppReady() &&
+            session_ready = runtime_->client != nullptr && runtime_->client->isConnected() && runtime_->client->isAppReady() &&
                 active_device_id_ == device_id;
             media_ready = diagnostics_.active_media_streams != 0 ||
                 !config_.enable_media ||
                 (!config_.enable_video && !config_.enable_audio);
+            if (!active_device_id_.empty() && active_device_id_ != device_id) {
+                error = "AXTP session busy for active device " + active_device_id_;
+                status = ControlStatus::Busy;
+                return false;
+            }
         }
         if (session_ready) {
-            if (configure_media && !media_ready && client_ != nullptr) {
-                configure_media_streams(*client_);
+            if (configure_media && !media_ready && runtime_->client != nullptr) {
+                configure_media_streams();
             }
+            status = ControlStatus::Ok;
             return true;
         }
         {
@@ -633,15 +673,15 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     }
     {
         std::lock_guard<std::mutex> client_lock(client_mutex_);
-        if (client_ != nullptr) {
-            client_->close();
-            client_.reset();
+        if (runtime_->client != nullptr) {
+            runtime_->client->close();
+            runtime_->client.reset();
         }
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (active_transport_ != nullptr || !active_device_id_.empty()) {
-            active_transport_ = nullptr;
+        if (runtime_->active_transport != nullptr || !active_device_id_.empty()) {
+            runtime_->active_transport = nullptr;
             active_device_id_.clear();
             diagnostics_.open = false;
         }
@@ -652,11 +692,18 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         return false;
     }
 
-    auto hid_options = hid_options_from_selector(config_.selector);
+    auto hid_options = detail::hid_options_from_selector(config_.selector);
     hid_options.reportTrace = [this](const axtp::HidReportTrace& trace) {
-        record_hid_trace(trace);
+        record_transport_trace(
+            trace_event_name(trace.kind),
+            trace.kind == axtp::HidReportTraceKind::AcceptedReport,
+            trace.kind == axtp::HidReportTraceKind::WriteReport,
+            trace.kind == axtp::HidReportTraceKind::ReadError,
+            trace.kind == axtp::HidReportTraceKind::WriteError,
+            trace.kind == axtp::HidReportTraceKind::DroppedReportId,
+            trace.message);
     };
-    auto transport = transport_factory_ ? transport_factory_(hid_options) : nullptr;
+    auto transport = runtime_->factory ? runtime_->factory->create(hid_options) : nullptr;
     if (transport == nullptr) {
         error = "AXTP HID transport target is unavailable";
         return false;
@@ -667,8 +714,9 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     client_options.autoIdentify = false;
     auto client = std::make_unique<axtp::sdk::AxtpClient>(client_options);
     client->setStreamHandler(
-        [this, device_id](const axtp::BrokerContext& context, const axtp::StreamPayload& stream) {
-            handle_stream_payload(device_id, context, stream);
+        [this, device_id](const axtp::BrokerContext&, const axtp::StreamPayload& stream) {
+            handle_stream_payload(
+                device_id, stream.streamId, stream.seqId, stream.cursor, stream.data);
         });
     auto* active_transport = transport.get();
     client->attachTransport(std::move(transport));
@@ -683,8 +731,8 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     std::unique_lock<std::mutex> client_lock(client_mutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        client_ = std::move(client);
-        active_transport_ = active_transport;
+        runtime_->client = std::move(client);
+        runtime_->active_transport = active_transport;
         if (!last_ready_event.empty()) {
             diagnostics_.last_event = last_ready_event;
         }
@@ -693,13 +741,13 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     if (!ready.ok) {
         error = "AXTP app-ready failed at " + ready.stage + ": " + error_name(ready.statusCode);
         {
-            client_->close();
-            client_.reset();
+            runtime_->client->close();
+            runtime_->client.reset();
         }
         client_lock.unlock();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            active_transport_ = nullptr;
+            runtime_->active_transport = nullptr;
             active_device_id_.clear();
             diagnostics_.open = false;
         }
@@ -712,7 +760,7 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         media_configure_attempts_ = 0;
     }
     if (configure_media) {
-        configure_media_streams(*client_);
+        configure_media_streams();
     }
 
     {
@@ -728,7 +776,7 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
             while (!stop_session_pump_.load()) {
                 {
                     std::lock_guard<std::mutex> client_lock(client_mutex_);
-                    if (client_ == nullptr) {
+                    if (runtime_->client == nullptr) {
                         break;
                     }
                     bool retry_media_configure = false;
@@ -745,15 +793,16 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                         }
                     }
                     if (retry_media_configure) {
-                        configure_media_streams(*client_);
+                        configure_media_streams();
                     }
-                    client_->poll();
+                    runtime_->client->poll();
                 }
                 drain_pending_media_callbacks();
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         });
     }
+    status = ControlStatus::Ok;
     return true;
 }
 
@@ -768,18 +817,18 @@ bool AxtpAdapter::media_configure_retry_due_locked(std::chrono::steady_clock::ti
         now >= next_media_configure_attempt_;
 }
 
-void AxtpAdapter::configure_media_streams(axtp::sdk::AxtpClient& client)
+void AxtpAdapter::configure_media_streams()
 {
-    if (!config_.enable_media) {
+    if (!config_.enable_media || runtime_->client == nullptr) {
         return;
     }
 
-    auto call_json = [&client](const std::string& method, const nlohmann::json& params)
+    auto call_json = [this](const std::string& method, const nlohmann::json& params)
         -> std::optional<nlohmann::json> {
         axtp::sdk::CallOptions options;
         options.timeout = std::chrono::milliseconds(5000);
-        const auto text = client.callJson(method, params.dump(), options);
-        if (!client.lastError().ok()) {
+        const auto text = runtime_->client->callJson(method, params.dump(), options);
+        if (!runtime_->client->lastError().ok()) {
             return std::nullopt;
         }
         return parse_json_object(text);
@@ -870,29 +919,32 @@ void AxtpAdapter::configure_media_streams(axtp::sdk::AxtpClient& client)
 }
 
 MediaFrame AxtpAdapter::frame_from_stream(const std::string& device_id,
-                                          const axtp::StreamPayload& stream) const
+                                          std::uint32_t stream_id,
+                                          std::uint32_t sequence_id,
+                                          std::uint64_t cursor,
+                                          std::vector<std::uint8_t> data) const
 {
     MediaFrame frame;
     frame.device_id = device_id;
-    frame.stream_id = stream.streamId;
-    frame.sequence_id = stream.seqId;
-    frame.cursor = stream.cursor;
-    frame.timestamp_us = stream.cursor;
-    frame.payload = stream.data;
+    frame.stream_id = stream_id;
+    frame.sequence_id = sequence_id;
+    frame.cursor = cursor;
+    frame.timestamp_us = cursor;
+    frame.payload = std::move(data);
     frame.flags = MediaFrameFlag::EndOfFrame;
     {
         std::lock_guard<std::mutex> lock(media_stream_mutex_);
-        const auto it = active_media_streams_.find(stream.streamId);
+        const auto it = active_media_streams_.find(stream_id);
         if (it != active_media_streams_.end()) {
             frame.kind = it->second.kind;
             frame.codec = it->second.codec;
             return frame;
         }
     }
-    if ((stream.streamId & 0xF000U) == 0x1000U) {
+    if ((stream_id & 0xF000U) == 0x1000U) {
         frame.kind = MediaKind::Video;
         frame.codec = MediaCodec::H264;
-    } else if ((stream.streamId & 0xF000U) == 0x2000U) {
+    } else if ((stream_id & 0xF000U) == 0x2000U) {
         frame.kind = MediaKind::Audio;
         frame.codec = MediaCodec::Aac;
     } else {
@@ -903,11 +955,15 @@ MediaFrame AxtpAdapter::frame_from_stream(const std::string& device_id,
 }
 
 void AxtpAdapter::handle_stream_payload(const std::string& device_id,
-                                        const axtp::BrokerContext&,
-                                        const axtp::StreamPayload& stream)
+                                        std::uint32_t stream_id,
+                                        std::uint32_t sequence_id,
+                                        std::uint64_t cursor,
+                                        std::vector<std::uint8_t> data)
 {
     std::lock_guard<std::mutex> lock(pending_media_mutex_);
-    pending_media_frames_.emplace(device_id, frame_from_stream(device_id, stream));
+    pending_media_frames_.emplace(
+        device_id,
+        frame_from_stream(device_id, stream_id, sequence_id, cursor, std::move(data)));
 }
 
 void AxtpAdapter::drain_pending_media_callbacks()
@@ -939,11 +995,11 @@ void AxtpAdapter::drain_pending_media_callbacks()
 void AxtpAdapter::refresh_diagnostics_locked()
 {
 #if AXENT_HAS_AXTP_HID_TRANSPORT
-    if (client_ == nullptr || !client_->isConnected()) {
+    if (runtime_->client == nullptr || !runtime_->client->isConnected()) {
         diagnostics_.open = false;
         return;
     }
-    const auto* transport = dynamic_cast<const axtp::HidTransport*>(active_transport_);
+    const auto* transport = dynamic_cast<const axtp::HidTransport*>(runtime_->active_transport);
     if (transport == nullptr) {
         return;
     }
@@ -962,8 +1018,16 @@ void AxtpAdapter::refresh_diagnostics_locked()
     diagnostics_.dropped_reports = stats.droppedReportId;
     diagnostics_.queued_reports = stats.queuedReports;
 #else
-    diagnostics_.open = client_ != nullptr && client_->isConnected() && client_->isAppReady();
+    diagnostics_.open = runtime_->client != nullptr && runtime_->client->isConnected() && runtime_->client->isAppReady();
 #endif
+}
+
+void testing::AxtpAdapterTestSeam::disconnect_session(AxtpAdapter& adapter)
+{
+    std::lock_guard<std::mutex> client_lock(adapter.client_mutex_);
+    if (adapter.runtime_->client != nullptr) {
+        adapter.runtime_->client->close();
+    }
 }
 
 } // namespace axent

@@ -15,20 +15,15 @@
 #include "axent/media/media_frame.hpp"
 #include "axent/transport/types.hpp"
 
-namespace axtp {
-struct BrokerContext;
-class ITransport;
-class HidTransport;
-struct HidDeviceInfo;
-struct HidReportTrace;
-struct HidTransportOptions;
-struct StreamPayload;
-namespace sdk {
-class AxtpClient;
-} // namespace sdk
-} // namespace axtp
-
 namespace axent {
+
+namespace detail {
+class AxtpAdapterRuntimeFactory;
+} // namespace detail
+
+namespace testing {
+class AxtpAdapterTestSeam;
+} // namespace testing
 
 struct AxtpAdapterConfig {
     TransportSelector selector;
@@ -45,17 +40,13 @@ class AxentHost;
 
 class AxtpAdapter final : public Adapter {
 public:
-    using TransportFactory = std::function<std::unique_ptr<axtp::ITransport>(const axtp::HidTransportOptions&)>;
     using MediaFrameCallback = std::function<void(std::string device_id, MediaFrame frame)>;
 
     AxtpAdapter();
     explicit AxtpAdapter(AxtpAdapterConfig config);
-    AxtpAdapter(AxtpAdapterConfig config, TransportFactory transport_factory);
     ~AxtpAdapter() override;
 
     static AxtpAdapterConfig na20_defaults();
-    static axtp::HidTransportOptions hid_options_from_selector(const TransportSelector& selector);
-    static TransportDescriptor descriptor_from_hid_device(const axtp::HidDeviceInfo& device);
     static DeviceSnapshot snapshot_from_descriptor(const TransportDescriptor& descriptor);
 
     AdapterMetadata metadata() const override;
@@ -64,33 +55,51 @@ public:
     ControlResult call(const std::string& device_id, const std::string& method, const nlohmann::json& params) override;
     ControlResult start_firmware_update(const std::string& device_id, const std::string& file_path) override;
 
-    bool matches_selector(const axtp::HidDeviceInfo& device) const;
-    void record_hid_trace(const axtp::HidReportTrace& trace);
     TransportDiagnostics diagnostics() const;
     void set_media_frame_callback(MediaFrameCallback callback);
+    ControlStatus open_session_status(const std::string& device_id, std::string& error);
     bool open_session(const std::string& device_id, std::string& error);
-    bool open_session_for_test(const std::string& device_id, std::string& error);
 
 private:
     friend class AxentHost;
+    friend class testing::AxtpAdapterTestSeam;
+
+    AxtpAdapter(AxtpAdapterConfig config,
+                std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory);
 
     std::thread request_stop_session_pump_locked();
-    bool ensure_session_locked(const std::string& device_id, std::string& error, bool configure_media);
+    bool ensure_session_locked(const std::string& device_id,
+                               std::string& error,
+                               ControlStatus& status,
+                               bool configure_media);
     void refresh_diagnostics_locked();
+    void record_transport_trace(const std::string& event_name,
+                                bool accepted_read,
+                                bool write_report,
+                                bool read_error,
+                                bool write_error,
+                                bool dropped_report,
+                                const std::string& message);
     void drop_pending_media_frames_for_device(const std::string& device_id);
     void reset_session_for_device(const std::string& device_id);
     bool media_configure_retry_due_locked(std::chrono::steady_clock::time_point now) const;
-    void configure_media_streams(axtp::sdk::AxtpClient& client);
+    void configure_media_streams();
     void clear_media_streams();
     void handle_stream_payload(const std::string& device_id,
-                               const axtp::BrokerContext& context,
-                               const axtp::StreamPayload& stream);
+                               std::uint32_t stream_id,
+                               std::uint32_t sequence_id,
+                               std::uint64_t cursor,
+                               std::vector<std::uint8_t> data);
     MediaFrame frame_from_stream(const std::string& device_id,
-                                 const axtp::StreamPayload& stream) const;
+                                 std::uint32_t stream_id,
+                                 std::uint32_t sequence_id,
+                                 std::uint64_t cursor,
+                                 std::vector<std::uint8_t> data) const;
     void drain_pending_media_callbacks();
 
     AxtpAdapterConfig config_;
-    TransportFactory transport_factory_;
+    struct RuntimeState;
+    std::unique_ptr<RuntimeState> runtime_;
     MediaFrameCallback media_frame_callback_;
     mutable std::mutex media_callback_mutex_;
     struct ActiveMediaStream {
@@ -108,8 +117,6 @@ private:
     TransportDiagnostics diagnostics_;
     std::chrono::steady_clock::time_point next_media_configure_attempt_;
     std::uint32_t media_configure_attempts_ = 0;
-    std::unique_ptr<axtp::sdk::AxtpClient> client_;
-    axtp::ITransport* active_transport_ = nullptr;
     std::string active_device_id_;
     std::atomic<bool> stop_session_pump_{false};
     std::thread session_pump_;

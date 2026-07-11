@@ -282,6 +282,9 @@ struct AxentHost::Impl {
     std::vector<std::shared_ptr<MediaSubscriptionState>> take_session_subscriptions_locked(
         const std::string& session_id);
     std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_for_session_locked(const std::string& session_id);
+    bool is_axtp_device_locked(const std::string& device_id) const;
+    std::optional<std::string> other_axtp_lease_device_locked(const std::string& device_id) const;
+    bool has_lease_for_device_locked(const std::string& device_id) const;
 
     mutable std::mutex mutex;
     bool running = false;
@@ -385,6 +388,37 @@ std::vector<std::shared_ptr<MediaSubscriptionState>> AxentHost::Impl::subscripti
         }
     }
     return result;
+}
+
+bool AxentHost::Impl::is_axtp_device_locked(const std::string& device_id) const
+{
+    if (!devices) {
+        return false;
+    }
+    const auto device = devices->get(device_id);
+    return device.has_value() && device->adapter == "axtp";
+}
+
+std::optional<std::string> AxentHost::Impl::other_axtp_lease_device_locked(
+    const std::string& device_id) const
+{
+    for (const auto& entry : leases) {
+        const auto& lease = entry.second;
+        if (lease.device_id != device_id && is_axtp_device_locked(lease.device_id)) {
+            return lease.device_id;
+        }
+    }
+    return std::nullopt;
+}
+
+bool AxentHost::Impl::has_lease_for_device_locked(const std::string& device_id) const
+{
+    for (const auto& entry : leases) {
+        if (entry.second.device_id == device_id) {
+            return true;
+        }
+    }
+    return false;
 }
 
 MediaConsumer::MediaConsumer(std::shared_ptr<MediaStreamRelay> relay)
@@ -525,16 +559,32 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->running || !impl_->devices) {
-            return {false, "", request.device_id, request.client_id, false, "host not running"};
+            return {false, "", request.device_id, request.client_id, false, "host not running",
+                    ControlStatus::Unavailable};
         }
         const auto device = impl_->devices->get(request.device_id);
         if (!device.has_value()) {
-            return {false, "", request.device_id, request.client_id, false, "device not found"};
+            return {false, "", request.device_id, request.client_id, false, "device not found",
+                    ControlStatus::NotFound};
         }
         if (request.media
             && impl_->media_owner_session_by_device.find(request.device_id)
                    != impl_->media_owner_session_by_device.end()) {
-            return {false, "", request.device_id, request.client_id, false, "media lease busy"};
+            return {false, "", request.device_id, request.client_id, false, "media lease busy",
+                    ControlStatus::Busy};
+        }
+        if (device->adapter == "axtp") {
+            const auto other_device =
+                impl_->other_axtp_lease_device_locked(request.device_id);
+            if (other_device.has_value()) {
+                return {false,
+                        "",
+                        request.device_id,
+                        request.client_id,
+                        request.media,
+                        "AXTP session busy for active device " + *other_device,
+                        ControlStatus::Busy};
+            }
         }
         if (request.media && device->adapter == "axtp") {
             media_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
@@ -543,20 +593,35 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
 
     if (media_adapter != nullptr) {
         std::string error;
-        if (!media_adapter->open_session(request.device_id, error)) {
-            return {false, "", request.device_id, request.client_id, true, error};
+        const auto status = media_adapter->open_session_status(request.device_id, error);
+        if (status != ControlStatus::Ok) {
+            return {false, "", request.device_id, request.client_id, true, error, status};
         }
     }
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto device = impl_->devices->get(request.device_id);
     if (!device.has_value()) {
-        return {false, "", request.device_id, request.client_id, false, "device not found"};
+        return {false, "", request.device_id, request.client_id, false, "device not found",
+                ControlStatus::NotFound};
     }
     if (request.media
         && impl_->media_owner_session_by_device.find(request.device_id)
                != impl_->media_owner_session_by_device.end()) {
-        return {false, "", request.device_id, request.client_id, false, "media lease busy"};
+        return {false, "", request.device_id, request.client_id, false, "media lease busy",
+                ControlStatus::Busy};
+    }
+    if (device->adapter == "axtp") {
+        const auto other_device = impl_->other_axtp_lease_device_locked(request.device_id);
+        if (other_device.has_value()) {
+            return {false,
+                    "",
+                    request.device_id,
+                    request.client_id,
+                    request.media,
+                    "AXTP session busy for active device " + *other_device,
+                    ControlStatus::Busy};
+        }
     }
     const std::string session_id = impl_->sessions.device().open(request.device_id, device->adapter);
     SessionLease lease{true, session_id, request.device_id, request.client_id, request.media, ""};
@@ -579,20 +644,6 @@ void AxentHost::release_session(const std::string& session_id, const std::string
         if (lease.has_value() && lease->media) {
             const auto owner = impl_->media_owner_session_by_device.find(lease->device_id);
             if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
-                reset_device_id = lease->device_id;
-                reset_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
-            }
-        }
-    }
-    if (reset_adapter != nullptr && !reset_device_id.empty()) {
-        reset_adapter->reset_session_for_device(reset_device_id);
-    }
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        const auto lease = impl_->lease_for_session_locked(session_id);
-        if (lease.has_value() && lease->media) {
-            const auto owner = impl_->media_owner_session_by_device.find(lease->device_id);
-            if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
                 impl_->media_owner_session_by_device.erase(owner);
             }
         }
@@ -606,9 +657,18 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             impl_->sessions.close_device_session(session_id);
         }
         impl_->leases.erase(session_id);
+        if (lease.has_value() &&
+            impl_->is_axtp_device_locked(lease->device_id) &&
+            !impl_->has_lease_for_device_locked(lease->device_id)) {
+            reset_device_id = lease->device_id;
+            reset_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+        }
     }
     for (auto& subscription : subscriptions_to_close) {
         subscription->cancel();
+    }
+    if (reset_adapter != nullptr && !reset_device_id.empty()) {
+        reset_adapter->reset_session_for_device(reset_device_id);
     }
 }
 
