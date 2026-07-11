@@ -251,6 +251,11 @@ file(GLOB_RECURSE axent_code_boundary_files LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/tests/*.hpp"
 )
 
+file(GLOB_RECURSE axent_public_contract_headers LIST_DIRECTORIES false
+    "${AXENT_REPO_ROOT}/include/axent/*.hpp"
+)
+list(FILTER axent_public_contract_headers EXCLUDE REGEX "[/\\\\]testing[/\\\\]")
+
 file(GLOB_RECURSE axent_cli_boundary_files LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/include/axent/cli/*.hpp"
     "${AXENT_REPO_ROOT}/include/axent/tooling/*.hpp"
@@ -267,6 +272,18 @@ assert_files_do_not_contain(
     axent_core_boundary_files
     "${axent_forbidden_product_terms}"
     "Axent Core must not contain product-specific terms"
+)
+
+assert_files_do_not_contain(
+    axent_public_contract_headers
+    "axtp::|#[ \\t]*include[ \\t]*[<\"](axtp_|core/runtime/|core/protocol/|json_rpc/|transports/)"
+    "Axent production public headers must not expose cpp-runtime types or headers"
+)
+
+assert_file_does_not_contain(
+    "${AXENT_REPO_ROOT}/include/axent/control/axtp_control_endpoint.hpp"
+    "axtp::|#[ \\t]*include[ \\t]*[<\"](axtp_|core/|json_rpc/|transports/)"
+    "AxtpControlEndpoint public API must expose only Axent contracts"
 )
 
 assert_files_do_not_contain(
@@ -451,6 +468,8 @@ file(WRITE "${parent_fixture_dir}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.21)
 project(axent_parent_runtime_fixture LANGUAGES CXX)
 
+add_library(nlohmann_json INTERFACE)
+add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 add_library(axtp_core INTERFACE)
 add_library(axtp::core ALIAS axtp_core)
 add_library(axtp_json_rpc INTERFACE)
@@ -481,6 +500,15 @@ endif()
 if(NOT TARGET axent::axtp_tooling)
     message(FATAL_ERROR "Expected axent::axtp_tooling target")
 endif()
+if(NOT TARGET axent::control_contract)
+    message(FATAL_ERROR "Expected axent::control_contract target")
+endif()
+if(NOT TARGET axent::axtp_control_endpoint)
+    message(FATAL_ERROR "Expected axent::axtp_control_endpoint target")
+endif()
+if(NOT TARGET axent::axtp_adapter_test_support)
+    message(FATAL_ERROR "Expected opt-in axent::axtp_adapter_test_support target")
+endif()
 if(NOT TARGET axtpctl)
     message(FATAL_ERROR "Expected Axent-owned axtpctl target")
 endif()
@@ -489,6 +517,20 @@ get_target_property(libaxent_sources libaxent SOURCES)
 if("${libaxent_sources}" MATCHES "axtp_cli\\.cpp")
     message(FATAL_ERROR "libaxent must not compile the AXTP tooling runner")
 endif()
+
+get_target_property(libaxent_interface_links libaxent INTERFACE_LINK_LIBRARIES)
+foreach(link_item IN LISTS libaxent_interface_links)
+    if(link_item MATCHES "^axtp::")
+        message(FATAL_ERROR "libaxent must not expose cpp-runtime as a PUBLIC link dependency")
+    endif()
+endforeach()
+
+get_target_property(endpoint_interface_links axent_axtp_control_endpoint INTERFACE_LINK_LIBRARIES)
+foreach(link_item IN LISTS endpoint_interface_links)
+    if(link_item MATCHES "^axtp::")
+        message(FATAL_ERROR "AxtpControlEndpoint runtime dependencies must remain PRIVATE")
+    endif()
+endforeach()
 
 get_target_property(tooling_links axent_axtp_tooling LINK_LIBRARIES)
 list(FIND tooling_links "libaxent" tooling_libaxent_index)

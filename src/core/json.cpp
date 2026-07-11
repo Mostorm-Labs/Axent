@@ -30,6 +30,7 @@ const char* control_status_name(ControlStatus status)
     case ControlStatus::NotFound: return "not_found";
     case ControlStatus::Forbidden: return "forbidden";
     case ControlStatus::InvalidArgument: return "invalid_argument";
+    case ControlStatus::Busy: return "busy";
     case ControlStatus::Unavailable: return "unavailable";
     case ControlStatus::InternalError: return "internal_error";
     }

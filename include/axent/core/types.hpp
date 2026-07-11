@@ -28,6 +28,7 @@ enum class ControlStatus {
     InvalidArgument,
     Unavailable,
     InternalError,
+    Busy,
 };
 
 struct DeviceIdentity {

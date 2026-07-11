@@ -43,6 +43,7 @@ struct SessionLease {
     std::string client_id;
     bool media = false;
     std::string reason;
+    ControlStatus status = ControlStatus::Ok;
 };
 
 class MediaConsumer {

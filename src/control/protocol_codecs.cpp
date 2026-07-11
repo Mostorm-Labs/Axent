@@ -85,6 +85,7 @@ int json_rpc_error_code(ControlStatus status)
     case ControlStatus::NotFound: return -32004;
     case ControlStatus::Forbidden: return -32003;
     case ControlStatus::InvalidArgument: return -32602;
+    case ControlStatus::Busy: return -32005;
     case ControlStatus::Unavailable: return -32001;
     case ControlStatus::InternalError: return -32603;
     }

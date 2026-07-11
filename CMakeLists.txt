@@ -14,6 +14,14 @@ option(AXENT_BUILD_TESTING "Build Axent test executables" ${BUILD_TESTING})
 include(cmake/CompilerWarnings.cmake)
 include(cmake/AxentDependencies.cmake)
 
+add_library(axent_control_contract STATIC
+    src/control/control_contract.cpp
+)
+add_library(axent::control_contract ALIAS axent_control_contract)
+target_include_directories(axent_control_contract PUBLIC include)
+target_link_libraries(axent_control_contract PUBLIC nlohmann_json::nlohmann_json)
+axent_enable_warnings(axent_control_contract)
+
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
@@ -43,11 +51,25 @@ add_library(libaxent
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
 target_link_libraries(libaxent
-    PUBLIC axtp::core axtp::json_rpc axtp::runtime axtp::sdk
+    PUBLIC nlohmann_json::nlohmann_json
+    PRIVATE axtp::core axtp::json_rpc axtp::runtime axtp::sdk
 )
 if(TARGET axtp::transport_hidapi)
     target_link_libraries(libaxent PRIVATE axtp::transport_hidapi)
     target_compile_definitions(libaxent PRIVATE AXENT_HAS_AXTP_HID_TRANSPORT=1)
+
+    add_library(axent_axtp_adapter_test_support STATIC EXCLUDE_FROM_ALL
+        src/adapters/axtp_adapter_test_seam.cpp
+    )
+    add_library(axent::axtp_adapter_test_support ALIAS axent_axtp_adapter_test_support)
+    target_include_directories(axent_axtp_adapter_test_support
+        PUBLIC include
+        PRIVATE src/adapters
+    )
+    target_link_libraries(axent_axtp_adapter_test_support
+        PUBLIC axent::libaxent axtp::transport_hidapi
+    )
+    axent_enable_warnings(axent_axtp_adapter_test_support)
 endif()
 
 set(AXENT_HAS_AXTP_DIRECT_CLI OFF)
@@ -103,6 +125,22 @@ axent_enable_warnings(libaxent)
 set(AXENT_HAS_WEBSOCKET_TRANSPORT OFF)
 if(TARGET axtp::transport_websocket_ix)
     set(AXENT_HAS_WEBSOCKET_TRANSPORT ON)
+
+    add_library(axent_axtp_control_endpoint STATIC
+        src/control/axtp_control_endpoint.cpp
+    )
+    add_library(axent::axtp_control_endpoint ALIAS axent_axtp_control_endpoint)
+    target_include_directories(axent_axtp_control_endpoint PUBLIC include)
+    target_link_libraries(axent_axtp_control_endpoint
+        PUBLIC axent::control_contract
+        PRIVATE
+            axtp::core
+            axtp::json_rpc
+            axtp::runtime
+            axtp::transport_websocket_ix
+    )
+    axent_enable_warnings(axent_axtp_control_endpoint)
+
     add_library(axent_websocket_control
         src/control/websocket_server.cpp
     )
@@ -157,7 +195,7 @@ if(AXENT_BUILD_TESTING)
     add_test(NAME media_relay_test COMMAND media_relay_test)
 
     add_executable(axent_host_test tests/axent_host_test.cpp)
-    target_link_libraries(axent_host_test PRIVATE axent::libaxent)
+    target_link_libraries(axent_host_test PRIVATE axent::libaxent axent::axtp_adapter_test_support)
     axent_enable_warnings(axent_host_test)
     add_test(NAME axent_host_test COMMAND axent_host_test)
 
@@ -207,6 +245,12 @@ if(AXENT_BUILD_TESTING)
     add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
 
     if(AXENT_HAS_WEBSOCKET_TRANSPORT)
+        add_executable(axtp_control_endpoint_test tests/axtp_control_endpoint_test.cpp)
+        target_link_libraries(axtp_control_endpoint_test
+            PRIVATE axent::axtp_control_endpoint ixwebsocket::ixwebsocket)
+        axent_enable_warnings(axtp_control_endpoint_test)
+        add_test(NAME axtp_control_endpoint_test COMMAND axtp_control_endpoint_test)
+
         add_executable(websocket_server_test tests/websocket_server_test.cpp)
         target_link_libraries(websocket_server_test PRIVATE axent_websocket_control axtp::transport_websocket_ix)
         axent_enable_warnings(websocket_server_test)
@@ -228,7 +272,7 @@ if(AXENT_BUILD_TESTING)
     add_test(NAME adapter_skeleton_test COMMAND adapter_skeleton_test)
 
     add_executable(axtp_real_adapter_test tests/axtp_real_adapter_test.cpp)
-    target_link_libraries(axtp_real_adapter_test PRIVATE axent::libaxent)
+    target_link_libraries(axtp_real_adapter_test PRIVATE axent::libaxent axent::axtp_adapter_test_support)
     axent_enable_warnings(axtp_real_adapter_test)
     add_test(NAME axtp_real_adapter_test COMMAND axtp_real_adapter_test)
 endif()
