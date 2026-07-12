@@ -8,6 +8,28 @@ namespace axent {
 
 using Bytes = std::vector<std::uint8_t>;
 
+struct StreamKey {
+    // Logical Host media lease. A lease handoff changes this value without
+    // changing the physical stream generation.
+    std::string session_id;
+    std::uint32_t stream_id = 0;
+    // Monotonic for each physical stream id within one adapter lifetime.
+    // Zero is reserved for frames without descriptor lifecycle provenance.
+    std::uint64_t generation = 0;
+};
+
+inline bool operator==(const StreamKey& lhs, const StreamKey& rhs)
+{
+    return lhs.session_id == rhs.session_id &&
+        lhs.stream_id == rhs.stream_id &&
+        lhs.generation == rhs.generation;
+}
+
+inline bool operator!=(const StreamKey& lhs, const StreamKey& rhs)
+{
+    return !(lhs == rhs);
+}
+
 enum class MediaKind {
     Unknown,
     Video,
@@ -60,6 +82,14 @@ struct MediaFrame {
     std::uint64_t timestamp_us = 0;
     MediaFrameFlag flags = MediaFrameFlag::None;
     Bytes payload;
+    // Appended for source compatibility with positional aggregate users of
+    // the legacy frame façade. Zero means no lifecycle generation is bound.
+    std::uint64_t generation = 0;
 };
+
+inline StreamKey stream_key(const MediaFrame& frame)
+{
+    return {frame.session_id, frame.stream_id, frame.generation};
+}
 
 } // namespace axent

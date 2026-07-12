@@ -1,5 +1,6 @@
 #include <chrono>
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <queue>
@@ -249,6 +250,23 @@ bool wait_for_frames(const std::vector<axent::MediaFrame>& frames,
     return false;
 }
 
+bool wait_for_stream_events(const std::vector<axent::MediaStreamEvent>& events,
+                            std::mutex& events_mutex,
+                            std::size_t expected_count)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(events_mutex);
+            if (events.size() >= expected_count) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
 } // namespace
 
 int main()
@@ -405,6 +423,12 @@ int main()
 
     std::mutex frames_mutex;
     std::vector<axent::MediaFrame> frames;
+    std::mutex stream_events_mutex;
+    std::condition_variable stream_events_cv;
+    std::vector<axent::MediaStreamEvent> stream_events;
+    bool block_next_stream_event = false;
+    bool stream_event_blocked = false;
+    bool unblock_stream_event = false;
     axent::AxtpAdapterConfig media_config = axent::AxtpAdapter::na20_defaults();
     ScriptedAxtpTransport* media_scripted = nullptr;
     auto media_adapter = axent::testing::AxtpAdapterTestSeam::make(
@@ -419,6 +443,18 @@ int main()
         std::lock_guard<std::mutex> lock(frames_mutex);
         frames.push_back(std::move(frame));
     });
+    media_adapter->set_media_stream_event_callback(
+        [&](axent::MediaStreamEvent event) {
+            std::unique_lock<std::mutex> lock(stream_events_mutex);
+            stream_events.push_back(std::move(event));
+            stream_events_cv.notify_all();
+            if (block_next_stream_event) {
+                block_next_stream_event = false;
+                stream_event_blocked = true;
+                stream_events_cv.notify_all();
+                stream_events_cv.wait(lock, [&]() { return unblock_stream_event; });
+            }
+        });
 
     std::string error;
     require(media_adapter->open_session("hid:0581:2581:NA20-SERIAL", error),
@@ -428,6 +464,32 @@ int main()
     require(media_diagnostics.active_video_stream_id == 1, "video stream id should be registered from openStream");
     require(media_diagnostics.active_audio_stream_id == 2, "audio stream id should be registered from openStream");
     require(media_diagnostics.active_media_streams == 2, "active media stream count mismatch");
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 2),
+            "openStream should publish video and audio Opened events");
+
+    const auto descriptors = media_adapter->active_media_stream_descriptors();
+    require(descriptors.size() == 2, "active descriptor snapshot should contain video and audio");
+    require(descriptors[0].key.session_id.empty() &&
+                descriptors[0].key.stream_id == 1 &&
+                descriptors[0].key.generation == 1 &&
+                descriptors[0].device_id == "hid:0581:2581:NA20-SERIAL" &&
+                descriptors[0].kind == axent::MediaKind::Video &&
+                descriptors[0].codec == axent::MediaCodec::H264 &&
+                descriptors[0].source == "wireless_cast" &&
+                descriptors[0].stream_profile == "media.video" &&
+                descriptors[0].cursor_unit == "timestampUs",
+            "video open result descriptor mismatch");
+    require(descriptors[1].key.session_id.empty() &&
+                descriptors[1].key.stream_id == 2 &&
+                descriptors[1].key.generation == 1 &&
+                descriptors[1].kind == axent::MediaKind::Audio &&
+                descriptors[1].codec == axent::MediaCodec::Aac &&
+                descriptors[1].transport_format == "adts" &&
+                descriptors[1].sample_rate == 48000 &&
+                descriptors[1].channels == 2 &&
+                descriptors[1].stream_profile == "media.audio" &&
+                descriptors[1].cursor_unit == "timestampUs",
+            "audio open result descriptor mismatch");
 
     media_scripted->injectStream(1, 3, 777000, {0x00, 0x00, 0x01, 0x65});
     require(wait_for_frames(frames, frames_mutex, 1), "video stream should publish a frame");
@@ -445,6 +507,9 @@ int main()
     require(received_frame.sequence_id == 3, "sequence mismatch");
     require(received_frame.cursor == 777000, "cursor mismatch");
     require(received_frame.timestamp_us == 777000, "timestamp mismatch");
+    require(received_frame.generation == 1, "video frame generation mismatch");
+    require(received_frame.session_id.empty(),
+            "standalone adapter frames must remain unbound without a Host media lease");
     require(axent::has_flag(received_frame.flags, axent::MediaFrameFlag::EndOfFrame),
             "end-of-frame flag missing");
 
@@ -464,8 +529,86 @@ int main()
     require(received_audio_frame.sequence_id == 4, "audio sequence mismatch");
     require(received_audio_frame.cursor == 888000, "audio cursor mismatch");
     require(received_audio_frame.timestamp_us == 888000, "audio timestamp mismatch");
+    require(received_audio_frame.generation == 1, "audio frame generation mismatch");
     require(axent::has_flag(received_audio_frame.flags, axent::MediaFrameFlag::EndOfFrame),
             "audio end-of-frame flag missing");
+
+    axent::testing::AxtpAdapterTestSeam::stop_session_pump(*media_adapter);
+    axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
+        *media_adapter,
+        "hid:0581:2581:NA20-SERIAL",
+        1,
+        5,
+        999000,
+        {0x00, 0x00, 0x01, 0x41});
+    axent::testing::AxtpAdapterTestSeam::reopen_media_streams(
+        *media_adapter, "hid:0581:2581:NA20-SERIAL");
+    {
+        std::lock_guard<std::mutex> lock(stream_events_mutex);
+        block_next_stream_event = true;
+        stream_event_blocked = false;
+        unblock_stream_event = false;
+    }
+    std::thread first_drain([&]() {
+        axent::testing::AxtpAdapterTestSeam::drain_media_callbacks(*media_adapter);
+    });
+    bool first_event_blocked = false;
+    {
+        std::unique_lock<std::mutex> lock(stream_events_mutex);
+        first_event_blocked = stream_events_cv.wait_for(
+            lock, std::chrono::seconds(1), [&]() { return stream_event_blocked; });
+    }
+    axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
+        *media_adapter,
+        "hid:0581:2581:NA20-SERIAL",
+        1,
+        6,
+        1000000,
+        {0x00, 0x00, 0x01, 0x65});
+    std::atomic<bool> second_drain_finished{false};
+    std::thread second_drain([&]() {
+        axent::testing::AxtpAdapterTestSeam::drain_media_callbacks(*media_adapter);
+        second_drain_finished.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const bool second_drain_waited_for_lifecycle = !second_drain_finished.load();
+    std::size_t frames_before_opened_unblocked = 0;
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        frames_before_opened_unblocked = frames.size();
+    }
+    {
+        std::lock_guard<std::mutex> lock(stream_events_mutex);
+        unblock_stream_event = true;
+    }
+    stream_events_cv.notify_all();
+    first_drain.join();
+    second_drain.join();
+    require(first_event_blocked && second_drain_waited_for_lifecycle &&
+                frames_before_opened_unblocked == 2,
+            "concurrent media drains must not deliver a frame ahead of lifecycle events");
+
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 6),
+            "same-ID reopen should publish Closed/Open pairs for video and audio");
+    const auto reopened_descriptors = media_adapter->active_media_stream_descriptors();
+    require(reopened_descriptors.size() == 2 &&
+                reopened_descriptors[0].key.generation == 2 &&
+                reopened_descriptors[1].key.generation == 2,
+            "same-ID reopen should increment each physical generation");
+    require(!axent::testing::AxtpAdapterTestSeam::is_current_media_frame(
+                *media_adapter, received_frame),
+            "old generation frame must become stale after same-ID reopen");
+
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        require(frames.size() == 3,
+                "queued old generation must be dropped while the new generation frame is delivered");
+        require(frames.back().sequence_id == 6 && frames.back().generation == 2,
+                "reopened stream frame should carry the incremented generation");
+        require(axent::testing::AxtpAdapterTestSeam::is_current_media_frame(
+                    *media_adapter, frames.back()),
+                "new generation frame should remain current");
+    }
 
     std::mutex reentrant_frames_mutex;
     std::vector<axent::MediaFrame> reentrant_frames;

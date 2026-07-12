@@ -70,6 +70,10 @@ public:
     AxentHost& operator=(AxentHost&&) = delete;
 
     bool start(AxentHostOptions options = {});
+    // Host lifecycle mutation is not re-entrant from media sink callbacks:
+    // start returns false, acquire returns Busy, and stop/release throw
+    // std::logic_error. Media publication also returns false. Subscription
+    // cancel and call() remain supported.
     void stop();
     bool running() const;
 
@@ -84,6 +88,12 @@ public:
     MediaSubscriptionPtr subscribe_media(const std::string& session_id,
                                          std::shared_ptr<IMediaFrameSink> sink,
                                          MediaSubscriptionOptions options = {});
+    MediaStreamSubscriptionPtr subscribe_media_stream(
+        const std::string& session_id,
+        std::shared_ptr<IMediaStreamSink> sink,
+        MediaSubscriptionOptions options = {});
+    bool publish_media_stream_event(const std::string& session_id,
+                                    MediaStreamEvent event);
     bool publish_media_frame(const std::string& session_id, MediaFrame frame);
 
     ControlResult call(const std::string& session_id,
@@ -96,7 +106,10 @@ public:
     Broker& broker();
 
 private:
+    bool publish_media_stream_event_for_session(const std::string& session_id,
+                                                MediaStreamEvent event);
     bool publish_media_frame_for_device(std::string device_id, MediaFrame frame);
+    bool publish_media_stream_event_for_device(MediaStreamEvent event);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
