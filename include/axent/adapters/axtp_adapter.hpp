@@ -13,6 +13,7 @@
 
 #include "axent/core/adapter.hpp"
 #include "axent/media/media_frame.hpp"
+#include "axent/media/media_stream.hpp"
 #include "axent/transport/types.hpp"
 
 namespace axent {
@@ -41,6 +42,7 @@ class AxentHost;
 class AxtpAdapter final : public Adapter {
 public:
     using MediaFrameCallback = std::function<void(std::string device_id, MediaFrame frame)>;
+    using MediaStreamEventCallback = std::function<void(MediaStreamEvent event)>;
 
     AxtpAdapter();
     explicit AxtpAdapter(AxtpAdapterConfig config);
@@ -57,6 +59,8 @@ public:
 
     TransportDiagnostics diagnostics() const;
     void set_media_frame_callback(MediaFrameCallback callback);
+    void set_media_stream_event_callback(MediaStreamEventCallback callback);
+    std::vector<MediaStreamDescriptor> active_media_stream_descriptors() const;
     ControlStatus open_session_status(const std::string& device_id, std::string& error);
     bool open_session(const std::string& device_id, std::string& error);
 
@@ -81,10 +85,15 @@ private:
                                 bool dropped_report,
                                 const std::string& message);
     void drop_pending_media_frames_for_device(const std::string& device_id);
+    void bind_media_delivery_session(const std::string& device_id,
+                                     const std::string& session_id);
+    void unbind_media_delivery_session(const std::string& device_id,
+                                       const std::string& session_id);
     void reset_session_for_device(const std::string& device_id);
     bool media_configure_retry_due_locked(std::chrono::steady_clock::time_point now) const;
-    void configure_media_streams();
+    void configure_media_streams(const std::string& device_id);
     void clear_media_streams();
+    void enqueue_media_stream_events(std::vector<MediaStreamEvent> events);
     void handle_stream_payload(const std::string& device_id,
                                std::uint32_t stream_id,
                                std::uint32_t sequence_id,
@@ -95,22 +104,29 @@ private:
                                  std::uint32_t sequence_id,
                                  std::uint64_t cursor,
                                  std::vector<std::uint8_t> data) const;
+    bool is_current_media_frame(const MediaFrame& frame) const;
     void drain_pending_media_callbacks();
 
     AxtpAdapterConfig config_;
     struct RuntimeState;
     std::unique_ptr<RuntimeState> runtime_;
     MediaFrameCallback media_frame_callback_;
+    MediaStreamEventCallback media_stream_event_callback_;
     mutable std::mutex media_callback_mutex_;
+    std::recursive_mutex media_callback_dispatch_mutex_;
+    bool draining_media_callbacks_ = false;
     struct ActiveMediaStream {
-        MediaKind kind = MediaKind::Unknown;
-        MediaCodec codec = MediaCodec::Opaque;
-        std::string source;
+        MediaStreamDescriptor descriptor;
     };
     mutable std::mutex media_stream_mutex_;
     std::map<std::uint32_t, ActiveMediaStream> active_media_streams_;
+    std::map<std::uint32_t, std::uint64_t> media_stream_generations_;
+    std::mutex pending_media_event_mutex_;
+    std::queue<MediaStreamEvent> pending_media_stream_events_;
     std::mutex pending_media_mutex_;
     std::queue<std::pair<std::string, MediaFrame>> pending_media_frames_;
+    mutable std::mutex media_delivery_session_mutex_;
+    std::map<std::string, std::string> media_delivery_sessions_;
     mutable std::mutex mutex_;
     mutable std::mutex session_mutex_;
     mutable std::mutex client_mutex_;

@@ -26,6 +26,18 @@ public:
     static bool matches_selector(const AxtpAdapter& adapter, const axtp::HidDeviceInfo& device);
     static void record_hid_trace(AxtpAdapter& adapter, const axtp::HidReportTrace& trace);
     static void disconnect_session(AxtpAdapter& adapter);
+    static void stop_session_pump(AxtpAdapter& adapter);
+    static void enqueue_stream_payload(AxtpAdapter& adapter,
+                                       const std::string& device_id,
+                                       std::uint32_t stream_id,
+                                       std::uint32_t sequence_id,
+                                       std::uint64_t cursor,
+                                       std::vector<std::uint8_t> data);
+    static void reopen_media_streams(AxtpAdapter& adapter,
+                                     const std::string& device_id);
+    static void drain_media_callbacks(AxtpAdapter& adapter);
+    static bool is_current_media_frame(const AxtpAdapter& adapter,
+                                       const MediaFrame& frame);
 };
 
 } // namespace axent::testing

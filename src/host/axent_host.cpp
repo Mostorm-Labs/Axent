@@ -1,5 +1,6 @@
 #include "axent/host/axent_host.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -22,6 +23,25 @@
 namespace axent {
 
 namespace {
+
+thread_local bool g_in_media_stream_sink_callback = false;
+
+class MediaStreamSinkCallbackMarker final {
+public:
+    MediaStreamSinkCallbackMarker()
+        : previous_(g_in_media_stream_sink_callback)
+    {
+        g_in_media_stream_sink_callback = true;
+    }
+
+    ~MediaStreamSinkCallbackMarker()
+    {
+        g_in_media_stream_sink_callback = previous_;
+    }
+
+private:
+    bool previous_ = false;
+};
 
 class MediaSubscriptionState final : public MediaSubscription {
 public:
@@ -131,9 +151,17 @@ private:
         {
             std::thread worker;
             std::shared_ptr<IMediaFrameSink> sink;
+            bool self_cancel = false;
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::unique_lock<std::mutex> lock(mutex_);
                 if (closed_) {
+                    if (callback_depths_.find(std::this_thread::get_id()) !=
+                        callback_depths_.end()) {
+                        return;
+                    }
+                    callback_cv_.wait(lock, [this]() {
+                        return cancel_complete_ && callbacks_in_flight_ == 0;
+                    });
                     return;
                 }
                 closed_ = true;
@@ -143,6 +171,8 @@ private:
                 refresh_stats_locked();
                 worker = std::move(worker_);
                 sink = sink_;
+                self_cancel = callback_depths_.find(std::this_thread::get_id()) !=
+                    callback_depths_.end();
             }
             cv_.notify_all();
             if (worker.joinable() && worker.get_id() != std::this_thread::get_id()) {
@@ -150,9 +180,20 @@ private:
             } else if (worker.joinable()) {
                 worker.detach();
             }
-            if (sink) {
-                sink->on_media_event(MediaEvent{MediaEventKind::Closed, 0, 0});
+            if (!self_cancel) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                callback_cv_.wait(lock, [this]() {
+                    return callbacks_in_flight_ == 0;
+                });
             }
+            if (sink) {
+                dispatch_event(sink, MediaEvent{MediaEventKind::Closed, 0, 0});
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cancel_complete_ = true;
+            }
+            callback_cv_.notify_all();
         }
 
         MediaDeliveryStats stats() const
@@ -181,13 +222,68 @@ private:
                 }
                 ++stats_.received_frames;
                 sink = sink_;
+                if (sink) {
+                    begin_callback_locked();
+                }
             }
 
             if (sink) {
-                sink->on_media_frame(std::move(frame));
+                dispatch_frame(sink, std::move(frame), true);
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++stats_.delivered_frames;
             }
+        }
+
+        void begin_callback_locked()
+        {
+            ++callbacks_in_flight_;
+            ++callback_depths_[std::this_thread::get_id()];
+        }
+
+        void begin_callback()
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            begin_callback_locked();
+        }
+
+        void end_callback()
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                --callbacks_in_flight_;
+                const auto callback = callback_depths_.find(std::this_thread::get_id());
+                if (callback != callback_depths_.end() && --callback->second == 0) {
+                    callback_depths_.erase(callback);
+                }
+            }
+            callback_cv_.notify_all();
+        }
+
+        void dispatch_frame(const std::shared_ptr<IMediaFrameSink>& sink,
+                            MediaFrame frame,
+                            bool callback_reserved = false)
+        {
+            if (!callback_reserved) {
+                begin_callback();
+            }
+            MediaStreamSinkCallbackMarker callback_marker;
+            try {
+                sink->on_media_frame(std::move(frame));
+            } catch (...) {
+            }
+            end_callback();
+        }
+
+        void dispatch_event(const std::shared_ptr<IMediaFrameSink>& sink,
+                            MediaEvent event)
+        {
+            begin_callback();
+            MediaStreamSinkCallbackMarker callback_marker;
+            try {
+                sink->on_media_event(event);
+            } catch (...) {
+            }
+            end_callback();
         }
 
         bool over_limit_locked() const
@@ -243,12 +339,12 @@ private:
                 }
 
                 if (has_event && sink_) {
-                    sink_->on_media_event(event);
+                    dispatch_event(sink_, event);
                     continue;
                 }
 
                 if (has_frame && sink_) {
-                    sink_->on_media_frame(std::move(frame));
+                    dispatch_frame(sink_, std::move(frame));
                 }
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
@@ -263,11 +359,744 @@ private:
         MediaSubscriptionOptions options_;
         mutable std::mutex mutex_;
         std::condition_variable cv_;
+        std::condition_variable callback_cv_;
         std::deque<MediaFrame> queue_;
         std::deque<MediaEvent> events_;
         std::size_t queued_bytes_ = 0;
         MediaDeliveryStats stats_;
         bool closed_ = false;
+        bool cancel_complete_ = false;
+        std::size_t callbacks_in_flight_ = 0;
+        std::map<std::thread::id, std::size_t> callback_depths_;
+        std::thread worker_;
+    };
+
+    std::shared_ptr<Core> core_;
+};
+
+class MediaStreamSubscriptionState final : public MediaStreamSubscription {
+public:
+    MediaStreamSubscriptionState(std::shared_ptr<IMediaStreamSink> sink,
+                                 MediaSubscriptionOptions options)
+        : core_(std::make_shared<Core>(std::move(sink), options))
+    {
+    }
+
+    ~MediaStreamSubscriptionState() override
+    {
+        cancel();
+    }
+
+    MediaStreamSubscriptionState(const MediaStreamSubscriptionState&) = delete;
+    MediaStreamSubscriptionState& operator=(const MediaStreamSubscriptionState&) = delete;
+
+    void prime_opened(const std::vector<MediaStreamDescriptor>& descriptors)
+    {
+        for (const auto& descriptor : descriptors) {
+            core_->prime_stream_event({MediaStreamEventKind::Opened, descriptor});
+        }
+    }
+
+    void activate()
+    {
+        core_->activate();
+    }
+
+    void publish_stream_event(MediaStreamEvent event)
+    {
+        core_->publish_stream_event(std::move(event));
+    }
+
+    void publish_frame(MediaFrame frame)
+    {
+        core_->publish_frame(std::move(frame));
+    }
+
+    void close_streams_and_cancel()
+    {
+        core_->cancel(true);
+    }
+
+    void cancel() override
+    {
+        core_->cancel(false);
+    }
+
+    MediaDeliveryStats stats() const override
+    {
+        return core_->stats();
+    }
+
+    bool active() const
+    {
+        return core_->active();
+    }
+
+private:
+    class Core final : public std::enable_shared_from_this<Core> {
+    public:
+        Core(std::shared_ptr<IMediaStreamSink> sink, MediaSubscriptionOptions options)
+            : sink_(std::move(sink))
+            , options_(options)
+        {
+        }
+
+        ~Core()
+        {
+            if (worker_.joinable()) {
+                worker_.detach();
+            }
+        }
+
+        Core(const Core&) = delete;
+        Core& operator=(const Core&) = delete;
+
+        void activate()
+        {
+            bool drain_direct = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (activated_) {
+                    return;
+                }
+                activated_ = true;
+                if (options_.dispatch == MediaSubscriptionDispatch::AsyncQueued) {
+                    start_worker_locked();
+                } else {
+                    drain_direct = true;
+                }
+            }
+            cv_.notify_all();
+            terminal_cv_.notify_all();
+            if (drain_direct) {
+                drain_direct_queue();
+            }
+        }
+
+        void prime_stream_event(MediaStreamEvent event)
+        {
+            publish_stream_event_impl(std::move(event), true);
+        }
+
+        void publish_stream_event(MediaStreamEvent event)
+        {
+            publish_stream_event_impl(std::move(event), false);
+        }
+
+        void publish_stream_event_impl(MediaStreamEvent event, bool priming)
+        {
+            bool drain_direct = false;
+            bool direct_owned = false;
+            std::shared_ptr<DirectCompletion> direct_completion;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!accepting_ || event.descriptor.key.generation == 0) {
+                    return;
+                }
+
+                const auto stream_id = event.descriptor.key.stream_id;
+                const auto active = active_streams_.find(stream_id);
+                std::vector<Item> new_items;
+                if (event.kind == MediaStreamEventKind::Opened) {
+                    if (active != active_streams_.end() &&
+                        active->second.key == event.descriptor.key) {
+                        return;
+                    }
+                    if (active != active_streams_.end()) {
+                        new_items.push_back(Item::stream_event(
+                            {MediaStreamEventKind::Closed, active->second}));
+                    }
+                    active_streams_[stream_id] = event.descriptor;
+                    new_items.push_back(Item::stream_event(std::move(event)));
+                } else {
+                    if (active == active_streams_.end() ||
+                        active->second.key != event.descriptor.key) {
+                        return;
+                    }
+                    new_items.push_back(Item::stream_event(std::move(event)));
+                    active_streams_.erase(active);
+                }
+                direct_owned = !priming &&
+                    options_.dispatch == MediaSubscriptionDispatch::Direct;
+                const bool reentrant_direct = direct_owned && delivering_ &&
+                    delivery_thread_ == std::this_thread::get_id();
+                drain_direct = direct_owned && !reentrant_direct;
+                if (direct_owned && !reentrant_direct) {
+                    for (auto& item : new_items) {
+                        item.direct_owner = std::this_thread::get_id();
+                    }
+                }
+                if (drain_direct) {
+                    direct_completion = std::make_shared<DirectCompletion>();
+                    new_items.back().direct_completion = direct_completion;
+                }
+                for (auto& item : new_items) {
+                    items_.push_back(std::move(item));
+                }
+            }
+            cv_.notify_one();
+            if (drain_direct) {
+                drain_direct_queue(std::move(direct_completion));
+            }
+        }
+
+        void publish_frame(MediaFrame frame)
+        {
+            bool drain_direct = false;
+            bool direct_owned = false;
+            std::shared_ptr<DirectCompletion> direct_completion;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!accepting_ || frame.generation == 0) {
+                    return;
+                }
+                const auto active = active_streams_.find(frame.stream_id);
+                if (active == active_streams_.end() ||
+                    active->second.key != stream_key(frame)) {
+                    return;
+                }
+
+                queued_bytes_ += frame.payload.size();
+                ++queued_frames_;
+                ++stats_.received_frames;
+                auto item = Item::frame(std::move(frame));
+
+                direct_owned =
+                    options_.dispatch == MediaSubscriptionDispatch::Direct;
+                const bool reentrant_direct = direct_owned && delivering_ &&
+                    delivery_thread_ == std::this_thread::get_id();
+                drain_direct = direct_owned && !reentrant_direct;
+                if (direct_owned && !reentrant_direct) {
+                    item.direct_owner = std::this_thread::get_id();
+                }
+                if (drain_direct) {
+                    direct_completion = std::make_shared<DirectCompletion>();
+                    item.direct_completion = direct_completion;
+                }
+                items_.push_back(std::move(item));
+
+                if (options_.dispatch == MediaSubscriptionDispatch::AsyncQueued) {
+                    bool dropped = false;
+                    while (over_limit_locked() && queued_frames_ != 0) {
+                        drop_oldest_frame_locked();
+                        dropped = true;
+                    }
+                    if (dropped) {
+                        mark_next_frame_discontinuous_locked();
+                        enqueue_drop_event_locked();
+                    }
+                }
+                refresh_stats_locked();
+            }
+            cv_.notify_one();
+            if (drain_direct) {
+                drain_direct_queue(std::move(direct_completion));
+            }
+        }
+
+        void cancel(bool close_streams)
+        {
+            std::thread worker;
+            bool drain_direct = false;
+            bool self_cancel = false;
+            std::shared_ptr<DirectCompletion> direct_completion;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                if (terminal_delivered_) {
+                    if (delivering_ &&
+                        delivery_thread_ != std::this_thread::get_id()) {
+                        terminal_cv_.wait(lock, [this]() { return !delivering_; });
+                    }
+                    return;
+                }
+                if (terminal_enqueued_) {
+                    if (delivery_thread_ == std::this_thread::get_id()) {
+                        return;
+                    }
+                    terminal_cv_.wait(lock, [this]() { return terminal_delivered_; });
+                    return;
+                }
+
+                direct_completion = prepare_terminal_locked(close_streams);
+                if (!activated_) {
+                    activated_ = true;
+                }
+                self_cancel = delivering_ &&
+                    delivery_thread_ == std::this_thread::get_id();
+                if (self_cancel) {
+                    // A sink may cancel or release its own subscription from a
+                    // callback. Do not nest lifecycle callbacks or leave work
+                    // for after that callback returns.
+                    items_.clear();
+                    queued_frames_ = 0;
+                    queued_bytes_ = 0;
+                    refresh_stats_locked();
+                    terminal_delivered_ = true;
+                    if (worker_.joinable() &&
+                        worker_.get_id() == std::this_thread::get_id()) {
+                        worker_.detach();
+                    }
+                } else if (options_.dispatch == MediaSubscriptionDispatch::AsyncQueued) {
+                    start_worker_locked();
+                    if (worker_.joinable()) {
+                        worker = std::move(worker_);
+                    }
+                } else {
+                    drain_direct = true;
+                }
+            }
+            cv_.notify_all();
+
+            if (self_cancel) {
+                terminal_cv_.notify_all();
+                return;
+            }
+            if (worker.joinable()) {
+                worker.join();
+                return;
+            }
+            if (drain_direct) {
+                drain_direct_queue(std::move(direct_completion));
+            }
+        }
+
+        MediaDeliveryStats stats() const
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto snapshot = stats_;
+            snapshot.queued_frames = queued_frames_;
+            snapshot.queued_bytes = queued_bytes_;
+            return snapshot;
+        }
+
+        bool active() const
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return accepting_ && !terminal_enqueued_;
+        }
+
+    private:
+        enum class ItemKind {
+            StreamEvent,
+            Frame,
+            DeliveryEvent,
+        };
+
+        struct DirectCompletion {
+            bool completed = false;
+        };
+
+        struct Item {
+            static Item stream_event(MediaStreamEvent value)
+            {
+                Item item;
+                item.kind = ItemKind::StreamEvent;
+                item.stream = std::move(value);
+                return item;
+            }
+
+            static Item frame(MediaFrame value)
+            {
+                Item item;
+                item.kind = ItemKind::Frame;
+                item.media_frame = std::move(value);
+                return item;
+            }
+
+            static Item delivery_event(MediaDeliveryEvent value)
+            {
+                Item item;
+                item.kind = ItemKind::DeliveryEvent;
+                item.delivery = value;
+                return item;
+            }
+
+            ItemKind kind = ItemKind::StreamEvent;
+            MediaStreamEvent stream;
+            MediaFrame media_frame;
+            MediaDeliveryEvent delivery;
+            std::thread::id direct_owner;
+            std::shared_ptr<DirectCompletion> direct_completion;
+        };
+
+        void start_worker_locked()
+        {
+            if (worker_.joinable()) {
+                return;
+            }
+            auto self = shared_from_this();
+            worker_ = std::thread([self]() { self->run(); });
+        }
+
+        bool over_limit_locked() const
+        {
+            const bool frame_limited = options_.max_frames != 0 &&
+                queued_frames_ > options_.max_frames;
+            const bool byte_limited = options_.max_bytes != 0 &&
+                queued_bytes_ > options_.max_bytes;
+            return frame_limited || byte_limited;
+        }
+
+        void drop_oldest_frame_locked()
+        {
+            for (auto item = items_.begin(); item != items_.end(); ++item) {
+                if (item->kind != ItemKind::Frame) {
+                    continue;
+                }
+                const auto bytes = item->media_frame.payload.size();
+                queued_bytes_ -= bytes;
+                --queued_frames_;
+                ++stats_.dropped_frames;
+                stats_.dropped_bytes += bytes;
+                items_.erase(item);
+                return;
+            }
+        }
+
+        void mark_next_frame_discontinuous_locked()
+        {
+            for (auto& item : items_) {
+                if (item.kind == ItemKind::Frame) {
+                    item.media_frame.flags |= MediaFrameFlag::Discontinuity;
+                    return;
+                }
+            }
+        }
+
+        void enqueue_drop_event_locked()
+        {
+            const MediaDeliveryEvent event{
+                MediaDeliveryEventKind::DeliveryDropped,
+                stats_.dropped_frames,
+                stats_.dropped_bytes,
+            };
+            for (auto item = items_.rbegin(); item != items_.rend(); ++item) {
+                if (item->kind == ItemKind::StreamEvent) {
+                    break;
+                }
+                if (item->kind == ItemKind::DeliveryEvent &&
+                    item->delivery.kind == MediaDeliveryEventKind::DeliveryDropped) {
+                    item->delivery = event;
+                    return;
+                }
+            }
+            const auto next_frame = std::find_if(
+                items_.begin(), items_.end(), [](const Item& item) {
+                    return item.kind == ItemKind::Frame;
+                });
+            items_.insert(next_frame, Item::delivery_event(event));
+        }
+
+        void refresh_stats_locked()
+        {
+            stats_.queued_frames = queued_frames_;
+            stats_.queued_bytes = queued_bytes_;
+        }
+
+        void clear_pending_locked()
+        {
+            items_.clear();
+            queued_frames_ = 0;
+            queued_bytes_ = 0;
+            refresh_stats_locked();
+        }
+
+        std::shared_ptr<DirectCompletion> prepare_terminal_locked(bool close_streams)
+        {
+            accepting_ = false;
+            clear_pending_locked();
+            if (close_streams) {
+                for (const auto& entry : active_streams_) {
+                    const auto delivered = delivered_streams_.find(entry.first);
+                    if (delivered != delivered_streams_.end()) {
+                        items_.push_back(Item::stream_event(
+                            {MediaStreamEventKind::Closed, delivered->second}));
+                    }
+                    if (delivered == delivered_streams_.end() ||
+                        delivered->second.key != entry.second.key) {
+                        items_.push_back(Item::stream_event(
+                            {MediaStreamEventKind::Opened, entry.second}));
+                        items_.push_back(Item::stream_event(
+                            {MediaStreamEventKind::Closed, entry.second}));
+                    }
+                }
+                for (const auto& delivered : delivered_streams_) {
+                    if (active_streams_.find(delivered.first) != active_streams_.end()) {
+                        continue;
+                    }
+                    items_.push_back(Item::stream_event(
+                        {MediaStreamEventKind::Closed, delivered.second}));
+                }
+            }
+            active_streams_.clear();
+            items_.push_back(Item::delivery_event(
+                {MediaDeliveryEventKind::SubscriptionClosed, 0, 0}));
+            terminal_enqueued_ = true;
+            if (activated_ && options_.dispatch == MediaSubscriptionDispatch::Direct) {
+                auto completion = std::make_shared<DirectCompletion>();
+                for (auto& item : items_) {
+                    item.direct_owner = std::this_thread::get_id();
+                }
+                items_.back().direct_completion = completion;
+                return completion;
+            }
+            return {};
+        }
+
+        void update_delivered_lifecycle_locked(const Item& item)
+        {
+            if (item.kind != ItemKind::StreamEvent) {
+                return;
+            }
+            const auto stream_id = item.stream.descriptor.key.stream_id;
+            if (item.stream.kind == MediaStreamEventKind::Opened) {
+                delivered_streams_[stream_id] = item.stream.descriptor;
+                return;
+            }
+            const auto delivered = delivered_streams_.find(stream_id);
+            if (delivered != delivered_streams_.end() &&
+                delivered->second.key == item.stream.descriptor.key) {
+                delivered_streams_.erase(delivered);
+            }
+        }
+
+        bool take_next_item_locked(Item& item)
+        {
+            if (items_.empty()) {
+                return false;
+            }
+            item = std::move(items_.front());
+            items_.pop_front();
+            if (item.kind == ItemKind::Frame) {
+                queued_bytes_ -= item.media_frame.payload.size();
+                --queued_frames_;
+                refresh_stats_locked();
+            }
+            update_delivered_lifecycle_locked(item);
+            return true;
+        }
+
+        void dispatch_item(Item& item)
+        {
+            if (!sink_) {
+                return;
+            }
+            MediaStreamSinkCallbackMarker callback_marker;
+            try {
+                switch (item.kind) {
+                case ItemKind::StreamEvent:
+                    sink_->on_media_stream_event(std::move(item.stream));
+                    break;
+                case ItemKind::Frame:
+                    sink_->on_media_stream_frame(std::move(item.media_frame));
+                    break;
+                case ItemKind::DeliveryEvent:
+                    sink_->on_media_delivery_event(item.delivery);
+                    break;
+                }
+            } catch (...) {
+                // A sink exception must not strand the delivery owner or kill
+                // the async worker. The callback is treated as consumed.
+            }
+        }
+
+        void finish_item_locked(const Item& item)
+        {
+            if (item.kind == ItemKind::Frame) {
+                ++stats_.delivered_frames;
+            }
+            if (item.kind == ItemKind::DeliveryEvent &&
+                item.delivery.kind == MediaDeliveryEventKind::SubscriptionClosed) {
+                terminal_delivered_ = true;
+            }
+            if (item.direct_completion) {
+                item.direct_completion->completed = true;
+            }
+            terminal_cv_.notify_all();
+        }
+
+        void drain_direct_queue(std::shared_ptr<DirectCompletion> target = {})
+        {
+            bool owns_delivery = false;
+            const auto current_thread = std::this_thread::get_id();
+            for (;;) {
+                Item item;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    auto release_delivery = [this, &owns_delivery]() {
+                        if (owns_delivery) {
+                            delivering_ = false;
+                            delivery_thread_ = {};
+                            owns_delivery = false;
+                            terminal_cv_.notify_all();
+                        }
+                    };
+
+                    for (;;) {
+                        if (terminal_delivered_) {
+                            release_delivery();
+                            return;
+                        }
+                        if (target && target->completed) {
+                            const bool has_deferred_current_item =
+                                owns_delivery && !items_.empty() &&
+                                (items_.front().direct_owner == std::thread::id{} ||
+                                 items_.front().direct_owner == current_thread);
+                            if (has_deferred_current_item) {
+                                target.reset();
+                            } else {
+                                release_delivery();
+                                return;
+                            }
+                        }
+                        if (!activated_) {
+                            if (!target) {
+                                return;
+                            }
+                            terminal_cv_.wait(lock, [this, &target]() {
+                                return activated_ || terminal_delivered_ ||
+                                    (target && target->completed);
+                            });
+                            continue;
+                        }
+
+                        if (delivering_ && delivery_thread_ != current_thread) {
+                            terminal_cv_.wait(lock, [this, &target, current_thread]() {
+                                return !delivering_ ||
+                                    delivery_thread_ == current_thread ||
+                                    terminal_delivered_ ||
+                                    (target && target->completed);
+                            });
+                            continue;
+                        }
+
+                        const bool nested_invocation =
+                            delivering_ && delivery_thread_ == current_thread &&
+                            !owns_delivery;
+                        if (nested_invocation) {
+                            return;
+                        }
+                        const bool front_is_eligible = !items_.empty() &&
+                            (items_.front().direct_owner == std::thread::id{} ||
+                             items_.front().direct_owner == current_thread);
+                        if (!front_is_eligible) {
+                            release_delivery();
+                            if (!target) {
+                                return;
+                            }
+                            terminal_cv_.wait(lock, [this, &target, current_thread]() {
+                                if (terminal_delivered_ ||
+                                    (target && target->completed)) {
+                                    return true;
+                                }
+                                if (!activated_ || delivering_ || items_.empty()) {
+                                    return false;
+                                }
+                                return items_.front().direct_owner == std::thread::id{} ||
+                                    items_.front().direct_owner == current_thread;
+                            });
+                            continue;
+                        }
+
+                        if (!delivering_) {
+                            delivering_ = true;
+                            delivery_thread_ = current_thread;
+                            owns_delivery = true;
+                        }
+                        item = std::move(items_.front());
+                        items_.pop_front();
+                        if (item.kind == ItemKind::Frame) {
+                            queued_bytes_ -= item.media_frame.payload.size();
+                            --queued_frames_;
+                            refresh_stats_locked();
+                        }
+                        update_delivered_lifecycle_locked(item);
+                        break;
+                    }
+                }
+                dispatch_item(item);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    finish_item_locked(item);
+                    if (terminal_delivered_) {
+                        if (owns_delivery) {
+                            delivering_ = false;
+                            delivery_thread_ = {};
+                            owns_delivery = false;
+                            terminal_cv_.notify_all();
+                        }
+                        return;
+                    }
+                    if (target && target->completed) {
+                        const bool has_deferred_current_item =
+                            owns_delivery && !items_.empty() &&
+                            (items_.front().direct_owner == std::thread::id{} ||
+                             items_.front().direct_owner == current_thread);
+                        if (has_deferred_current_item) {
+                            target.reset();
+                        } else {
+                            if (owns_delivery) {
+                                delivering_ = false;
+                                delivery_thread_ = {};
+                                owns_delivery = false;
+                                terminal_cv_.notify_all();
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        void run()
+        {
+            for (;;) {
+                Item item;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [this]() {
+                        return terminal_delivered_ || (activated_ && !items_.empty());
+                    });
+                    if (terminal_delivered_) {
+                        return;
+                    }
+                    if (!take_next_item_locked(item)) {
+                        continue;
+                    }
+                    delivering_ = true;
+                    delivery_thread_ = std::this_thread::get_id();
+                }
+                dispatch_item(item);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    delivering_ = false;
+                    delivery_thread_ = {};
+                    finish_item_locked(item);
+                    terminal_cv_.notify_all();
+                    if (terminal_delivered_) {
+                        return;
+                    }
+                }
+            }
+        }
+
+        std::shared_ptr<IMediaStreamSink> sink_;
+        MediaSubscriptionOptions options_;
+        mutable std::mutex mutex_;
+        std::condition_variable cv_;
+        std::condition_variable terminal_cv_;
+        std::deque<Item> items_;
+        std::map<std::uint32_t, MediaStreamDescriptor> active_streams_;
+        std::map<std::uint32_t, MediaStreamDescriptor> delivered_streams_;
+        std::size_t queued_frames_ = 0;
+        std::size_t queued_bytes_ = 0;
+        MediaDeliveryStats stats_;
+        bool accepting_ = true;
+        bool activated_ = false;
+        bool delivering_ = false;
+        bool terminal_enqueued_ = false;
+        bool terminal_delivered_ = false;
+        std::thread::id delivery_thread_;
         std::thread worker_;
     };
 
@@ -277,11 +1106,20 @@ private:
 } // namespace
 
 struct AxentHost::Impl {
-    std::vector<std::shared_ptr<MediaSubscriptionState>> reset();
+    struct ResetSubscriptions {
+        std::vector<std::shared_ptr<MediaSubscriptionState>> legacy;
+        std::vector<std::shared_ptr<MediaStreamSubscriptionState>> streams;
+    };
+
+    ResetSubscriptions reset();
     std::optional<SessionLease> lease_for_session_locked(const std::string& session_id) const;
     std::vector<std::shared_ptr<MediaSubscriptionState>> take_session_subscriptions_locked(
         const std::string& session_id);
     std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_for_session_locked(const std::string& session_id);
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> take_session_stream_subscriptions_locked(
+        const std::string& session_id);
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions_for_session_locked(
+        const std::string& session_id);
     bool is_axtp_device_locked(const std::string& device_id) const;
     std::optional<std::string> other_axtp_lease_device_locked(const std::string& device_id) const;
     bool has_lease_for_device_locked(const std::string& device_id) const;
@@ -301,21 +1139,32 @@ struct AxentHost::Impl {
     std::map<std::string, SessionLease> leases;
     std::map<std::string, std::shared_ptr<MediaStreamRelay>> relays;
     std::map<std::string, std::vector<std::weak_ptr<MediaSubscriptionState>>> subscriptions;
+    std::map<std::string, std::vector<std::weak_ptr<MediaStreamSubscriptionState>>> stream_subscriptions;
+    std::map<std::string, std::map<std::uint32_t, MediaStreamDescriptor>> active_media_streams;
     std::map<std::string, std::string> media_owner_session_by_device;
     std::mutex dispatch_mutex;
 };
 
-std::vector<std::shared_ptr<MediaSubscriptionState>> AxentHost::Impl::reset()
+AxentHost::Impl::ResetSubscriptions AxentHost::Impl::reset()
 {
-    std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_to_close;
+    ResetSubscriptions subscriptions_to_close;
     for (auto& entry : subscriptions) {
         for (auto& weak_subscription : entry.second) {
             if (auto subscription = weak_subscription.lock()) {
-                subscriptions_to_close.push_back(std::move(subscription));
+                subscriptions_to_close.legacy.push_back(std::move(subscription));
             }
         }
     }
     subscriptions.clear();
+    for (auto& entry : stream_subscriptions) {
+        for (auto& weak_subscription : entry.second) {
+            if (auto subscription = weak_subscription.lock()) {
+                subscriptions_to_close.streams.push_back(std::move(subscription));
+            }
+        }
+    }
+    stream_subscriptions.clear();
+    active_media_streams.clear();
     for (auto& entry : relays) {
         if (entry.second) {
             entry.second->close();
@@ -373,6 +1222,45 @@ std::vector<std::shared_ptr<MediaSubscriptionState>> AxentHost::Impl::subscripti
     std::vector<std::shared_ptr<MediaSubscriptionState>> result;
     const auto it = subscriptions.find(session_id);
     if (it == subscriptions.end()) {
+        return result;
+    }
+    auto& session_subscriptions = it->second;
+    for (auto weak_subscription = session_subscriptions.begin();
+         weak_subscription != session_subscriptions.end();) {
+        if (auto subscription = weak_subscription->lock()) {
+            if (subscription->active()) {
+                result.push_back(subscription);
+            }
+            ++weak_subscription;
+        } else {
+            weak_subscription = session_subscriptions.erase(weak_subscription);
+        }
+    }
+    return result;
+}
+
+std::vector<std::shared_ptr<MediaStreamSubscriptionState>>
+AxentHost::Impl::take_session_stream_subscriptions_locked(const std::string& session_id)
+{
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> subscriptions_to_close;
+    const auto it = stream_subscriptions.find(session_id);
+    if (it != stream_subscriptions.end()) {
+        for (auto& weak_subscription : it->second) {
+            if (auto subscription = weak_subscription.lock()) {
+                subscriptions_to_close.push_back(std::move(subscription));
+            }
+        }
+        stream_subscriptions.erase(it);
+    }
+    return subscriptions_to_close;
+}
+
+std::vector<std::shared_ptr<MediaStreamSubscriptionState>>
+AxentHost::Impl::stream_subscriptions_for_session_locked(const std::string& session_id)
+{
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> result;
+    const auto it = stream_subscriptions.find(session_id);
+    if (it == stream_subscriptions.end()) {
         return result;
     }
     auto& session_subscriptions = it->second;
@@ -448,19 +1336,26 @@ AxentHost::~AxentHost()
 
 bool AxentHost::start(AxentHostOptions options)
 {
+    if (g_in_media_stream_sink_callback) {
+        return false;
+    }
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
     std::unique_ptr<Adapter> previous_axtp_adapter;
-    std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_to_close;
+    Impl::ResetSubscriptions subscriptions_to_close;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         previous_axtp_adapter = std::move(impl_->axtp_adapter);
         subscriptions_to_close = impl_->reset();
     }
-    for (auto& subscription : subscriptions_to_close) {
+    for (auto& subscription : subscriptions_to_close.legacy) {
         subscription->cancel();
+    }
+    for (auto& subscription : subscriptions_to_close.streams) {
+        subscription->close_streams_and_cancel();
     }
     if (auto* axtp_adapter = dynamic_cast<AxtpAdapter*>(previous_axtp_adapter.get())) {
         axtp_adapter->set_media_frame_callback({});
+        axtp_adapter->set_media_stream_event_callback({});
     }
     previous_axtp_adapter.reset();
 
@@ -491,6 +1386,10 @@ bool AxentHost::start(AxentHostOptions options)
                 [this](std::string device_id, MediaFrame frame) {
                     this->publish_media_frame_for_device(std::move(device_id), std::move(frame));
                 });
+            axtp_adapter->set_media_stream_event_callback(
+                [this](MediaStreamEvent event) {
+                    this->publish_media_stream_event_for_device(std::move(event));
+                });
         }
         for (const auto& device : impl_->axtp_adapter->discover()) {
             impl_->devices->upsert(device);
@@ -504,9 +1403,13 @@ bool AxentHost::start(AxentHostOptions options)
 
 void AxentHost::stop()
 {
+    if (g_in_media_stream_sink_callback) {
+        throw std::logic_error(
+            "AxentHost::stop cannot run synchronously from a media stream callback");
+    }
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
     std::unique_ptr<Adapter> axtp_adapter;
-    std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_to_close;
+    Impl::ResetSubscriptions subscriptions_to_close;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->running && !impl_->broker) {
@@ -515,11 +1418,15 @@ void AxentHost::stop()
         axtp_adapter = std::move(impl_->axtp_adapter);
         subscriptions_to_close = impl_->reset();
     }
-    for (auto& subscription : subscriptions_to_close) {
+    for (auto& subscription : subscriptions_to_close.legacy) {
         subscription->cancel();
+    }
+    for (auto& subscription : subscriptions_to_close.streams) {
+        subscription->close_streams_and_cancel();
     }
     if (auto* adapter = dynamic_cast<AxtpAdapter*>(axtp_adapter.get())) {
         adapter->set_media_frame_callback({});
+        adapter->set_media_stream_event_callback({});
     }
 }
 
@@ -554,6 +1461,15 @@ void AxentHost::upsert_device(DeviceSnapshot snapshot)
 
 SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
 {
+    if (g_in_media_stream_sink_callback) {
+        return {false,
+                "",
+                request.device_id,
+                request.client_id,
+                request.media,
+                "host lifecycle unavailable during media stream callback",
+                ControlStatus::Busy};
+    }
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
     AxtpAdapter* media_adapter = nullptr;
     {
@@ -599,45 +1515,59 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
         }
     }
 
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    const auto device = impl_->devices->get(request.device_id);
-    if (!device.has_value()) {
-        return {false, "", request.device_id, request.client_id, false, "device not found",
-                ControlStatus::NotFound};
-    }
-    if (request.media
-        && impl_->media_owner_session_by_device.find(request.device_id)
-               != impl_->media_owner_session_by_device.end()) {
-        return {false, "", request.device_id, request.client_id, false, "media lease busy",
-                ControlStatus::Busy};
-    }
-    if (device->adapter == "axtp") {
-        const auto other_device = impl_->other_axtp_lease_device_locked(request.device_id);
-        if (other_device.has_value()) {
-            return {false,
-                    "",
-                    request.device_id,
-                    request.client_id,
-                    request.media,
-                    "AXTP session busy for active device " + *other_device,
+    SessionLease lease;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto device = impl_->devices->get(request.device_id);
+        if (!device.has_value()) {
+            return {false, "", request.device_id, request.client_id, false, "device not found",
+                    ControlStatus::NotFound};
+        }
+        if (request.media
+            && impl_->media_owner_session_by_device.find(request.device_id)
+                   != impl_->media_owner_session_by_device.end()) {
+            return {false, "", request.device_id, request.client_id, false, "media lease busy",
                     ControlStatus::Busy};
         }
+        if (device->adapter == "axtp") {
+            const auto other_device = impl_->other_axtp_lease_device_locked(request.device_id);
+            if (other_device.has_value()) {
+                return {false,
+                        "",
+                        request.device_id,
+                        request.client_id,
+                        request.media,
+                        "AXTP session busy for active device " + *other_device,
+                        ControlStatus::Busy};
+            }
+        }
+        const std::string session_id =
+            impl_->sessions.device().open(request.device_id, device->adapter);
+        lease = {true, session_id, request.device_id, request.client_id, request.media, ""};
+        impl_->leases[session_id] = lease;
+        if (request.media) {
+            impl_->media_owner_session_by_device[request.device_id] = session_id;
+        }
     }
-    const std::string session_id = impl_->sessions.device().open(request.device_id, device->adapter);
-    SessionLease lease{true, session_id, request.device_id, request.client_id, request.media, ""};
-    impl_->leases[session_id] = lease;
-    if (request.media) {
-        impl_->media_owner_session_by_device[request.device_id] = session_id;
+    if (media_adapter != nullptr) {
+        media_adapter->bind_media_delivery_session(lease.device_id, lease.session_id);
     }
     return lease;
 }
 
 void AxentHost::release_session(const std::string& session_id, const std::string&)
 {
+    if (g_in_media_stream_sink_callback) {
+        throw std::logic_error(
+            "AxentHost::release_session cannot run synchronously from a media stream callback");
+    }
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
     std::string reset_device_id;
     AxtpAdapter* reset_adapter = nullptr;
+    AxtpAdapter* media_adapter_to_unbind = nullptr;
+    std::string media_device_id;
     std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_to_close;
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions_to_close;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         const auto lease = impl_->lease_for_session_locked(session_id);
@@ -646,6 +1576,11 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             if (owner != impl_->media_owner_session_by_device.end() && owner->second == session_id) {
                 impl_->media_owner_session_by_device.erase(owner);
             }
+            if (impl_->is_axtp_device_locked(lease->device_id)) {
+                media_adapter_to_unbind =
+                    dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+                media_device_id = lease->device_id;
+            }
         }
         const auto relay = impl_->relays.find(session_id);
         if (relay != impl_->relays.end()) {
@@ -653,6 +1588,9 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             impl_->relays.erase(relay);
         }
         subscriptions_to_close = impl_->take_session_subscriptions_locked(session_id);
+        stream_subscriptions_to_close =
+            impl_->take_session_stream_subscriptions_locked(session_id);
+        impl_->active_media_streams.erase(session_id);
         if (lease.has_value()) {
             impl_->sessions.close_device_session(session_id);
         }
@@ -664,8 +1602,15 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             reset_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
         }
     }
+    if (media_adapter_to_unbind != nullptr) {
+        media_adapter_to_unbind->unbind_media_delivery_session(
+            media_device_id, session_id);
+    }
     for (auto& subscription : subscriptions_to_close) {
         subscription->cancel();
+    }
+    for (auto& subscription : stream_subscriptions_to_close) {
+        subscription->close_streams_and_cancel();
     }
     if (reset_adapter != nullptr && !reset_device_id.empty()) {
         reset_adapter->reset_session_for_device(reset_device_id);
@@ -707,10 +1652,122 @@ MediaSubscriptionPtr AxentHost::subscribe_media(const std::string& session_id,
     return subscription;
 }
 
+MediaStreamSubscriptionPtr AxentHost::subscribe_media_stream(
+    const std::string& session_id,
+    std::shared_ptr<IMediaStreamSink> sink,
+    MediaSubscriptionOptions options)
+{
+    if (!sink) {
+        return nullptr;
+    }
+
+    std::shared_ptr<MediaStreamSubscriptionState> subscription;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value() || !lease->media) {
+            return nullptr;
+        }
+
+        auto& active = impl_->active_media_streams[session_id];
+        if (auto* adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+            adapter != nullptr && impl_->is_axtp_device_locked(lease->device_id)) {
+            for (auto descriptor : adapter->active_media_stream_descriptors()) {
+                if (!descriptor.device_id.empty() && descriptor.device_id != lease->device_id) {
+                    continue;
+                }
+                descriptor.device_id = lease->device_id;
+                descriptor.key.session_id = session_id;
+                active[descriptor.key.stream_id] = std::move(descriptor);
+            }
+        }
+
+        std::vector<MediaStreamDescriptor> descriptors;
+        descriptors.reserve(active.size());
+        for (const auto& entry : active) {
+            descriptors.push_back(entry.second);
+        }
+        subscription =
+            std::make_shared<MediaStreamSubscriptionState>(std::move(sink), options);
+        subscription->prime_opened(descriptors);
+        impl_->stream_subscriptions[session_id].push_back(subscription);
+    }
+
+    // Activation happens outside the Host lock. Any frame/lifecycle callback
+    // that races registration is queued behind the primed Opened snapshot.
+    subscription->activate();
+    return subscription;
+}
+
+bool AxentHost::publish_media_stream_event(const std::string& session_id,
+                                           MediaStreamEvent event)
+{
+    if (g_in_media_stream_sink_callback) {
+        return false;
+    }
+    return publish_media_stream_event_for_session(
+        session_id, std::move(event));
+}
+
+bool AxentHost::publish_media_stream_event_for_session(
+    const std::string& session_id,
+    MediaStreamEvent event)
+{
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> subscriptions;
+    std::vector<MediaStreamEvent> ordered_events;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value() || !lease->media ||
+            event.descriptor.key.stream_id == 0 ||
+            event.descriptor.key.generation == 0) {
+            return false;
+        }
+
+        event.descriptor.device_id = lease->device_id;
+        event.descriptor.key.session_id = lease->session_id;
+        auto& active = impl_->active_media_streams[lease->session_id];
+        const auto current = active.find(event.descriptor.key.stream_id);
+        if (event.kind == MediaStreamEventKind::Opened) {
+            if (current != active.end() &&
+                current->second.key == event.descriptor.key) {
+                return true;
+            }
+            if (current != active.end()) {
+                ordered_events.push_back(
+                    {MediaStreamEventKind::Closed, current->second});
+            }
+            active[event.descriptor.key.stream_id] = event.descriptor;
+            ordered_events.push_back(std::move(event));
+        } else {
+            if (current == active.end() ||
+                current->second.key != event.descriptor.key) {
+                return true;
+            }
+            ordered_events.push_back(
+                {MediaStreamEventKind::Closed, current->second});
+            active.erase(current);
+        }
+        subscriptions =
+            impl_->stream_subscriptions_for_session_locked(lease->session_id);
+    }
+
+    for (const auto& ordered_event : ordered_events) {
+        for (const auto& subscription : subscriptions) {
+            subscription->publish_stream_event(ordered_event);
+        }
+    }
+    return true;
+}
+
 bool AxentHost::publish_media_frame(const std::string& session_id, MediaFrame frame)
 {
+    if (g_in_media_stream_sink_callback) {
+        return false;
+    }
     std::shared_ptr<MediaStreamRelay> relay;
     std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions;
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         const auto lease = impl_->lease_for_session_locked(session_id);
@@ -719,10 +1776,13 @@ bool AxentHost::publish_media_frame(const std::string& session_id, MediaFrame fr
         }
         const auto relay_it = impl_->relays.find(session_id);
         subscriptions = impl_->subscriptions_for_session_locked(session_id);
-        if ((relay_it == impl_->relays.end() || !relay_it->second) && subscriptions.empty()) {
+        stream_subscriptions = impl_->stream_subscriptions_for_session_locked(session_id);
+        if ((relay_it == impl_->relays.end() || !relay_it->second) &&
+            subscriptions.empty() && stream_subscriptions.empty()) {
             return false;
         }
         frame.session_id = session_id;
+        frame.device_id = lease->device_id;
         if (relay_it != impl_->relays.end()) {
             relay = relay_it->second;
         }
@@ -733,6 +1793,9 @@ bool AxentHost::publish_media_frame(const std::string& session_id, MediaFrame fr
     for (const auto& subscription : subscriptions) {
         subscription->publish(frame);
     }
+    for (const auto& subscription : stream_subscriptions) {
+        subscription->publish_frame(frame);
+    }
     return true;
 }
 
@@ -740,6 +1803,7 @@ bool AxentHost::publish_media_frame_for_device(std::string device_id, MediaFrame
 {
     std::shared_ptr<MediaStreamRelay> relay;
     std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions;
+    std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         const auto owner = impl_->media_owner_session_by_device.find(device_id);
@@ -750,12 +1814,17 @@ bool AxentHost::publish_media_frame_for_device(std::string device_id, MediaFrame
         if (!lease.has_value() || !lease->media) {
             return false;
         }
-        const auto relay_it = impl_->relays.find(owner->second);
-        subscriptions = impl_->subscriptions_for_session_locked(owner->second);
-        if ((relay_it == impl_->relays.end() || !relay_it->second) && subscriptions.empty()) {
+        if (frame.session_id.empty() || frame.session_id != lease->session_id) {
             return false;
         }
-        frame.session_id = owner->second;
+        const auto relay_it = impl_->relays.find(owner->second);
+        subscriptions = impl_->subscriptions_for_session_locked(owner->second);
+        stream_subscriptions =
+            impl_->stream_subscriptions_for_session_locked(owner->second);
+        if ((relay_it == impl_->relays.end() || !relay_it->second) &&
+            subscriptions.empty() && stream_subscriptions.empty()) {
+            return false;
+        }
         frame.device_id = std::move(device_id);
         if (relay_it != impl_->relays.end()) {
             relay = relay_it->second;
@@ -767,7 +1836,30 @@ bool AxentHost::publish_media_frame_for_device(std::string device_id, MediaFrame
     for (const auto& subscription : subscriptions) {
         subscription->publish(frame);
     }
+    for (const auto& subscription : stream_subscriptions) {
+        subscription->publish_frame(frame);
+    }
     return true;
+}
+
+bool AxentHost::publish_media_stream_event_for_device(MediaStreamEvent event)
+{
+    std::string session_id;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto owner =
+            impl_->media_owner_session_by_device.find(event.descriptor.device_id);
+        if (owner == impl_->media_owner_session_by_device.end()) {
+            return false;
+        }
+        const auto lease = impl_->lease_for_session_locked(owner->second);
+        if (!lease.has_value() || !lease->media) {
+            return false;
+        }
+        session_id = lease->session_id;
+    }
+    return publish_media_stream_event_for_session(
+        session_id, std::move(event));
 }
 
 ControlResult AxentHost::call(const std::string& session_id,
@@ -776,7 +1868,15 @@ ControlResult AxentHost::call(const std::string& session_id,
 {
     ControlCommand command;
     Broker* broker = nullptr;
-    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    std::unique_lock<std::mutex> dispatch_lock(impl_->dispatch_mutex, std::defer_lock);
+    if (g_in_media_stream_sink_callback) {
+        if (!dispatch_lock.try_lock()) {
+            return {ControlStatus::Busy,
+                    {{"error", "host dispatch busy during media stream callback"}}};
+        }
+    } else {
+        dispatch_lock.lock();
+    }
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->broker) {

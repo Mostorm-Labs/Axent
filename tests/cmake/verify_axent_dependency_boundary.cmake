@@ -256,6 +256,12 @@ file(GLOB_RECURSE axent_public_contract_headers LIST_DIRECTORIES false
 )
 list(FILTER axent_public_contract_headers EXCLUDE REGEX "[/\\\\]testing[/\\\\]")
 
+set(axent_media_contract_headers
+    "${AXENT_REPO_ROOT}/include/axent/media/media_frame.hpp"
+    "${AXENT_REPO_ROOT}/include/axent/media/media_stream.hpp"
+    "${AXENT_REPO_ROOT}/include/axent/media/media_subscription.hpp"
+)
+
 file(GLOB_RECURSE axent_cli_boundary_files LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/include/axent/cli/*.hpp"
     "${AXENT_REPO_ROOT}/include/axent/tooling/*.hpp"
@@ -278,6 +284,12 @@ assert_files_do_not_contain(
     axent_public_contract_headers
     "axtp::|#[ \\t]*include[ \\t]*[<\"](axtp_|core/runtime/|core/protocol/|json_rpc/|transports/)"
     "Axent production public headers must not expose cpp-runtime types or headers"
+)
+
+assert_files_do_not_contain(
+    axent_media_contract_headers
+    "nlohmann|axtp::|#[ \\t]*include[ \\t]*[<\"](axtp_|core/|json_rpc/|transports/)"
+    "Axent media contract headers must remain JSON- and cpp-runtime-free"
 )
 
 assert_file_does_not_contain(
@@ -492,7 +504,26 @@ set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS OFF CACHE BOOL "" FORCE)
 set(AXENT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 ]=])
 file(APPEND "${parent_fixture_dir}/CMakeLists.txt" "add_subdirectory(\"${AXENT_REPO_ROOT}\" axent)\n")
+file(WRITE "${parent_fixture_dir}/media_contract_consumer.cpp" [=[
+#include "axent/media/media_frame.hpp"
+#include "axent/media/media_stream.hpp"
+#include "axent/media/media_subscription.hpp"
+
+int main()
+{
+    axent::MediaStreamDescriptor descriptor;
+    descriptor.key = {"session", 1, 1};
+    axent::MediaFrame frame;
+    frame.session_id = descriptor.key.session_id;
+    frame.stream_id = descriptor.key.stream_id;
+    frame.generation = descriptor.key.generation;
+    return axent::stream_key(frame) == descriptor.key ? 0 : 1;
+}
+]=])
 file(APPEND "${parent_fixture_dir}/CMakeLists.txt" [=[
+
+add_executable(axent_media_contract_consumer media_contract_consumer.cpp)
+target_link_libraries(axent_media_contract_consumer PRIVATE axent::media_contract)
 
 if(NOT TARGET axent::libaxent)
     message(FATAL_ERROR "Expected axent::libaxent target")
@@ -502,6 +533,9 @@ if(NOT TARGET axent::axtp_tooling)
 endif()
 if(NOT TARGET axent::control_contract)
     message(FATAL_ERROR "Expected axent::control_contract target")
+endif()
+if(NOT TARGET axent::media_contract)
+    message(FATAL_ERROR "Expected axent::media_contract target")
 endif()
 if(NOT TARGET axent::axtp_control_endpoint)
     message(FATAL_ERROR "Expected axent::axtp_control_endpoint target")
@@ -529,6 +563,13 @@ get_target_property(endpoint_interface_links axent_axtp_control_endpoint INTERFA
 foreach(link_item IN LISTS endpoint_interface_links)
     if(link_item MATCHES "^axtp::")
         message(FATAL_ERROR "AxtpControlEndpoint runtime dependencies must remain PRIVATE")
+    endif()
+endforeach()
+
+get_target_property(media_contract_interface_links axent_media_contract INTERFACE_LINK_LIBRARIES)
+foreach(link_item IN LISTS media_contract_interface_links)
+    if(link_item MATCHES "^axtp::" OR link_item MATCHES "nlohmann")
+        message(FATAL_ERROR "Axent media contract must remain JSON- and cpp-runtime-free")
     endif()
 endforeach()
 
@@ -565,6 +606,21 @@ if(NOT parent_fixture_result EQUAL 0)
         "Axent parent-provided runtime fixture failed.\n"
         "stdout:\n${parent_fixture_output}\n"
         "stderr:\n${parent_fixture_error}"
+    )
+endif()
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${parent_fixture_dir}/build"
+            --config Debug --target axent_media_contract_consumer
+    RESULT_VARIABLE media_contract_consumer_result
+    OUTPUT_VARIABLE media_contract_consumer_output
+    ERROR_VARIABLE media_contract_consumer_error
+)
+if(NOT media_contract_consumer_result EQUAL 0)
+    message(FATAL_ERROR
+        "Axent media contract standalone consumer failed.\n"
+        "stdout:\n${media_contract_consumer_output}\n"
+        "stderr:\n${media_contract_consumer_error}"
     )
 endif()
 

@@ -22,6 +22,14 @@ target_include_directories(axent_control_contract PUBLIC include)
 target_link_libraries(axent_control_contract PUBLIC nlohmann_json::nlohmann_json)
 axent_enable_warnings(axent_control_contract)
 
+add_library(axent_media_contract INTERFACE)
+add_library(axent::media_contract ALIAS axent_media_contract)
+target_include_directories(axent_media_contract INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_compile_features(axent_media_contract INTERFACE cxx_std_17)
+
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
@@ -51,7 +59,7 @@ add_library(libaxent
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
 target_link_libraries(libaxent
-    PUBLIC nlohmann_json::nlohmann_json
+    PUBLIC nlohmann_json::nlohmann_json axent::media_contract
     PRIVATE axtp::core axtp::json_rpc axtp::runtime axtp::sdk
 )
 if(TARGET axtp::transport_hidapi)
