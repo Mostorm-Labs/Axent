@@ -252,6 +252,11 @@ if(AXENT_BUILD_TESTING)
     axent_enable_warnings(protocol_codecs_test)
     add_test(NAME protocol_codecs_test COMMAND protocol_codecs_test)
 
+    add_executable(control_contract_test tests/control_contract_test.cpp)
+    target_link_libraries(control_contract_test PRIVATE axent::control_contract axtp::core)
+    axent_enable_warnings(control_contract_test)
+    add_test(NAME control_contract_test COMMAND control_contract_test)
+
     if(AXENT_HAS_WEBSOCKET_TRANSPORT)
         add_executable(axtp_control_endpoint_test tests/axtp_control_endpoint_test.cpp)
         target_link_libraries(axtp_control_endpoint_test
