@@ -41,6 +41,7 @@ struct ControlStatus {
     static constexpr ControlStatus internal_error() noexcept { return {0x000E}; }
     static constexpr ControlStatus unavailable() noexcept { return {0x000F}; }
     static constexpr ControlStatus not_supported() noexcept { return {0x0003}; }
+    static constexpr ControlStatus stream_not_open() noexcept { return {0x0506}; }
 };
 
 constexpr bool operator==(ControlStatus lhs, ControlStatus rhs) noexcept

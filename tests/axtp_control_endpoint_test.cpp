@@ -284,6 +284,7 @@ int main()
         ControlStatus::timeout().code,
         ControlStatus::unavailable().code,
         ControlStatus::internal_error().code,
+        ControlStatus::stream_not_open().code,
         0x0033,
         0x0555,
     };
