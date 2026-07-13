@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cctype>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -186,13 +187,32 @@ ParsedMediaSourceStateEvent parse_media_source_state_event(
     event.source = json_string_or(*body, "source");
     event.state = json_string_or(*body, "state");
     event.reason = json_string_or(*body, "reason");
-    if (body->contains("activeStreamId") &&
-        ((*body)["activeStreamId"].is_number_unsigned() ||
-         (*body)["activeStreamId"].is_number_integer())) {
-        event.has_active_stream_id = true;
-        event.active_stream_id = json_u32_or(*body, "activeStreamId", 0);
+    bool active_stream_id_valid = true;
+    if (body->contains("activeStreamId")) {
+        const auto& active_stream_id = (*body)["activeStreamId"];
+        if (active_stream_id.is_number_unsigned()) {
+            const auto value = active_stream_id.get<std::uint64_t>();
+            if (value <= std::numeric_limits<std::uint32_t>::max()) {
+                event.has_active_stream_id = true;
+                event.active_stream_id = static_cast<std::uint32_t>(value);
+            } else {
+                active_stream_id_valid = false;
+            }
+        } else if (active_stream_id.is_number_integer()) {
+            const auto value = active_stream_id.get<std::int64_t>();
+            if (value >= 0 &&
+                static_cast<std::uint64_t>(value) <=
+                    std::numeric_limits<std::uint32_t>::max()) {
+                event.has_active_stream_id = true;
+                event.active_stream_id = static_cast<std::uint32_t>(value);
+            } else {
+                active_stream_id_valid = false;
+            }
+        } else {
+            active_stream_id_valid = false;
+        }
     }
-    event.valid = !event.state.empty();
+    event.valid = !event.state.empty() && active_stream_id_valid;
     return event;
 }
 
@@ -528,6 +548,10 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
             const std::string params_text = params.is_null() ? std::string("{}") : params.dump();
             body = runtime_->client->callJson(method, params_text, options);
             last_error = runtime_->client->lastError();
+            // callJson() polls the endpoint and may dispatch source lifecycle
+            // events and STREAM payloads. Reconcile descriptors before the
+            // queued callbacks are drained below so wire ordering is retained.
+            process_pending_media_source_state_events(device_id);
         }
     }
     drain_pending_media_callbacks();
@@ -588,9 +612,7 @@ void AxtpAdapter::record_transport_trace(const std::string& event_name,
                                          const std::string& message)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!media_source_event_observed_ || read_error || write_error || dropped_report) {
-        diagnostics_.last_event = event_name;
-    }
+    diagnostics_.last_event = event_name;
     if (accepted_read) {
         ++diagnostics_.read_reports;
     }
@@ -692,7 +714,10 @@ void AxtpAdapter::clear_media_streams()
     media_configure_attempts_ = 0;
     video_source_terminal_ = false;
     audio_source_terminal_ = false;
-    media_source_event_observed_ = false;
+    video_source_recovery_pending_ = false;
+    audio_source_recovery_pending_ = false;
+    next_video_source_recovery_attempt_ = {};
+    next_audio_source_recovery_attempt_ = {};
     std::lock_guard<std::mutex> source_event_lock(pending_media_source_state_mutex_);
     std::queue<MediaSourceStateEvent> empty_source_events;
     pending_media_source_state_events_.swap(empty_source_events);
@@ -720,7 +745,6 @@ void AxtpAdapter::enqueue_media_source_state_event(MediaSourceStateEvent event)
         diagnostics_.last_media_source_event_reason = event.reason;
         diagnostics_.last_media_source_event_active_stream_id = event.active_stream_id;
         diagnostics_.last_media_source_event_has_active_stream_id = event.has_active_stream_id;
-        media_source_event_observed_ = true;
         diagnostics_.last_event = "media-source-event name=" + event.event_name +
             " id=0x" + hex4(static_cast<std::uint16_t>(event.event_id)) +
             " source=" + (event.source.empty() ? "<absent>" : event.source) +
@@ -739,14 +763,19 @@ void AxtpAdapter::enqueue_media_source_state_event(MediaSourceStateEvent event)
 
 void AxtpAdapter::process_pending_media_source_state_events(const std::string& device_id)
 {
-    std::queue<MediaSourceStateEvent> events;
-    {
-        std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
-        events.swap(pending_media_source_state_events_);
-    }
-    while (!events.empty()) {
-        process_media_source_state_event(device_id, events.front());
-        events.pop();
+    for (;;) {
+        std::queue<MediaSourceStateEvent> events;
+        {
+            std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+            events.swap(pending_media_source_state_events_);
+        }
+        if (events.empty()) {
+            return;
+        }
+        while (!events.empty()) {
+            process_media_source_state_event(device_id, events.front());
+            events.pop();
+        }
     }
 }
 
@@ -765,11 +794,17 @@ void AxtpAdapter::process_media_source_state_event(
     if (!configured_source.empty() && event_source != configured_source) {
         return;
     }
+    const auto source_matches = [&](const MediaStreamDescriptor& descriptor) {
+        // A source-state event may omit source. Prefer the configured source
+        // in that case; if neither side names one, the event is still a valid
+        // kind-scoped lifecycle fact.
+        return event_source.empty() || descriptor.source == event_source;
+    };
 
     if (is_terminal_source_state(event.state, event.reason)) {
         std::optional<MediaStreamDescriptor> closed_descriptor;
         std::uint32_t active_stream_count = 0;
-        bool active_stream_id_is_stale = false;
+        bool active_stream_id_is_foreign = false;
         {
             std::lock_guard<std::mutex> lock(media_stream_mutex_);
             auto match = active_media_streams_.end();
@@ -777,15 +812,13 @@ void AxtpAdapter::process_media_source_state_event(
                 const auto active = active_media_streams_.find(event.active_stream_id);
                 if (active != active_media_streams_.end() &&
                     active->second.descriptor.kind == event.kind &&
-                    active->second.descriptor.source == event_source) {
+                    source_matches(active->second.descriptor)) {
                     match = active;
                 } else {
-                    active_stream_id_is_stale = std::any_of(
-                        active_media_streams_.begin(),
-                        active_media_streams_.end(),
-                        [&](const auto& entry) {
-                            return entry.second.descriptor.kind == event.kind;
-                        });
+                    // A non-zero ID is an exact identity hint. Never fall back
+                    // to kind/source when it identifies another, stale, or
+                    // otherwise unknown stream.
+                    active_stream_id_is_foreign = true;
                 }
             } else {
                 match = std::find_if(
@@ -793,7 +826,7 @@ void AxtpAdapter::process_media_source_state_event(
                     active_media_streams_.end(),
                     [&](const auto& entry) {
                         return entry.second.descriptor.kind == event.kind &&
-                            entry.second.descriptor.source == event_source;
+                            source_matches(entry.second.descriptor);
                     });
             }
             if (match != active_media_streams_.end()) {
@@ -802,18 +835,22 @@ void AxtpAdapter::process_media_source_state_event(
             }
             active_stream_count = static_cast<std::uint32_t>(active_media_streams_.size());
         }
-        if (active_stream_id_is_stale) {
+        if (active_stream_id_is_foreign) {
             return;
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (event.kind == MediaKind::Video) {
                 video_source_terminal_ = true;
+                video_source_recovery_pending_ = false;
+                next_video_source_recovery_attempt_ = {};
                 if (closed_descriptor.has_value()) {
                     diagnostics_.active_video_stream_id = 0;
                 }
             } else {
                 audio_source_terminal_ = true;
+                audio_source_recovery_pending_ = false;
+                next_audio_source_recovery_attempt_ = {};
                 if (closed_descriptor.has_value()) {
                     diagnostics_.active_audio_stream_id = 0;
                 }
@@ -840,6 +877,7 @@ void AxtpAdapter::process_media_source_state_event(
             audio_source_terminal_ = false;
         }
     }
+    bool already_active = false;
     {
         std::lock_guard<std::mutex> lock(media_stream_mutex_);
         const auto active = std::find_if(
@@ -848,11 +886,45 @@ void AxtpAdapter::process_media_source_state_event(
             [&](const auto& entry) {
                 return entry.second.descriptor.kind == event.kind;
             });
-        if (active != active_media_streams_.end()) {
+        already_active = active != active_media_streams_.end();
+    }
+    if (already_active) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (event.kind == MediaKind::Video) {
+            video_source_recovery_pending_ = false;
+            next_video_source_recovery_attempt_ = {};
+        } else {
+            audio_source_recovery_pending_ = false;
+            next_audio_source_recovery_attempt_ = {};
+        }
+        return;
+    }
+    const auto recovery_attempt = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const bool pending = event.kind == MediaKind::Video
+            ? video_source_recovery_pending_
+            : audio_source_recovery_pending_;
+        const auto next_attempt = event.kind == MediaKind::Video
+            ? next_video_source_recovery_attempt_
+            : next_audio_source_recovery_attempt_;
+        if (pending && recovery_attempt < next_attempt) {
             return;
         }
     }
-    configure_media_stream_kind(device_id, event.kind, false);
+    if (configure_media_stream_kind(device_id, event.kind, false)) {
+        return;
+    }
+    const auto next_attempt = std::chrono::steady_clock::now() +
+        kMediaConfigureRetryInterval;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (event.kind == MediaKind::Video) {
+        video_source_recovery_pending_ = true;
+        next_video_source_recovery_attempt_ = next_attempt;
+    } else {
+        audio_source_recovery_pending_ = true;
+        next_audio_source_recovery_attempt_ = next_attempt;
+    }
 }
 
 void AxtpAdapter::reset_session_for_device(const std::string& device_id)
@@ -1103,10 +1175,8 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                             retry_media_configure = true;
                             retry_attempt = ++media_configure_attempts_;
                             next_media_configure_attempt_ = now + kMediaConfigureRetryInterval;
-                            if (!media_source_event_observed_) {
-                                diagnostics_.last_event =
-                                    "media-open-retry-" + std::to_string(retry_attempt);
-                            }
+                            diagnostics_.last_event =
+                                "media-open-retry-" + std::to_string(retry_attempt);
                             retry_device_id = active_device_id_;
                         }
                     }
@@ -1114,7 +1184,13 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                         configure_media_streams(retry_device_id);
                     }
                     runtime_->client->poll();
+                    // Source transitions are reconciled after the complete
+                    // runtime poll. AXTP receiver-pull requires a successful
+                    // replacement openStream response before the device emits
+                    // frames for the new generation; any frame already in the
+                    // same pre-open poll therefore belongs to the old one.
                     process_pending_media_source_state_events(device_id);
+                    retry_pending_media_source_recoveries(device_id, now);
                 }
                 drain_pending_media_callbacks();
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -1132,8 +1208,10 @@ bool AxtpAdapter::media_configure_retry_due_locked(std::chrono::steady_clock::ti
         diagnostics_.active_media_streams != 0) {
         return false;
     }
-    const bool video_can_open = config_.enable_video && !video_source_terminal_;
-    const bool audio_can_open = config_.enable_audio && !audio_source_terminal_;
+    const bool video_can_open = config_.enable_video && !video_source_terminal_ &&
+        !video_source_recovery_pending_;
+    const bool audio_can_open = config_.enable_audio && !audio_source_terminal_ &&
+        !audio_source_recovery_pending_;
     if (!video_can_open && !audio_can_open) {
         return false;
     }
@@ -1143,28 +1221,74 @@ bool AxtpAdapter::media_configure_retry_due_locked(std::chrono::steady_clock::ti
 
 void AxtpAdapter::configure_media_streams(const std::string& device_id)
 {
-    if (config_.enable_video) {
+    bool configure_video = false;
+    bool configure_audio = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        configure_video = config_.enable_video && !video_source_recovery_pending_;
+        configure_audio = config_.enable_audio && !audio_source_recovery_pending_;
+    }
+    if (configure_video) {
         configure_media_stream_kind(device_id, MediaKind::Video, true);
     }
-    if (config_.enable_audio) {
+    if (configure_audio) {
         configure_media_stream_kind(device_id, MediaKind::Audio, true);
     }
 }
 
-void AxtpAdapter::configure_media_stream_kind(
+void AxtpAdapter::retry_pending_media_source_recoveries(
+    const std::string& device_id,
+    std::chrono::steady_clock::time_point now)
+{
+    // Retry only the missing kind whose event-driven recovery failed. The
+    // other kind remains open, and this scheduling is independent of HID's
+    // transport-level read-error backoff.
+    const auto retry_kind = [&](MediaKind kind) {
+        bool retry = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto& pending = kind == MediaKind::Video
+                ? video_source_recovery_pending_
+                : audio_source_recovery_pending_;
+            const auto terminal = kind == MediaKind::Video
+                ? video_source_terminal_
+                : audio_source_terminal_;
+            auto& next_attempt = kind == MediaKind::Video
+                ? next_video_source_recovery_attempt_
+                : next_audio_source_recovery_attempt_;
+            if (pending && !terminal && now >= next_attempt) {
+                retry = true;
+                next_attempt = now + kMediaConfigureRetryInterval;
+            }
+        }
+        if (!retry) {
+            return;
+        }
+        configure_media_stream_kind(device_id, kind, false);
+        // configure_media_stream_kind() uses public runtime callJson and may
+        // itself dispatch source events. Preserve the same lifecycle fence as
+        // AxtpAdapter::call() before any callbacks are drained or another kind
+        // is considered for retry.
+        process_pending_media_source_state_events(device_id);
+    };
+    retry_kind(MediaKind::Video);
+    retry_kind(MediaKind::Audio);
+}
+
+bool AxtpAdapter::configure_media_stream_kind(
     const std::string& device_id,
     MediaKind kind,
     bool update_retry_state)
 {
     if (!config_.enable_media || runtime_->client == nullptr ||
         (kind != MediaKind::Video && kind != MediaKind::Audio)) {
-        return;
+        return false;
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if ((kind == MediaKind::Video && video_source_terminal_) ||
             (kind == MediaKind::Audio && audio_source_terminal_)) {
-            return;
+            return false;
         }
     }
 
@@ -1185,18 +1309,14 @@ void AxtpAdapter::configure_media_stream_kind(
     auto capabilities = call_json(capabilities_method_name(kind), source_params);
     if (!capabilities.has_value()) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!media_source_event_observed_) {
-            diagnostics_.last_event =
-                std::string(media_kind_name(kind)) + "-capabilities-unavailable";
-        }
-        return;
+        diagnostics_.last_event =
+            std::string(media_kind_name(kind)) + "-capabilities-unavailable";
+        return false;
     }
     if (!capabilities_are_streamable(*capabilities, source)) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!media_source_event_observed_) {
-            diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
-        }
-        return;
+        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
+        return false;
     }
 
     nlohmann::json open_params;
@@ -1224,19 +1344,15 @@ void AxtpAdapter::configure_media_stream_kind(
     const auto response = call_json(open_stream_method_name(kind), open_params);
     if (!response.has_value()) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!media_source_event_observed_) {
-            diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-failed";
-        }
-        return;
+        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-failed";
+        return false;
     }
 
     const auto stream_id = json_u32_or(*response, "streamId", 0);
     if (stream_id == 0) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!media_source_event_observed_) {
-            diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-no-stream-id";
-        }
-        return;
+        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-no-stream-id";
+        return false;
     }
 
     MediaStreamDescriptor descriptor;
@@ -1288,7 +1404,7 @@ void AxtpAdapter::configure_media_stream_kind(
     enqueue_media_stream_events(std::move(lifecycle_events));
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (update_retry_state && !media_source_event_observed_) {
+        if (update_retry_state) {
             diagnostics_.last_event = std::string(media_kind_name(kind)) + "-stream-open";
         }
         if (kind == MediaKind::Video) {
@@ -1301,7 +1417,15 @@ void AxtpAdapter::configure_media_stream_kind(
             media_configure_attempts_ = 0;
             next_media_configure_attempt_ = {};
         }
+        if (kind == MediaKind::Video) {
+            video_source_recovery_pending_ = false;
+            next_video_source_recovery_attempt_ = {};
+        } else {
+            audio_source_recovery_pending_ = false;
+            next_audio_source_recovery_attempt_ = {};
+        }
     }
+    return true;
 }
 
 MediaFrame AxtpAdapter::frame_from_stream(const std::string& device_id,

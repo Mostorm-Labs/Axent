@@ -92,9 +92,12 @@ private:
     void reset_session_for_device(const std::string& device_id);
     bool media_configure_retry_due_locked(std::chrono::steady_clock::time_point now) const;
     void configure_media_streams(const std::string& device_id);
-    void configure_media_stream_kind(const std::string& device_id,
+    bool configure_media_stream_kind(const std::string& device_id,
                                      MediaKind kind,
                                      bool update_retry_state);
+    void retry_pending_media_source_recoveries(
+        const std::string& device_id,
+        std::chrono::steady_clock::time_point now);
     void clear_media_streams();
     void enqueue_media_stream_events(std::vector<MediaStreamEvent> events);
     struct MediaSourceStateEvent {
@@ -155,7 +158,10 @@ private:
     std::uint32_t media_configure_attempts_ = 0;
     bool video_source_terminal_ = false;
     bool audio_source_terminal_ = false;
-    bool media_source_event_observed_ = false;
+    bool video_source_recovery_pending_ = false;
+    bool audio_source_recovery_pending_ = false;
+    std::chrono::steady_clock::time_point next_video_source_recovery_attempt_;
+    std::chrono::steady_clock::time_point next_audio_source_recovery_attempt_;
     std::string active_device_id_;
     std::atomic<bool> stop_session_pump_{false};
     std::thread session_pump_;
