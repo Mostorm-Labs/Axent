@@ -64,6 +64,13 @@ struct TransportDiagnostics {
     std::uint32_t active_video_stream_id = 0;
     std::uint32_t active_audio_stream_id = 0;
     std::uint32_t active_media_streams = 0;
+    std::uint32_t last_media_source_event_id = 0;
+    std::string last_media_source_event_name;
+    std::string last_media_source_event_source;
+    std::string last_media_source_event_state;
+    std::string last_media_source_event_reason;
+    std::uint32_t last_media_source_event_active_stream_id = 0;
+    bool last_media_source_event_has_active_stream_id = false;
 };
 
 } // namespace axent
