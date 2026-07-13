@@ -92,8 +92,26 @@ private:
     void reset_session_for_device(const std::string& device_id);
     bool media_configure_retry_due_locked(std::chrono::steady_clock::time_point now) const;
     void configure_media_streams(const std::string& device_id);
+    void configure_media_stream_kind(const std::string& device_id,
+                                     MediaKind kind,
+                                     bool update_retry_state);
     void clear_media_streams();
     void enqueue_media_stream_events(std::vector<MediaStreamEvent> events);
+    struct MediaSourceStateEvent {
+        std::uint32_t event_id = 0;
+        std::string event_name;
+        MediaKind kind = MediaKind::Unknown;
+        std::string source;
+        std::string state;
+        std::string reason;
+        std::uint32_t active_stream_id = 0;
+        bool has_active_stream_id = false;
+        bool valid = false;
+    };
+    void enqueue_media_source_state_event(MediaSourceStateEvent event);
+    void process_pending_media_source_state_events(const std::string& device_id);
+    void process_media_source_state_event(const std::string& device_id,
+                                          const MediaSourceStateEvent& event);
     void handle_stream_payload(const std::string& device_id,
                                std::uint32_t stream_id,
                                std::uint32_t sequence_id,
@@ -123,6 +141,8 @@ private:
     std::map<std::uint32_t, std::uint64_t> media_stream_generations_;
     std::mutex pending_media_event_mutex_;
     std::queue<MediaStreamEvent> pending_media_stream_events_;
+    std::mutex pending_media_source_state_mutex_;
+    std::queue<MediaSourceStateEvent> pending_media_source_state_events_;
     std::mutex pending_media_mutex_;
     std::queue<std::pair<std::string, MediaFrame>> pending_media_frames_;
     mutable std::mutex media_delivery_session_mutex_;
@@ -133,6 +153,9 @@ private:
     TransportDiagnostics diagnostics_;
     std::chrono::steady_clock::time_point next_media_configure_attempt_;
     std::uint32_t media_configure_attempts_ = 0;
+    bool video_source_terminal_ = false;
+    bool audio_source_terminal_ = false;
+    bool media_source_event_observed_ = false;
     std::string active_device_id_;
     std::atomic<bool> stop_session_pump_{false};
     std::thread session_pump_;

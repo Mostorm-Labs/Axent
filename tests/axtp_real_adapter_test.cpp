@@ -131,6 +131,21 @@ public:
         rx_queue_.push(encode_stream(std::move(stream)));
     }
 
+    void injectEvent(axtp::EventId event_id, std::string event_name, std::string body)
+    {
+        axtp::RpcPayload event;
+        event.encoding = axtp::RpcEncoding::Json;
+        event.op = axtp::RpcOp::Event;
+        event.methodOrEventId = static_cast<std::uint32_t>(event_id);
+        event.bodyEncoding = axtp::RpcBodyEncoding::None;
+        event.meta.sourceProtocol = axtp::SourceProtocol::JsonRpc;
+        event.meta.jsonSid = "axent-session-1";
+        event.meta.jsonMethodOrEventName = std::move(event_name);
+        event.body.assign(body.begin(), body.end());
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        rx_queue_.push(encode_rpc(std::move(event)));
+    }
+
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
         CapturingPayloadSink payload_sink;
@@ -177,9 +192,11 @@ public:
                     body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast_audio","currentState":"receiving","channels":[2],"sampleRates":[48000]}]})";
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::VideoOpenStream)) {
+                    ++video_open_requests;
                     body = R"({"streamId":1,"state":"streaming","source":"wireless_cast","codec":"h264"})";
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::AudioOpenStream)) {
+                    ++audio_open_requests;
                     body = R"({"streamId":2,"state":"streaming","source":"wireless_cast_audio","codec":"aac","transportFormat":"adts"})";
                 }
                 response.body = axtp::Bytes(body.begin(), body.end());
@@ -205,6 +222,8 @@ public:
     bool saw_identify = false;
     bool saw_business_request = false;
     std::string last_business_sid;
+    std::atomic<std::uint32_t> video_open_requests{0};
+    std::atomic<std::uint32_t> audio_open_requests{0};
 
 private:
     void inject(const axtp::Bytes& bytes)
@@ -261,6 +280,18 @@ bool wait_for_stream_events(const std::vector<axent::MediaStreamEvent>& events,
             if (events.size() >= expected_count) {
                 return true;
             }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
+bool wait_until(const std::function<bool()>& predicate)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -533,6 +564,164 @@ int main()
     require(axent::has_flag(received_audio_frame.flags, axent::MediaFrameFlag::EndOfFrame),
             "audio end-of-frame flag missing");
 
+    media_scripted->injectEvent(
+        axtp::EventId::VideoStreamSourceStateChanged,
+        "video.streamSourceStateChanged",
+        R"({"source":"wireless_cast","state":"paused","reason":"diagnostic_only","activeStreamId":1})");
+    require(wait_until([&]() {
+        return media_adapter->diagnostics().last_media_source_event_state == "paused";
+    }), "unknown video source state should be parsed for diagnostics");
+    {
+        const auto unknown_state_diagnostics = media_adapter->diagnostics();
+        require(unknown_state_diagnostics.last_media_source_event_id == 0x0807,
+                "video source event id diagnostic mismatch");
+        require(unknown_state_diagnostics.last_media_source_event_name ==
+                    "video.streamSourceStateChanged",
+                "video source event name diagnostic mismatch");
+        require(unknown_state_diagnostics.last_media_source_event_source == "wireless_cast" &&
+                    unknown_state_diagnostics.last_media_source_event_reason == "diagnostic_only" &&
+                    unknown_state_diagnostics.last_media_source_event_has_active_stream_id &&
+                    unknown_state_diagnostics.last_media_source_event_active_stream_id == 1,
+                "video source event payload diagnostics mismatch");
+        require(unknown_state_diagnostics.active_media_streams == 2,
+                "unknown source state must not change active descriptors");
+    }
+
+    media_scripted->injectEvent(
+        axtp::EventId::VideoStreamSourceStateChanged,
+        "video.streamSourceStateChanged",
+        R"({"source":"wireless_cast","state":"stopped","activeStreamId":99})");
+    require(wait_until([&]() {
+        const auto current = media_adapter->diagnostics();
+        return current.last_media_source_event_active_stream_id == 99;
+    }), "stale activeStreamId event should be visible in diagnostics");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    {
+        std::lock_guard<std::mutex> lock(stream_events_mutex);
+        require(stream_events.size() == 2,
+                "stale activeStreamId terminal event must not close a newer active descriptor");
+    }
+
+    media_scripted->injectStream(1, 5, 999000, {0x00, 0x00, 0x01, 0x41});
+    media_scripted->injectEvent(
+        axtp::EventId::VideoStreamSourceStateChanged,
+        "video.streamSourceStateChanged",
+        R"({"source":"wireless_cast","state":"stopped","reason":"sender_stopped","activeStreamId":1})");
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 3),
+            "video stopped source event should publish Closed");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        require(frames.size() == 2,
+                "queued configured-stream frame must be dropped after terminal source event");
+    }
+    {
+        std::lock_guard<std::mutex> lock(stream_events_mutex);
+        require(stream_events.size() == 3 &&
+                    stream_events.back().kind == axent::MediaStreamEventKind::Closed &&
+                    stream_events.back().descriptor.kind == axent::MediaKind::Video &&
+                    stream_events.back().descriptor.key.stream_id == 1 &&
+                    stream_events.back().descriptor.key.generation == 1,
+                "video terminal event must close only generation 1 video descriptor");
+    }
+    {
+        const auto after_video_stop = media_adapter->active_media_stream_descriptors();
+        require(after_video_stop.size() == 1 &&
+                    after_video_stop.front().kind == axent::MediaKind::Audio &&
+                    after_video_stop.front().key.generation == 1,
+                "video terminal event must leave audio descriptor active");
+    }
+    require(media_adapter->diagnostics().last_event ==
+                "media-source-event name=video.streamSourceStateChanged id=0x0807 "
+                "source=wireless_cast state=stopped reason=sender_stopped activeStreamId=1",
+            "source event should remain observable as a complete stable diagnostic summary");
+
+    media_scripted->injectEvent(
+        axtp::EventId::VideoStreamSourceStateChanged,
+        "video.streamSourceStateChanged",
+        R"({"state":"stopped","activeStreamId":1})");
+    require(wait_until([&]() {
+        return media_adapter->diagnostics().last_media_source_event_reason.empty();
+    }), "duplicate terminal event should still update diagnostics");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    {
+        std::lock_guard<std::mutex> lock(stream_events_mutex);
+        require(stream_events.size() == 3,
+                "duplicate terminal event must not publish a second Closed");
+    }
+
+    media_scripted->injectEvent(
+        axtp::EventId::VideoStreamSourceStateChanged,
+        "video.streamSourceStateChanged",
+        R"({"source":"wireless_cast","state":"receiving"})");
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 4),
+            "video receiving source event should reopen video");
+    require(media_adapter->diagnostics().last_event ==
+                "media-source-event name=video.streamSourceStateChanged id=0x0807 "
+                "source=wireless_cast state=receiving reason=<absent> activeStreamId=<absent>",
+            "event-driven reopen must not overwrite the receiving event diagnostic summary");
+    axtp::HidReportTrace source_event_read_timeout;
+    source_event_read_timeout.kind = axtp::HidReportTraceKind::ReadTimeout;
+    axent::testing::AxtpAdapterTestSeam::record_hid_trace(
+        *media_adapter, source_event_read_timeout);
+    require(media_adapter->diagnostics().last_event ==
+                "media-source-event name=video.streamSourceStateChanged id=0x0807 "
+                "source=wireless_cast state=receiving reason=<absent> activeStreamId=<absent>",
+            "normal read timeout diagnostics must not hide or act as a source stop event");
+    {
+        const auto after_video_recovery = media_adapter->active_media_stream_descriptors();
+        require(after_video_recovery.size() == 2 &&
+                    after_video_recovery[0].kind == axent::MediaKind::Video &&
+                    after_video_recovery[0].key.stream_id == 1 &&
+                    after_video_recovery[0].key.generation == 2 &&
+                    after_video_recovery[1].kind == axent::MediaKind::Audio &&
+                    after_video_recovery[1].key.generation == 1,
+                "video recovery must increment only the same-ID video generation");
+        require(media_scripted->video_open_requests.load() == 2 &&
+                    media_scripted->audio_open_requests.load() == 1,
+                "video recovery must not reopen audio or alter both-kind retry behavior");
+    }
+    media_scripted->injectStream(1, 6, 1000000, {0x00, 0x00, 0x01, 0x65});
+    require(wait_for_frames(frames, frames_mutex, 3),
+            "reopened video generation should deliver new frames");
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        require(frames.back().generation == 2 && frames.back().sequence_id == 6,
+                "reopened video frame must bind to generation 2");
+    }
+
+    media_scripted->injectEvent(
+        axtp::EventId::AudioStreamSourceStateChanged,
+        "audio.streamSourceStateChanged",
+        R"({"source":"wireless_cast_audio","state":"receiving","reason":"source_disconnected","activeStreamId":2})");
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 5),
+            "source_disconnected reason should close audio even with receiving state");
+    {
+        const auto after_audio_stop = media_adapter->active_media_stream_descriptors();
+        require(after_audio_stop.size() == 1 &&
+                    after_audio_stop.front().kind == axent::MediaKind::Video &&
+                    after_audio_stop.front().key.generation == 2,
+                "audio terminal event must leave reopened video descriptor unchanged");
+    }
+    media_scripted->injectEvent(
+        axtp::EventId::AudioStreamSourceStateChanged,
+        "audio.streamSourceStateChanged",
+        R"({"source":"wireless_cast_audio","state":"available"})");
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 6),
+            "audio available source event should independently reopen audio");
+    {
+        const auto after_audio_recovery = media_adapter->active_media_stream_descriptors();
+        require(after_audio_recovery.size() == 2 &&
+                    after_audio_recovery[0].key.generation == 2 &&
+                    after_audio_recovery[1].kind == axent::MediaKind::Audio &&
+                    after_audio_recovery[1].key.stream_id == 2 &&
+                    after_audio_recovery[1].key.generation == 2,
+                "audio recovery must increment only the same-ID audio generation");
+        require(media_scripted->video_open_requests.load() == 2 &&
+                    media_scripted->audio_open_requests.load() == 2,
+                "audio recovery must not reopen video");
+    }
+
     axent::testing::AxtpAdapterTestSeam::stop_session_pump(*media_adapter);
     axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
         *media_adapter,
@@ -585,15 +774,15 @@ int main()
     first_drain.join();
     second_drain.join();
     require(first_event_blocked && second_drain_waited_for_lifecycle &&
-                frames_before_opened_unblocked == 2,
+                frames_before_opened_unblocked == 3,
             "concurrent media drains must not deliver a frame ahead of lifecycle events");
 
-    require(wait_for_stream_events(stream_events, stream_events_mutex, 6),
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 10),
             "same-ID reopen should publish Closed/Open pairs for video and audio");
     const auto reopened_descriptors = media_adapter->active_media_stream_descriptors();
     require(reopened_descriptors.size() == 2 &&
-                reopened_descriptors[0].key.generation == 2 &&
-                reopened_descriptors[1].key.generation == 2,
+                reopened_descriptors[0].key.generation == 3 &&
+                reopened_descriptors[1].key.generation == 3,
             "same-ID reopen should increment each physical generation");
     require(!axent::testing::AxtpAdapterTestSeam::is_current_media_frame(
                 *media_adapter, received_frame),
@@ -601,9 +790,9 @@ int main()
 
     {
         std::lock_guard<std::mutex> lock(frames_mutex);
-        require(frames.size() == 3,
+        require(frames.size() == 4,
                 "queued old generation must be dropped while the new generation frame is delivered");
-        require(frames.back().sequence_id == 6 && frames.back().generation == 2,
+        require(frames.back().sequence_id == 6 && frames.back().generation == 3,
                 "reopened stream frame should carry the incremented generation");
         require(axent::testing::AxtpAdapterTestSeam::is_current_media_frame(
                     *media_adapter, frames.back()),
