@@ -113,8 +113,9 @@ successful response. Tool-only commands such as `ping`, `list-hid`, and
 The tooling target does not link `libaxent` or Axent Core. Its firmware command
 uses the JSON-free `axent::firmware` service and an Axent-owned private AXTP
 transaction backend; it does not consume the cpp-runtime firmware profile.
-Runtime SDK, wire, and concrete transport targets remain private transitional
-dependencies until the later transport-provider migration.
+Axent tooling now owns its native TCP provider. Runtime SDK/wire, the HID and
+WebSocket wrappers, and the compatibility TCP wrapper remain private transitional
+dependencies while the ordered transport-provider migration continues.
 
 ## Firmware Update V1
 

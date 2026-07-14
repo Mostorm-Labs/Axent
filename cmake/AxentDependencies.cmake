@@ -155,10 +155,6 @@ if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
         "Axent requires axtp::transport_hidapi after adding axtp-cpp-runtime."
     )
     axent_require_target(
-        axtp::transport_tcp_native
-        "Axent requires axtp::transport_tcp_native after adding axtp-cpp-runtime."
-    )
-    axent_require_target(
         axtp::transport_websocket_ix
         "Axent requires axtp::transport_websocket_ix after adding axtp-cpp-runtime."
     )

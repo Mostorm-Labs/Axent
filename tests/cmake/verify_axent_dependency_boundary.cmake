@@ -389,6 +389,35 @@ foreach(required_tooling_file
     endif()
 endforeach()
 
+foreach(required_tcp_provider_file
+        "src/transports/tcp/native_tcp_transport.hpp"
+        "tests/tcp_transport_test.cpp")
+    if(NOT EXISTS "${AXENT_REPO_ROOT}/${required_tcp_provider_file}")
+        message(FATAL_ERROR "Required Axent TCP provider file is missing: ${required_tcp_provider_file}")
+    endif()
+endforeach()
+
+assert_file_contains(
+    "${axent_cmake_file}"
+    "add_library\\(axent_axtp_transport_tcp_native INTERFACE\\)"
+    "Axent must own the native TCP provider target"
+)
+assert_file_does_not_contain(
+    "${axent_cmake_file}"
+    "axtp::transport_tcp_native"
+    "Axent targets must not consume the runtime native TCP wrapper"
+)
+assert_file_does_not_contain(
+    "${axent_deps_file}"
+    "axtp::transport_tcp_native"
+    "Axent dependencies must not require the runtime native TCP wrapper"
+)
+assert_file_does_not_contain(
+    "${AXENT_REPO_ROOT}/src/tooling/axtp_cli.cpp"
+    "axtp::TcpTransport|transports/tcp/native/tcp_transport.hpp"
+    "Axent tooling must use the Axent-owned native TCP provider"
+)
+
 assert_text_contains(
     "${axent_effective_deps}"
     "add_subdirectory\\(\"\\$\\{AXENT_THIRD_PARTY_DIR\\}/IXWebSocket\" \"\\$\\{CMAKE_CURRENT_BINARY_DIR\\}/third_party/IXWebSocket\" EXCLUDE_FROM_ALL\\)"
@@ -452,12 +481,6 @@ assert_text_appears_before(
 assert_text_appears_before(
     "${axent_effective_deps}"
     "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
-    "axent_require_target(\n        axtp::transport_tcp_native"
-    "Axent must validate the runtime native TCP wrapper after adding axtp-cpp-runtime"
-)
-assert_text_appears_before(
-    "${axent_effective_deps}"
-    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "axent_require_target(\n        axtp::transport_websocket_ix"
     "Axent must validate the runtime IX wrapper after adding axtp-cpp-runtime"
 )
@@ -500,8 +523,6 @@ add_library(axtp_sdk INTERFACE)
 add_library(axtp::sdk ALIAS axtp_sdk)
 add_library(axtp_transport_hidapi INTERFACE)
 add_library(axtp::transport_hidapi ALIAS axtp_transport_hidapi)
-add_library(axtp_transport_tcp_native INTERFACE)
-add_library(axtp::transport_tcp_native ALIAS axtp_transport_tcp_native)
 add_library(axtp_transport_websocket_ix INTERFACE)
 add_library(axtp::transport_websocket_ix ALIAS axtp_transport_websocket_ix)
 
