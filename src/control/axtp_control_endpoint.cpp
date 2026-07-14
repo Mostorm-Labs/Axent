@@ -15,7 +15,7 @@
 #include "core/protocol/generated/axtp_method_registry_generated.h"
 #include "core/runtime/endpoint/axtp_endpoint.hpp"
 #include "json_rpc/websocket_json_rpc_adapter.hpp"
-#include "transports/websocket/ix/websocket_transport.hpp"
+#include "websocket/ix_websocket_transport.hpp"
 
 namespace axent {
 namespace {
@@ -314,7 +314,7 @@ struct AxtpControlEndpoint::Impl {
                     });
             }
 
-            auto next_transport = std::make_unique<axtp::WebSocketTransport>(
+            auto next_transport = std::make_unique<transport::WebSocketTransport>(
                 options.port, options.bind_address.c_str());
             auto next_endpoint =
                 std::make_unique<axtp::AxtpEndpoint<axtp::BasicBroker<>>>(*next_broker);
@@ -539,7 +539,7 @@ struct AxtpControlEndpoint::Impl {
     std::map<std::string, std::uint32_t> event_names;
 
     std::unique_ptr<axtp::BasicBroker<>> broker;
-    std::unique_ptr<axtp::WebSocketTransport> transport;
+    std::unique_ptr<transport::WebSocketTransport> transport;
     std::unique_ptr<axtp::AxtpEndpoint<axtp::BasicBroker<>>> endpoint;
     std::unique_ptr<axtp::WebSocketJsonRpcAdapter> adapter;
     std::atomic<bool> running{false};

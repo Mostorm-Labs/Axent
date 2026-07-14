@@ -389,11 +389,13 @@ foreach(required_tooling_file
     endif()
 endforeach()
 
-foreach(required_tcp_provider_file
+foreach(required_owned_transport_file
         "src/transports/tcp/native_tcp_transport.hpp"
-        "tests/tcp_transport_test.cpp")
-    if(NOT EXISTS "${AXENT_REPO_ROOT}/${required_tcp_provider_file}")
-        message(FATAL_ERROR "Required Axent TCP provider file is missing: ${required_tcp_provider_file}")
+        "src/transports/websocket/ix_websocket_transport.hpp"
+        "tests/tcp_transport_test.cpp"
+        "tests/websocket_transport_test.cpp")
+    if(NOT EXISTS "${AXENT_REPO_ROOT}/${required_owned_transport_file}")
+        message(FATAL_ERROR "Required Axent transport file is missing: ${required_owned_transport_file}")
     endif()
 endforeach()
 
@@ -417,6 +419,30 @@ assert_file_does_not_contain(
     "axtp::TcpTransport|transports/tcp/native/tcp_transport.hpp"
     "Axent tooling must use the Axent-owned native TCP provider"
 )
+assert_file_contains(
+    "${axent_cmake_file}"
+    "add_library\\(axent_axtp_transport_websocket_ix INTERFACE\\)"
+    "Axent must own the IX WebSocket provider target"
+)
+assert_file_does_not_contain(
+    "${axent_cmake_file}"
+    "axtp::transport_websocket_ix"
+    "Axent targets must not consume the runtime IX WebSocket wrapper"
+)
+assert_file_does_not_contain(
+    "${axent_deps_file}"
+    "axtp::transport_websocket_ix"
+    "Axent dependencies must not require the runtime IX WebSocket wrapper"
+)
+foreach(websocket_consumer
+        "src/control/axtp_control_endpoint.cpp"
+        "src/tooling/axtp_cli.cpp")
+    assert_file_does_not_contain(
+        "${AXENT_REPO_ROOT}/${websocket_consumer}"
+        "axtp::WebSocketTransport|transports/websocket/ix/websocket_transport.hpp"
+        "Axent must use its owned IX WebSocket provider"
+    )
+endforeach()
 
 assert_text_contains(
     "${axent_effective_deps}"
@@ -478,12 +504,6 @@ assert_text_appears_before(
     "axent_require_target(\n        axtp::transport_hidapi"
     "Axent must validate the runtime HID wrapper after adding axtp-cpp-runtime"
 )
-assert_text_appears_before(
-    "${axent_effective_deps}"
-    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
-    "axent_require_target(\n        axtp::transport_websocket_ix"
-    "Axent must validate the runtime IX wrapper after adding axtp-cpp-runtime"
-)
 assert_text_contains(
     "${axent_gitmodules}"
     "path = third_party/hidapi"
@@ -513,6 +533,8 @@ project(axent_parent_runtime_fixture LANGUAGES CXX)
 
 add_library(nlohmann_json INTERFACE)
 add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+add_library(ixwebsocket INTERFACE)
+add_library(ixwebsocket::ixwebsocket ALIAS ixwebsocket)
 add_library(axtp_core INTERFACE)
 add_library(axtp::core ALIAS axtp_core)
 add_library(axtp_json_rpc INTERFACE)
@@ -523,9 +545,6 @@ add_library(axtp_sdk INTERFACE)
 add_library(axtp::sdk ALIAS axtp_sdk)
 add_library(axtp_transport_hidapi INTERFACE)
 add_library(axtp::transport_hidapi ALIAS axtp_transport_hidapi)
-add_library(axtp_transport_websocket_ix INTERFACE)
-add_library(axtp::transport_websocket_ix ALIAS axtp_transport_websocket_ix)
-
 set(AXENT_USE_EXTERNAL_AXTP_RUNTIME ON CACHE BOOL "" FORCE)
 set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS OFF CACHE BOOL "" FORCE)
 set(AXENT_BUILD_TESTING OFF CACHE BOOL "" FORCE)

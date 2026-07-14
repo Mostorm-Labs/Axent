@@ -62,7 +62,7 @@ Phase 11：稳定化、CI、文档、发布
 
 ```text
 1. Axent 持有 canonical axtpctl 与共享 AXTP tooling。
-2. TCP concrete transport 已迁入 Axent；WebSocket / HID 按顺序继续迁移。
+2. TCP / WebSocket concrete transport 已迁入 Axent；HID 最后迁移。
 3. Media / Firmware profile 的 Host 流程编排迁入 Axent。
 4. axtp-cpp-runtime 最终只保留协议、RPC、STREAM 与生成代码原语。
 ```
