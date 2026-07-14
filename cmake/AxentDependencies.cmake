@@ -140,20 +140,13 @@ else()
     set(AXTP_CPP_RUNTIME_BUILD_CONFORMANCE OFF CACHE BOOL "" FORCE)
     set(AXTP_CPP_RUNTIME_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     set(AXTP_BUILD_JSON_RPC ON CACHE BOOL "" FORCE)
-    set(AXTP_BUILD_OPTIONAL_TRANSPORTS ON CACHE BOOL "" FORCE)
+    set(AXTP_BUILD_OPTIONAL_TRANSPORTS OFF CACHE BOOL "" FORCE)
 
     if(EXISTS "${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime/CMakeLists.txt")
         add_subdirectory("${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime" "${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime")
     else()
         message(FATAL_ERROR "Missing third_party/axtp-cpp-runtime. Run git submodule update --init --recursive.")
     endif()
-endif()
-
-if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
-    axent_require_target(
-        axtp::transport_hidapi
-        "Axent requires axtp::transport_hidapi after adding axtp-cpp-runtime."
-    )
 endif()
 
 set(AXENT_AXDP_ROOT "${AXENT_THIRD_PARTY_DIR}/axdp" CACHE PATH "AXDP source root")

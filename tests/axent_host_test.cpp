@@ -15,11 +15,11 @@
 #include <vector>
 
 #include "axent/host/axent_host.hpp"
-#include "axent/testing/axtp_adapter_test_seam.hpp"
+#include "axtp_adapter_test_seam.hpp"
 
 #include "core/protocol/wire/inbound_processor.hpp"
 #include "core/protocol/wire/outbound_processor.hpp"
-#include "transports/hidapi/hid_transport.hpp"
+#include "hidapi/hid_transport.hpp"
 
 namespace {
 
@@ -858,7 +858,7 @@ int main()
     real_options.axtp_adapter_factory = [&](axent::AxtpAdapterConfig config) {
         auto adapter = axent::testing::AxtpAdapterTestSeam::make(
             std::move(config),
-            [&](const axtp::HidTransportOptions&) {
+            [&](const axent::transport::HidTransportOptions&) {
                 ++transport_factory_calls;
                 auto transport = std::make_unique<ScriptedAxtpTransport>();
                 scripted = transport.get();

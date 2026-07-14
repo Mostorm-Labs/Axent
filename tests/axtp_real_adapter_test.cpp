@@ -13,11 +13,11 @@
 #include <vector>
 
 #include "axent/adapters/axtp_adapter.hpp"
-#include "axent/testing/axtp_adapter_test_seam.hpp"
+#include "axtp_adapter_test_seam.hpp"
 
 #include "core/protocol/wire/inbound_processor.hpp"
 #include "core/protocol/wire/outbound_processor.hpp"
-#include "transports/hidapi/hid_transport.hpp"
+#include "hidapi/hid_transport.hpp"
 
 namespace {
 
@@ -383,7 +383,7 @@ int main()
     require(defaults.selector.input_report_size == 0, "NA20 input report size should be auto");
     require(defaults.selector.output_report_size == 0, "NA20 output report size should be auto");
 
-    axtp::HidDeviceInfo hid_device;
+    axent::transport::HidDeviceInfo hid_device;
     hid_device.path = "hid-path-001";
     hid_device.vendorId = 0x0581;
     hid_device.productId = 0x2581;
@@ -430,7 +430,7 @@ int main()
     require(axent::testing::AxtpAdapterTestSeam::matches_selector(path_adapter, hid_device),
             "path filter should accept matching path");
 
-    axtp::HidTransportOptions options;
+    axent::transport::HidTransportOptions options;
     options.inputReportSize = 0;
     options.outputReportSize = 0;
     options.readBufferSize = 4096;
@@ -445,33 +445,33 @@ int main()
     require(mapped_options.outputReportSize == 0, "mapped output report size should remain auto");
     require(mapped_options.useReadThread, "real HID adapter should use read thread like NearCast");
     bool trace_called = false;
-    mapped_options.reportTrace = [&](const axtp::HidReportTrace&) {
+    mapped_options.reportTrace = [&](const axent::transport::HidReportTrace&) {
         trace_called = true;
     };
-    axtp::HidReportTrace mapped_trace;
+    axent::transport::HidReportTrace mapped_trace;
     mapped_options.reportTrace(mapped_trace);
     require(trace_called, "mapped HID options should preserve report trace callback storage");
 
-    axtp::HidReportTrace timeout;
-    timeout.kind = axtp::HidReportTraceKind::ReadTimeout;
+    axent::transport::HidReportTrace timeout;
+    timeout.kind = axent::transport::HidReportTraceKind::ReadTimeout;
     timeout.timeoutMs = 1000;
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, timeout);
-    axtp::HidReportTrace raw_read;
-    raw_read.kind = axtp::HidReportTraceKind::ReadReport;
+    axent::transport::HidReportTrace raw_read;
+    raw_read.kind = axent::transport::HidReportTraceKind::ReadReport;
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, raw_read);
-    axtp::HidReportTrace accepted;
-    accepted.kind = axtp::HidReportTraceKind::AcceptedReport;
+    axent::transport::HidReportTrace accepted;
+    accepted.kind = axent::transport::HidReportTraceKind::AcceptedReport;
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, accepted);
-    axtp::HidReportTrace read_error;
-    read_error.kind = axtp::HidReportTraceKind::ReadError;
+    axent::transport::HidReportTrace read_error;
+    read_error.kind = axent::transport::HidReportTraceKind::ReadError;
     read_error.message = "read failed";
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, read_error);
-    axtp::HidReportTrace write_error;
-    write_error.kind = axtp::HidReportTraceKind::WriteError;
+    axent::transport::HidReportTrace write_error;
+    write_error.kind = axent::transport::HidReportTraceKind::WriteError;
     write_error.message = "write failed";
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, write_error);
-    axtp::HidReportTrace dropped;
-    dropped.kind = axtp::HidReportTraceKind::DroppedReportId;
+    axent::transport::HidReportTrace dropped;
+    dropped.kind = axent::transport::HidReportTraceKind::DroppedReportId;
     dropped.reportId = 0x06;
     dropped.expectedReportId = 0x05;
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(adapter, dropped);
@@ -485,7 +485,7 @@ int main()
     require(diagnostics.last_error == "write failed", "last HID error should keep the latest error message");
 
     auto unavailable_adapter = axent::testing::AxtpAdapterTestSeam::make(
-        defaults, [](const axtp::HidTransportOptions&) {
+        defaults, [](const axent::transport::HidTransportOptions&) {
         return std::unique_ptr<axtp::ITransport>{};
     });
     const auto result = unavailable_adapter->call("hid:0581:2581:NA20-SERIAL", "status.get", {});
@@ -503,7 +503,7 @@ int main()
     ScriptedAxtpTransport* scripted = nullptr;
     int session_transport_factory_calls = 0;
     auto session_adapter = axent::testing::AxtpAdapterTestSeam::make(
-        defaults, [&](const axtp::HidTransportOptions&) {
+        defaults, [&](const axent::transport::HidTransportOptions&) {
         ++session_transport_factory_calls;
         auto transport = std::make_unique<ScriptedAxtpTransport>();
         scripted = transport.get();
@@ -544,7 +544,7 @@ int main()
     axent::AxtpAdapterConfig media_config = axent::AxtpAdapter::na20_defaults();
     ScriptedAxtpTransport* media_scripted = nullptr;
     auto media_adapter = axent::testing::AxtpAdapterTestSeam::make(
-        media_config, [&](const axtp::HidTransportOptions&) {
+        media_config, [&](const axent::transport::HidTransportOptions&) {
         auto transport = std::make_unique<ScriptedAxtpTransport>();
         media_scripted = transport.get();
         return transport;
@@ -765,8 +765,8 @@ int main()
                 "media-source-event name=video.streamSourceStateChanged id=0x0807 "
                 "source=wireless_cast state=receiving reason=<absent> activeStreamId=<absent>",
             "event-driven reopen must not overwrite the receiving event diagnostic summary");
-    axtp::HidReportTrace source_event_read_timeout;
-    source_event_read_timeout.kind = axtp::HidReportTraceKind::ReadTimeout;
+    axent::transport::HidReportTrace source_event_read_timeout;
+    source_event_read_timeout.kind = axent::transport::HidReportTraceKind::ReadTimeout;
     axent::testing::AxtpAdapterTestSeam::record_hid_trace(
         *media_adapter, source_event_read_timeout);
     {
@@ -1150,7 +1150,7 @@ int main()
     kind_fallback_config.enable_audio = false;
     ScriptedAxtpTransport* kind_fallback_scripted = nullptr;
     auto kind_fallback_adapter = axent::testing::AxtpAdapterTestSeam::make(
-        kind_fallback_config, [&](const axtp::HidTransportOptions&) {
+        kind_fallback_config, [&](const axent::transport::HidTransportOptions&) {
             auto transport = std::make_unique<ScriptedAxtpTransport>();
             kind_fallback_scripted = transport.get();
             return transport;
@@ -1231,7 +1231,7 @@ int main()
     std::vector<axent::MediaFrame> reentrant_frames;
     ScriptedAxtpTransport* reentrant_scripted = nullptr;
     auto reentrant_adapter = axent::testing::AxtpAdapterTestSeam::make(
-        media_config, [&](const axtp::HidTransportOptions&) {
+        media_config, [&](const axent::transport::HidTransportOptions&) {
         auto transport = std::make_unique<ScriptedAxtpTransport>();
         reentrant_scripted = transport.get();
         return transport;

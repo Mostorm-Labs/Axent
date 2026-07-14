@@ -4,27 +4,25 @@
 #include <memory>
 
 #include "axent/adapters/axtp_adapter.hpp"
-
-namespace axtp {
-class ITransport;
-struct HidDeviceInfo;
-struct HidReportTrace;
-struct HidTransportOptions;
-} // namespace axtp
+#include "hidapi/hid_transport.hpp"
 
 namespace axent::testing {
 
 class AxtpAdapterTestSeam final {
 public:
-    using TransportFactory =
-        std::function<std::unique_ptr<axtp::ITransport>(const axtp::HidTransportOptions&)>;
+    using TransportFactory = std::function<std::unique_ptr<axtp::ITransport>(
+        const transport::HidTransportOptions&)>;
 
     static std::unique_ptr<AxtpAdapter> make(AxtpAdapterConfig config,
                                              TransportFactory transport_factory);
-    static axtp::HidTransportOptions hid_options_from_selector(const TransportSelector& selector);
-    static TransportDescriptor descriptor_from_hid_device(const axtp::HidDeviceInfo& device);
-    static bool matches_selector(const AxtpAdapter& adapter, const axtp::HidDeviceInfo& device);
-    static void record_hid_trace(AxtpAdapter& adapter, const axtp::HidReportTrace& trace);
+    static transport::HidTransportOptions hid_options_from_selector(
+        const TransportSelector& selector);
+    static TransportDescriptor descriptor_from_hid_device(
+        const transport::HidDeviceInfo& device);
+    static bool matches_selector(const AxtpAdapter& adapter,
+                                 const transport::HidDeviceInfo& device);
+    static void record_hid_trace(AxtpAdapter& adapter,
+                                 const transport::HidReportTrace& trace);
     static void disconnect_session(AxtpAdapter& adapter);
     static void stop_session_pump(AxtpAdapter& adapter);
     static void enqueue_stream_payload(AxtpAdapter& adapter,
