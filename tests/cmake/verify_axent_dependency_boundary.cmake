@@ -426,20 +426,10 @@ assert_text_does_not_contain(
     "AXTP_CPP_RUNTIME_BUILD_TOOLS"
     "Axent must not reference the removed cpp-runtime BUILD_TOOLS option"
 )
-assert_text_contains(
-    "${axent_effective_deps}"
-    "set\\(AXTP_CPP_RUNTIME_BUILD_MEDIAHOST OFF CACHE BOOL \"\" FORCE\\)"
-    "Axent product builds must not build the retired cpp-runtime mediahost demo"
-)
-assert_text_contains(
-    "${axent_effective_deps}"
-    "set\\(AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS OFF CACHE BOOL \"\" FORCE\\)"
-    "Axent product builds must keep cpp-runtime tool dependency fetching off"
-)
 assert_text_does_not_contain(
     "${axent_effective_deps}"
-    "set\\(AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS ON"
-    "Axent must not enable cpp-runtime tool dependency fetching"
+    "AXTP_CPP_RUNTIME_BUILD_MEDIAHOST|AXTP_CPP_RUNTIME_TOOLS_FETCH_DEPS"
+    "Axent must not reference removed cpp-runtime MediaHost options"
 )
 assert_text_appears_before(
     "${axent_effective_deps}"
