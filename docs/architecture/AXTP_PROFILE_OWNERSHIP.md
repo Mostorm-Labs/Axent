@@ -2,11 +2,12 @@
 
 状态：架构决策草案，作为后续拆分任务的边界依据
 
-更新时间：2026-07-11
+更新时间：2026-07-14
 
 ## 1. 背景与目标
 
-当前 `axtp-cpp-runtime` 中的 media profile 和 firmware profile 同时包含了两类职责：
+此前 `axtp-cpp-runtime` 中的 media profile 和 firmware profile 同时包含了两类职责；
+当前两类 profile 均已在消费者迁移完成后退役：
 
 - AXTP 协议字段、RPC、STREAM 数据等协议语义；
 - 流打开/关闭、文件更新、重试、状态管理等 Host 侧流程编排。
@@ -103,10 +104,9 @@ AXTP 协议事务
   firmware.beginUpdate -> STREAM chunks -> firmware.finishUpdate
 ```
 
-`beginUpdate -> STREAM -> finishUpdate` 是确定性的 AXTP 协议事务，当前可暂时复用
-`axtp::firmware::FirmwareUpdateProfile`。它只能作为 Axent adapter/tooling 的私有后端，
-不能成为产品直接依赖的公共接口。以后即使将该 helper 移入 Axent，也不应改变
-`FirmwareUpdateService` 对上的稳定契约。
+`beginUpdate -> STREAM -> finishUpdate` 是确定性的 AXTP 协议事务，现已由 Axent
+`AxtpFirmwareBackend` 私有实现。cpp-runtime 的 `FirmwareUpdateProfile` 已删除；该事务
+不能成为产品直接依赖的公共接口，也不改变 `FirmwareUpdateService` 对上的稳定契约。
 
 Axent 固件服务应负责：
 
@@ -131,7 +131,7 @@ Runtime 不读取本地文件，也不决定重试、恢复或升级授权策略
 | media registry / pull / close coordinator | cpp-runtime media profile | 不迁移 | 主链路由 Axent adapter 和产品状态机替代 |
 | media control bridge / mediahost demo | cpp-runtime | 退役 | 不再维护 |
 | AXTP 媒体 RPC 与 STREAM 映射 | 多处重复 | Axent `AxtpAdapter` | 隐藏协议差异 |
-| `beginUpdate -> STREAM -> finishUpdate` | cpp-runtime firmware profile | Runtime 过渡 helper 或 Axent adapter 私有实现 | 不作为产品 API |
+| `beginUpdate -> STREAM -> finishUpdate` | cpp-runtime firmware profile | Axent `AxtpFirmwareBackend` 私有实现 | 不作为产品 API；runtime helper 已退役 |
 | 文件、MD5、进度、lease、恢复 | tooling / Host 分散 | Axent firmware service | 资源与业务流程所有者 |
 | 投屏源抢占 | Nearcast | Nearcast | 继续由产品协调器持有 |
 | 解码、渲染、时钟、缓冲 | Nearcast | Nearcast | 不进入 Axent 或 runtime |
@@ -263,7 +263,7 @@ CMakeLists.txt
    stream descriptor 与 open/close 生命周期。
 2. 保持 `axtp::StreamPayload` 只出现在 AXTP adapter 实现边界，不进入产品公共接口。
 3. 让 `AxtpAdapter` 完成所有 runtime-to-Axent 媒体字段映射。
-4. 完成 Axent firmware service，复用或封装底层确定性 AXTP 更新事务。
+4. 由 Axent firmware service 和私有 backend 持有底层确定性 AXTP 更新事务。
 5. 增加边界检查，阻止 Core 和产品公共头文件包含 `profiles/media/*` 或
    `profiles/firmware/*`。
 
@@ -285,8 +285,8 @@ CMakeLists.txt
 2. 删除 media registry、pull/close coordinator 和 control bridge；
 3. 删除不再被使用的 `axtp_media_profile` target 和 Host headers；
 4. 保留 AXTP STREAM、RPC、schema 和协议错误类型；
-5. firmware profile 暂时作为协议事务 helper 时，不再增加 Host 级能力；
-6. Axent firmware service 稳定后，再决定保留最小 helper 或将其实现移入 Axent adapter。
+5. 删除已无消费者的 firmware profile、公开头文件、测试和安装导出；
+6. 保持确定性固件事务位于 Axent 私有 backend，不在 runtime 重新引入 Host/profile 层。
 
 ## 7. 推荐迁移顺序
 
