@@ -10,6 +10,7 @@
 
 #include "axent/adapters/axtp_adapter.hpp"
 #include "axent/core/types.hpp"
+#include "axent/firmware/firmware_update_service.hpp"
 #include "axent/media/media_frame.hpp"
 #include "axent/media/media_relay.hpp"
 #include "axent/media/media_subscription.hpp"
@@ -82,6 +83,7 @@ public:
     void upsert_device(DeviceSnapshot snapshot);
     SessionLease acquire_session(const SessionAcquireRequest& request);
     void release_session(const std::string& session_id, const std::string& reason);
+    firmware::MaintenanceLeaseProvider& maintenance_lease_provider();
 
     std::unique_ptr<MediaConsumer> create_media_consumer(const std::string& session_id,
                                                          MediaRelayOptions options);
@@ -106,6 +108,9 @@ public:
     Broker& broker();
 
 private:
+    bool reserve_maintenance(const std::string& device_id,
+                             std::string& reason,
+                             std::function<void()>& release);
     bool publish_media_stream_event_for_session(const std::string& session_id,
                                                 MediaStreamEvent event);
     bool publish_media_frame_for_device(std::string device_id, MediaFrame frame);

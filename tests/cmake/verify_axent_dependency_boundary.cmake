@@ -358,6 +358,24 @@ assert_file_does_not_contain(
     "Axent targets must not depend on the retired cpp-runtime toolkit"
 )
 
+assert_file_does_not_contain(
+    "${axent_cmake_file}"
+    "axtp::firmware_profile|AXENT_HAS_AXTP_FIRMWARE_PROFILE"
+    "Axent must own firmware transactions instead of consuming the runtime firmware profile"
+)
+
+assert_file_does_not_contain(
+    "${AXENT_REPO_ROOT}/include/axent/firmware/firmware_update_service.hpp"
+    "nlohmann|axtp::|axtp_sdk|firmware_profile"
+    "The public firmware service contract must remain JSON- and cpp-runtime-free"
+)
+
+assert_file_does_not_contain(
+    "${AXENT_REPO_ROOT}/src/firmware/firmware_update_service.cpp"
+    "axtp::|axtp_sdk|firmware_profile"
+    "The generic firmware service must not depend on cpp-runtime"
+)
+
 if(EXISTS "${AXENT_REPO_ROOT}/src/cli/axtp_cli.cpp")
     message(FATAL_ERROR "AXTP runner must live under src/tooling, not src/cli")
 endif()
@@ -490,8 +508,6 @@ add_library(axtp_runtime INTERFACE)
 add_library(axtp::runtime ALIAS axtp_runtime)
 add_library(axtp_sdk INTERFACE)
 add_library(axtp::sdk ALIAS axtp_sdk)
-add_library(axtp_firmware_profile INTERFACE)
-add_library(axtp::firmware_profile ALIAS axtp_firmware_profile)
 add_library(axtp_transport_hidapi INTERFACE)
 add_library(axtp::transport_hidapi ALIAS axtp_transport_hidapi)
 add_library(axtp_transport_tcp_native INTERFACE)
@@ -520,10 +536,23 @@ int main()
     return axent::stream_key(frame) == descriptor.key ? 0 : 1;
 }
 ]=])
+file(WRITE "${parent_fixture_dir}/firmware_contract_consumer.cpp" [=[
+#include "axent/firmware/firmware_update_service.hpp"
+
+int main()
+{
+    axent::firmware::FirmwareUpdateRequest request;
+    request.device_id = "device";
+    request.file_id = "firmware";
+    return request.preferred_chunk_size == 1024 ? 0 : 1;
+}
+]=])
 file(APPEND "${parent_fixture_dir}/CMakeLists.txt" [=[
 
 add_executable(axent_media_contract_consumer media_contract_consumer.cpp)
 target_link_libraries(axent_media_contract_consumer PRIVATE axent::media_contract)
+add_executable(axent_firmware_contract_consumer firmware_contract_consumer.cpp)
+target_link_libraries(axent_firmware_contract_consumer PRIVATE axent::firmware)
 
 if(NOT TARGET axent::libaxent)
     message(FATAL_ERROR "Expected axent::libaxent target")
@@ -536,6 +565,9 @@ if(NOT TARGET axent::control_contract)
 endif()
 if(NOT TARGET axent::media_contract)
     message(FATAL_ERROR "Expected axent::media_contract target")
+endif()
+if(NOT TARGET axent::firmware)
+    message(FATAL_ERROR "Expected axent::firmware target")
 endif()
 if(NOT TARGET axent::axtp_control_endpoint)
     message(FATAL_ERROR "Expected axent::axtp_control_endpoint target")
@@ -570,6 +602,13 @@ get_target_property(media_contract_interface_links axent_media_contract INTERFAC
 foreach(link_item IN LISTS media_contract_interface_links)
     if(link_item MATCHES "^axtp::" OR link_item MATCHES "nlohmann")
         message(FATAL_ERROR "Axent media contract must remain JSON- and cpp-runtime-free")
+    endif()
+endforeach()
+
+get_target_property(firmware_interface_links axent_firmware INTERFACE_LINK_LIBRARIES)
+foreach(link_item IN LISTS firmware_interface_links)
+    if(link_item MATCHES "^axtp::" OR link_item MATCHES "nlohmann")
+        message(FATAL_ERROR "Axent firmware contract must remain JSON- and cpp-runtime-free")
     endif()
 endforeach()
 
@@ -611,7 +650,8 @@ endif()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" --build "${parent_fixture_dir}/build"
-            --config Debug --target axent_media_contract_consumer
+            --config Debug --target
+            axent_media_contract_consumer axent_firmware_contract_consumer
     RESULT_VARIABLE media_contract_consumer_result
     OUTPUT_VARIABLE media_contract_consumer_output
     ERROR_VARIABLE media_contract_consumer_error

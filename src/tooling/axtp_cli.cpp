@@ -65,11 +65,8 @@ int run_axtp_cli(const std::vector<std::string>& args,
 #include "transports/tcp/native/tcp_transport.hpp"
 #include "transports/websocket/ix/websocket_transport.hpp"
 
-#if defined(AXENT_HAS_AXTP_FIRMWARE_PROFILE)
-#include "profiles/firmware/firmware_profile.hpp"
-#endif
-
-#include "md5.hpp"
+#include "axent/firmware/firmware_update_service.hpp"
+#include "../firmware/axtp_firmware_backend.hpp"
 
 namespace axent {
 namespace {
@@ -1020,12 +1017,19 @@ bool is_hid_transport(const CliOptions& options)
 bool attach_transport(const CliOptions& options,
                       axtp::sdk::AxtpClient& client,
                       std::function<void(const axtp::HidReportTrace&)> trace,
-                      std::ostream& err)
+                      std::ostream& err,
+                      axtp::HidTransport** attached_hid = nullptr)
 {
+    if (attached_hid != nullptr) {
+        *attached_hid = nullptr;
+    }
     auto bundle = make_transport(transport_options_from_cli(options, std::move(trace)));
     if (!bundle.transport) {
         err << "unsupported transport: " << options.transport << "\n";
         return false;
+    }
+    if (attached_hid != nullptr) {
+        *attached_hid = bundle.hid_transport;
     }
     client.attachTransport(std::move(bundle.transport));
     return client.isConnected();
@@ -1435,6 +1439,37 @@ int call_method(const CliOptions& options, std::ostream& out, std::ostream& err)
     return response.statusCode == axtp::ErrorCode::Success ? 0 : 4;
 }
 
+class StandaloneMaintenanceLeaseProvider final
+    : public firmware::MaintenanceLeaseProvider {
+public:
+    firmware::MaintenanceLease try_acquire_maintenance(
+        const std::string& device_id,
+        std::string& reason) override
+    {
+        if (device_id.empty()) {
+            reason = "firmware device identity is required";
+            return {};
+        }
+        return grant_maintenance(device_id, []() {});
+    }
+};
+
+std::string firmware_device_key(const CliOptions& options)
+{
+    std::ostringstream key;
+    key << "direct:" << options.transport;
+    if (!options.path.empty()) {
+        key << ":path=" << options.path;
+    } else if (!options.serial_number.empty()) {
+        key << ":serial=" << options.serial_number;
+    } else if (options.vid.has_value() && options.pid.has_value()) {
+        key << ":vid=" << *options.vid << ":pid=" << *options.pid;
+    } else {
+        key << ":host=" << options.host << ":port=" << options.port.value_or(0);
+    }
+    return key.str();
+}
+
 int firmware_update_command(const CliOptions& options, std::ostream& out, std::ostream& err)
 {
     if (options.command.size() < 2 || options.command[1] != "update") {
@@ -1442,11 +1477,6 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
         return 2;
     }
 
-#if !defined(AXENT_HAS_AXTP_FIRMWARE_PROFILE)
-    (void)out;
-    err << "firmware update unavailable in this build\n";
-    return 4;
-#else
     if (options.transport == "websocket" || options.transport == "ws") {
         err << "firmware update requires a framed-binary transport\n";
         return 2;
@@ -1457,9 +1487,13 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
         err << "firmware update requires --file\n";
         return 2;
     }
-    const auto image = read_binary_file(*file_path);
-    if (!image.has_value()) {
+    std::ifstream firmware_input(*file_path, std::ios::binary);
+    if (!firmware_input) {
         err << "failed to read firmware file: " << *file_path << "\n";
+        return 2;
+    }
+    if (firmware_input.peek() == std::char_traits<char>::eof()) {
+        err << "firmware file must not be empty: " << *file_path << "\n";
         return 2;
     }
 
@@ -1478,8 +1512,6 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
     const auto target = option_value(options.command, "--target");
     const auto package_id = option_value(options.command, "--package-id");
     const auto version = option_value(options.command, "--version");
-    const auto md5 = tooling_detail::md5_hex(image->data(), image->size());
-
     auto logger = make_logger(options);
     std::mutex trace_mutex;
     auto hid_trace = [&logger, &options, &trace_mutex, &out](const axtp::HidReportTrace& trace) {
@@ -1493,7 +1525,9 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
     axtp::sdk::ClientOptions client_options;
     client_options.autoIdentify = !options.no_app_ready;
     axtp::sdk::AxtpClient client(client_options);
-    if (!attach_transport(options, client, hid_trace, err)) {
+    axtp::HidTransport* firmware_hid_transport = nullptr;
+    if (!attach_transport(
+            options, client, hid_trace, err, &firmware_hid_transport)) {
         err << "failed to connect transport: " << options.transport << "\n";
         return 4;
     }
@@ -1516,55 +1550,60 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
         }
     }
 
-    axtp::sdk::CallOptions call_options;
-    call_options.timeout = std::chrono::milliseconds(options.timeout_ms);
-    call_options.encoding = axtp::RpcEncoding::Json;
-
-    axtp::firmware::FirmwareUpdateRequest update_request;
-    update_request.file.fileId = file_id;
-    update_request.file.data = *image;
-    update_request.file.md5 = md5;
-    update_request.preferredChunkSize = chunk_size;
-    if (target.has_value()) {
-        update_request.file.target = *target;
-    }
-    if (package_id.has_value()) {
-        update_request.packageId = *package_id;
-    }
-    if (version.has_value()) {
-        update_request.version = *version;
-    }
+    firmware::FirmwareUpdateRequest update_request;
+    update_request.device_id = firmware_device_key(options);
+    update_request.file_path = *file_path;
+    update_request.file_id = file_id;
+    update_request.target = target.value_or(std::string{});
+    update_request.package_id = package_id.value_or(std::string{});
+    update_request.version = version.value_or(std::string{});
+    update_request.preferred_chunk_size = chunk_size;
+    update_request.timeout = std::chrono::milliseconds(options.timeout_ms);
     if (options.no_app_ready) {
-        update_request.jsonSid = options.sid;
+        update_request.sid = options.sid;
     }
 
-    axtp::firmware::FirmwareUpdateProfile profile(client);
-    const auto result = profile.update(update_request, call_options);
+    firmware::detail::AxtpFirmwareBackend::SendErrorCount send_error_count;
+    if (firmware_hid_transport != nullptr) {
+        send_error_count = [firmware_hid_transport]() {
+            return firmware_hid_transport->stats().writeErrors;
+        };
+    }
+    firmware::detail::AxtpFirmwareBackend backend(
+        client, std::move(send_error_count));
+    StandaloneMaintenanceLeaseProvider maintenance;
+    firmware::FirmwareUpdateService service(backend, maintenance);
+    const auto result = service.run(update_request);
+    if (result.code == firmware::FirmwareUpdateCode::InvalidArgument ||
+        result.code == firmware::FirmwareUpdateCode::FileReadFailed) {
+        err << result.message << ": " << *file_path << "\n";
+        return 2;
+    }
 
     auto output = nlohmann::json::object();
-    output["ok"] = result.ok;
+    output["ok"] = result.ok();
     output["method"] = "firmware.update";
     output["file"] = *file_path;
     output["fileId"] = file_id;
-    output["size"] = image->size();
-    output["md5"] = md5;
-    output["updateSessionId"] = result.updateSessionId;
-    output["streamId"] = result.streamId;
-    output["chunkSize"] = result.chunkSize;
+    output["size"] = result.bytes;
+    output["md5"] = result.md5;
+    output["updateSessionId"] = result.update_session_id;
+    output["streamId"] = result.stream_id;
+    output["chunkSize"] = result.chunk_size;
     output["chunks"] = result.chunks;
-    output["begin"] = result.begin;
-    output["finish"] = result.finish;
-    if (!result.ok) {
+    output["begin"] = backend.begin_payload();
+    output["finish"] = backend.finish_payload();
+    if (!result.ok()) {
         auto error = nlohmann::json::object();
-        error["code"] = error_name(result.status);
-        error["numericCode"] = static_cast<std::uint16_t>(result.status);
-        error["message"] = error_name(result.status);
-        error["method"] = result.failedMethod;
+        const auto protocol_status = static_cast<axtp::ErrorCode>(result.protocol_status);
+        error["code"] = error_name(protocol_status);
+        error["numericCode"] = result.protocol_status;
+        error["message"] = error_name(protocol_status);
+        error["method"] = result.failed_method;
         output["error"] = std::move(error);
     }
     print_json_object(output, output_format, out);
-    return result.ok ? 0 : 4;
-#endif
+    return result.ok() ? 0 : 4;
 }
 
 int list_hid_devices_command(const CliOptions& options, std::ostream& out, std::ostream& err)
