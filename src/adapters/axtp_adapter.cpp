@@ -1,5 +1,5 @@
 #include "axent/adapters/axtp_adapter.hpp"
-#include "axent/testing/axtp_adapter_test_seam.hpp"
+#include "axtp_adapter_test_seam.hpp"
 
 #include "axtp_adapter_internal.hpp"
 
@@ -18,7 +18,7 @@
 
 #include "axtp_runtime.hpp"
 #include "axtp_sdk.hpp"
-#include "transports/hidapi/hid_transport.hpp"
+#include "hidapi/hid_transport.hpp"
 
 namespace axent {
 namespace {
@@ -33,7 +33,7 @@ std::string hex4(std::uint16_t value)
     return out.str();
 }
 
-std::string descriptor_id_for(const axtp::HidDeviceInfo& device)
+std::string descriptor_id_for(const axent::transport::HidDeviceInfo& device)
 {
     if (!device.serialNumber.empty()) {
         return "hid:" + hex4(device.vendorId) + ":" + hex4(device.productId) + ":" + device.serialNumber;
@@ -44,24 +44,24 @@ std::string descriptor_id_for(const axtp::HidDeviceInfo& device)
     return "hid:" + hex4(device.vendorId) + ":" + hex4(device.productId);
 }
 
-std::string trace_event_name(axtp::HidReportTraceKind kind)
+std::string trace_event_name(axent::transport::HidReportTraceKind kind)
 {
     switch (kind) {
-    case axtp::HidReportTraceKind::ReadReport:
+    case axent::transport::HidReportTraceKind::ReadReport:
         return "read-report";
-    case axtp::HidReportTraceKind::ReadTimeout:
+    case axent::transport::HidReportTraceKind::ReadTimeout:
         return "read-timeout";
-    case axtp::HidReportTraceKind::ReadError:
+    case axent::transport::HidReportTraceKind::ReadError:
         return "read-error";
-    case axtp::HidReportTraceKind::WriteFrame:
+    case axent::transport::HidReportTraceKind::WriteFrame:
         return "write-frame";
-    case axtp::HidReportTraceKind::WriteReport:
+    case axent::transport::HidReportTraceKind::WriteReport:
         return "write-report";
-    case axtp::HidReportTraceKind::WriteError:
+    case axent::transport::HidReportTraceKind::WriteError:
         return "write-error";
-    case axtp::HidReportTraceKind::AcceptedReport:
+    case axent::transport::HidReportTraceKind::AcceptedReport:
         return "accepted-report";
-    case axtp::HidReportTraceKind::DroppedReportId:
+    case axent::transport::HidReportTraceKind::DroppedReportId:
         return "dropped-report-id";
     }
     return "unknown";
@@ -339,10 +339,10 @@ MediaCodec codec_for_open_result(MediaKind kind, const nlohmann::json& result)
         (kind == MediaKind::Audio ? MediaCodec::Aac : MediaCodec::Unknown);
 }
 
-std::unique_ptr<axtp::ITransport> make_default_hid_transport(axtp::HidTransportOptions options)
+std::unique_ptr<axtp::ITransport> make_default_hid_transport(axent::transport::HidTransportOptions options)
 {
 #if AXENT_HAS_AXTP_HID_TRANSPORT
-    return std::make_unique<axtp::HidTransport>(std::move(options));
+    return std::make_unique<axent::transport::HidTransport>(std::move(options));
 #else
     (void)options;
     return nullptr;
@@ -356,7 +356,7 @@ namespace {
 
 class DefaultAxtpAdapterRuntimeFactory final : public AxtpAdapterRuntimeFactory {
 public:
-    std::unique_ptr<axtp::ITransport> create(const axtp::HidTransportOptions& options) override
+    std::unique_ptr<axtp::ITransport> create(const axent::transport::HidTransportOptions& options) override
     {
         return make_default_hid_transport(options);
     }
@@ -435,9 +435,9 @@ AxtpAdapterConfig AxtpAdapter::na20_defaults()
     return config;
 }
 
-axtp::HidTransportOptions detail::hid_options_from_selector(const TransportSelector& selector)
+axent::transport::HidTransportOptions detail::hid_options_from_selector(const TransportSelector& selector)
 {
-    axtp::HidTransportOptions options;
+    axent::transport::HidTransportOptions options;
     options.vendorId = selector.vendor_id;
     options.productId = selector.product_id;
     options.usagePage = selector.usage_page;
@@ -451,11 +451,11 @@ axtp::HidTransportOptions detail::hid_options_from_selector(const TransportSelec
     options.maxReportsPerPoll = selector.max_reports_per_poll;
     options.useReadThread = true;
     options.readThreadTimeoutMs = 1000;
-    options.reportTrace = [](const axtp::HidReportTrace&) {};
+    options.reportTrace = [](const axent::transport::HidReportTrace&) {};
     return options;
 }
 
-TransportDescriptor detail::descriptor_from_hid_device(const axtp::HidDeviceInfo& device)
+TransportDescriptor detail::descriptor_from_hid_device(const axent::transport::HidDeviceInfo& device)
 {
     TransportDescriptor descriptor;
     descriptor.id = descriptor_id_for(device);
@@ -516,7 +516,7 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
     }
 
 #if AXENT_HAS_AXTP_HID_TRANSPORT
-    const auto hid_devices = axtp::enumerateHidDevices(config_.selector.vendor_id, config_.selector.product_id);
+    const auto hid_devices = axent::transport::enumerateHidDevices(config_.selector.vendor_id, config_.selector.product_id);
     for (const auto& device : hid_devices) {
         if (detail::matches_selector(config_.selector, device)) {
             devices.push_back(snapshot_from_descriptor(detail::descriptor_from_hid_device(device)));
@@ -577,7 +577,7 @@ ControlResult AxtpAdapter::start_firmware_update(const std::string&, const std::
     return {ControlStatus::Unavailable, {{"error", "AXTP firmware update skeleton only"}}};
 }
 
-bool detail::matches_selector(const TransportSelector& selector, const axtp::HidDeviceInfo& device)
+bool detail::matches_selector(const TransportSelector& selector, const axent::transport::HidDeviceInfo& device)
 {
     if (selector.kind != TransportKind::Hid) {
         return false;
@@ -1048,14 +1048,14 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     }
 
     auto hid_options = detail::hid_options_from_selector(config_.selector);
-    hid_options.reportTrace = [this](const axtp::HidReportTrace& trace) {
+    hid_options.reportTrace = [this](const axent::transport::HidReportTrace& trace) {
         record_transport_trace(
             trace_event_name(trace.kind),
-            trace.kind == axtp::HidReportTraceKind::AcceptedReport,
-            trace.kind == axtp::HidReportTraceKind::WriteReport,
-            trace.kind == axtp::HidReportTraceKind::ReadError,
-            trace.kind == axtp::HidReportTraceKind::WriteError,
-            trace.kind == axtp::HidReportTraceKind::DroppedReportId,
+            trace.kind == axent::transport::HidReportTraceKind::AcceptedReport,
+            trace.kind == axent::transport::HidReportTraceKind::WriteReport,
+            trace.kind == axent::transport::HidReportTraceKind::ReadError,
+            trace.kind == axent::transport::HidReportTraceKind::WriteError,
+            trace.kind == axent::transport::HidReportTraceKind::DroppedReportId,
             trace.message);
     };
     auto transport = runtime_->factory ? runtime_->factory->create(hid_options) : nullptr;
@@ -1575,7 +1575,7 @@ void AxtpAdapter::refresh_diagnostics_locked()
         diagnostics_.open = false;
         return;
     }
-    const auto* transport = dynamic_cast<const axtp::HidTransport*>(runtime_->active_transport);
+    const auto* transport = dynamic_cast<const axent::transport::HidTransport*>(runtime_->active_transport);
     if (transport == nullptr) {
         return;
     }

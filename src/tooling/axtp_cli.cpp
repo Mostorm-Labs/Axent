@@ -61,7 +61,7 @@ int run_axtp_cli(const std::vector<std::string>& args,
 #include "json_rpc/method_registry_json.hpp"
 
 #include "core/runtime/testing/mock_transport.hpp"
-#include "transports/hidapi/hid_transport.hpp"
+#include "hidapi/hid_transport.hpp"
 #include "tcp/native_tcp_transport.hpp"
 #include "websocket/ix_websocket_transport.hpp"
 
@@ -133,7 +133,7 @@ struct HidOpenOptions {
     std::uint32_t max_reports_per_poll = 16;
     bool use_read_thread = true;
     std::uint32_t read_thread_timeout_ms = 1000;
-    std::function<void(const axtp::HidReportTrace&)> report_trace;
+    std::function<void(const axent::transport::HidReportTrace&)> report_trace;
 };
 
 struct TransportOpenOptions {
@@ -145,7 +145,7 @@ struct TransportOpenOptions {
 
 struct TransportBundle {
     std::unique_ptr<axtp::ITransport> transport;
-    axtp::HidTransport* hid_transport = nullptr;
+    axent::transport::HidTransport* hid_transport = nullptr;
 };
 
 bool is_option(const std::string& text)
@@ -866,9 +866,9 @@ bool has_hid_target(const HidOpenOptions& options)
            (options.vendor_id.has_value() && options.product_id.has_value());
 }
 
-axtp::HidTransportOptions make_hid_transport_options(const HidOpenOptions& options)
+axent::transport::HidTransportOptions make_hid_transport_options(const HidOpenOptions& options)
 {
-    axtp::HidTransportOptions hid;
+    axent::transport::HidTransportOptions hid;
     hid.vendorId = static_cast<std::uint16_t>(options.vendor_id.value_or(0));
     hid.productId = static_cast<std::uint16_t>(options.product_id.value_or(0));
     hid.usagePage = static_cast<std::uint16_t>(options.usage_page.value_or(0));
@@ -886,7 +886,7 @@ axtp::HidTransportOptions make_hid_transport_options(const HidOpenOptions& optio
     return hid;
 }
 
-bool matches_hid_device_filters(const axtp::HidDeviceInfo& device, const HidOpenOptions& options)
+bool matches_hid_device_filters(const axent::transport::HidDeviceInfo& device, const HidOpenOptions& options)
 {
     if (options.usage_page.value_or(0) != 0 && device.usagePage != *options.usage_page) {
         return false;
@@ -897,12 +897,12 @@ bool matches_hid_device_filters(const axtp::HidDeviceInfo& device, const HidOpen
     return true;
 }
 
-std::vector<axtp::HidDeviceInfo> list_hid_devices(const HidOpenOptions& options)
+std::vector<axent::transport::HidDeviceInfo> list_hid_devices(const HidOpenOptions& options)
 {
     const auto all_devices =
-        axtp::enumerateHidDevices(static_cast<std::uint16_t>(options.vendor_id.value_or(0)),
+        axent::transport::enumerateHidDevices(static_cast<std::uint16_t>(options.vendor_id.value_or(0)),
                                   static_cast<std::uint16_t>(options.product_id.value_or(0)));
-    std::vector<axtp::HidDeviceInfo> devices;
+    std::vector<axent::transport::HidDeviceInfo> devices;
     for (const auto& device : all_devices) {
         if (matches_hid_device_filters(device, options)) {
             devices.push_back(device);
@@ -968,7 +968,7 @@ TransportBundle make_transport(const TransportOpenOptions& options)
         return bundle;
     }
     if (options.kind == "hid" || options.kind == "hidapi") {
-        auto transport = std::make_unique<axtp::HidTransport>(make_hid_transport_options(options.hid));
+        auto transport = std::make_unique<axent::transport::HidTransport>(make_hid_transport_options(options.hid));
         bundle.hid_transport = transport.get();
         bundle.transport = std::move(transport);
         return bundle;
@@ -977,7 +977,7 @@ TransportBundle make_transport(const TransportOpenOptions& options)
 }
 
 HidOpenOptions hid_options_from_cli(const CliOptions& options,
-                                    std::function<void(const axtp::HidReportTrace&)> trace = {})
+                                    std::function<void(const axent::transport::HidReportTrace&)> trace = {})
 {
     HidOpenOptions hid;
     hid.vendor_id = options.vid;
@@ -999,7 +999,7 @@ HidOpenOptions hid_options_from_cli(const CliOptions& options,
 
 TransportOpenOptions transport_options_from_cli(
     const CliOptions& options,
-    std::function<void(const axtp::HidReportTrace&)> trace = {})
+    std::function<void(const axent::transport::HidReportTrace&)> trace = {})
 {
     TransportOpenOptions transport;
     transport.kind = options.transport;
@@ -1016,9 +1016,9 @@ bool is_hid_transport(const CliOptions& options)
 
 bool attach_transport(const CliOptions& options,
                       axtp::sdk::AxtpClient& client,
-                      std::function<void(const axtp::HidReportTrace&)> trace,
+                      std::function<void(const axent::transport::HidReportTrace&)> trace,
                       std::ostream& err,
-                      axtp::HidTransport** attached_hid = nullptr)
+                      axent::transport::HidTransport** attached_hid = nullptr)
 {
     if (attached_hid != nullptr) {
         *attached_hid = nullptr;
@@ -1035,30 +1035,30 @@ bool attach_transport(const CliOptions& options,
     return client.isConnected();
 }
 
-std::string hid_trace_kind_name(axtp::HidReportTraceKind kind)
+std::string hid_trace_kind_name(axent::transport::HidReportTraceKind kind)
 {
     switch (kind) {
-    case axtp::HidReportTraceKind::ReadReport:
+    case axent::transport::HidReportTraceKind::ReadReport:
         return "read-report";
-    case axtp::HidReportTraceKind::ReadTimeout:
+    case axent::transport::HidReportTraceKind::ReadTimeout:
         return "read-timeout";
-    case axtp::HidReportTraceKind::ReadError:
+    case axent::transport::HidReportTraceKind::ReadError:
         return "read-error";
-    case axtp::HidReportTraceKind::WriteFrame:
+    case axent::transport::HidReportTraceKind::WriteFrame:
         return "write-frame";
-    case axtp::HidReportTraceKind::WriteReport:
+    case axent::transport::HidReportTraceKind::WriteReport:
         return "write-report";
-    case axtp::HidReportTraceKind::WriteError:
+    case axent::transport::HidReportTraceKind::WriteError:
         return "write-error";
-    case axtp::HidReportTraceKind::AcceptedReport:
+    case axent::transport::HidReportTraceKind::AcceptedReport:
         return "accepted-report";
-    case axtp::HidReportTraceKind::DroppedReportId:
+    case axent::transport::HidReportTraceKind::DroppedReportId:
         return "dropped-report-id";
     }
     return "unknown";
 }
 
-std::string hid_trace_line(const axtp::HidReportTrace& trace, bool include_body)
+std::string hid_trace_line(const axent::transport::HidReportTrace& trace, bool include_body)
 {
     std::ostringstream out;
     out << "hid " << hid_trace_kind_name(trace.kind)
@@ -1080,7 +1080,7 @@ std::string hid_trace_line(const axtp::HidReportTrace& trace, bool include_body)
     return out.str();
 }
 
-void print_hid_trace(const axtp::HidReportTrace& trace,
+void print_hid_trace(const axent::transport::HidReportTrace& trace,
                      OutputFormat format,
                      bool include_body,
                      std::ostream& out)
@@ -1101,11 +1101,11 @@ void print_hid_trace(const axtp::HidReportTrace& trace,
         out << object.dump() << "\n";
         return;
     }
-    if (trace.kind == axtp::HidReportTraceKind::ReadReport ||
-        trace.kind == axtp::HidReportTraceKind::AcceptedReport ||
-        trace.kind == axtp::HidReportTraceKind::DroppedReportId ||
-        trace.kind == axtp::HidReportTraceKind::ReadError ||
-        trace.kind == axtp::HidReportTraceKind::WriteError) {
+    if (trace.kind == axent::transport::HidReportTraceKind::ReadReport ||
+        trace.kind == axent::transport::HidReportTraceKind::AcceptedReport ||
+        trace.kind == axent::transport::HidReportTraceKind::DroppedReportId ||
+        trace.kind == axent::transport::HidReportTraceKind::ReadError ||
+        trace.kind == axent::transport::HidReportTraceKind::WriteError) {
         out << hid_trace_line(trace, include_body) << "\n";
     }
 }
@@ -1323,7 +1323,7 @@ int call_method(const CliOptions& options, std::ostream& out, std::ostream& err)
 
     auto logger = make_logger(options);
     std::mutex trace_mutex;
-    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axtp::HidReportTrace& trace) {
+    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axent::transport::HidReportTrace& trace) {
         logger.write(hid_trace_line(trace, logger.include_body()));
         if (options.verbose) {
             std::lock_guard<std::mutex> lock(trace_mutex);
@@ -1514,7 +1514,7 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
     const auto version = option_value(options.command, "--version");
     auto logger = make_logger(options);
     std::mutex trace_mutex;
-    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axtp::HidReportTrace& trace) {
+    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axent::transport::HidReportTrace& trace) {
         logger.write(hid_trace_line(trace, logger.include_body()));
         if (options.verbose) {
             std::lock_guard<std::mutex> lock(trace_mutex);
@@ -1525,7 +1525,7 @@ int firmware_update_command(const CliOptions& options, std::ostream& out, std::o
     axtp::sdk::ClientOptions client_options;
     client_options.autoIdentify = !options.no_app_ready;
     axtp::sdk::AxtpClient client(client_options);
-    axtp::HidTransport* firmware_hid_transport = nullptr;
+    axent::transport::HidTransport* firmware_hid_transport = nullptr;
     if (!attach_transport(
             options, client, hid_trace, err, &firmware_hid_transport)) {
         err << "failed to connect transport: " << options.transport << "\n";
@@ -1644,13 +1644,13 @@ int read_hid_command(const CliOptions& options, std::ostream& out, std::ostream&
     auto logger = make_logger(options);
     std::mutex trace_mutex;
     const auto format = parse_output_format(options.output);
-    hid_open.report_trace = [&logger, &trace_mutex, format, &out](const axtp::HidReportTrace& trace) {
+    hid_open.report_trace = [&logger, &trace_mutex, format, &out](const axent::transport::HidReportTrace& trace) {
         logger.write(hid_trace_line(trace, logger.include_body()));
         std::lock_guard<std::mutex> lock(trace_mutex);
         print_hid_trace(trace, format, true, out);
     };
 
-    auto transport = std::make_unique<axtp::HidTransport>(make_hid_transport_options(hid_open));
+    auto transport = std::make_unique<axent::transport::HidTransport>(make_hid_transport_options(hid_open));
     CountingByteSink sink;
     transport->bind(sink);
     transport->open();
@@ -1708,7 +1708,7 @@ int handshake_command(const CliOptions& options, std::ostream& out, std::ostream
 {
     auto logger = make_logger(options);
     std::mutex trace_mutex;
-    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axtp::HidReportTrace& trace) {
+    auto hid_trace = [&logger, &options, &trace_mutex, &out](const axent::transport::HidReportTrace& trace) {
         logger.write(hid_trace_line(trace, logger.include_body()));
         if (options.verbose) {
             std::lock_guard<std::mutex> lock(trace_mutex);

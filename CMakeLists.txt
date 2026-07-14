@@ -61,6 +61,24 @@ if(TARGET ixwebsocket::ixwebsocket)
     )
 endif()
 
+if(TARGET hidapi::hidapi)
+    add_library(axent_axtp_transport_hidapi STATIC
+        src/transports/hidapi/hid_transport.cpp
+    )
+    add_library(axent::transport_hidapi ALIAS axent_axtp_transport_hidapi)
+    target_include_directories(axent_axtp_transport_hidapi PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/transports>
+    )
+    target_link_libraries(axent_axtp_transport_hidapi
+        PUBLIC axtp::runtime
+        PRIVATE hidapi::hidapi
+    )
+    if(WIN32)
+        target_link_libraries(axent_axtp_transport_hidapi PRIVATE hid)
+    endif()
+    axent_enable_warnings(axent_axtp_transport_hidapi)
+endif()
+
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
@@ -89,12 +107,15 @@ add_library(libaxent
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
+target_include_directories(libaxent PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/transports>
+)
 target_link_libraries(libaxent
     PUBLIC nlohmann_json::nlohmann_json axent::media_contract axent::firmware
     PRIVATE axtp::core axtp::json_rpc axtp::runtime axtp::sdk
 )
-if(TARGET axtp::transport_hidapi)
-    target_link_libraries(libaxent PRIVATE axtp::transport_hidapi)
+if(TARGET axent::transport_hidapi)
+    target_link_libraries(libaxent PRIVATE axent::transport_hidapi)
     target_compile_definitions(libaxent PRIVATE AXENT_HAS_AXTP_HID_TRANSPORT=1)
 
     add_library(axent_axtp_adapter_test_support STATIC EXCLUDE_FROM_ALL
@@ -102,17 +123,18 @@ if(TARGET axtp::transport_hidapi)
     )
     add_library(axent::axtp_adapter_test_support ALIAS axent_axtp_adapter_test_support)
     target_include_directories(axent_axtp_adapter_test_support
-        PUBLIC include
-        PRIVATE src/adapters
+        PUBLIC
+            include
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/adapters>
     )
     target_link_libraries(axent_axtp_adapter_test_support
-        PUBLIC axent::libaxent axtp::transport_hidapi
+        PUBLIC axent::libaxent axent::transport_hidapi
     )
     axent_enable_warnings(axent_axtp_adapter_test_support)
 endif()
 
 set(AXENT_HAS_AXTP_DIRECT_CLI OFF)
-if(TARGET axtp::transport_hidapi AND
+if(TARGET axent::transport_hidapi AND
    TARGET axent::transport_tcp_native AND
    TARGET axent::transport_websocket_ix)
     set(AXENT_HAS_AXTP_DIRECT_CLI ON)
@@ -145,7 +167,7 @@ if(AXENT_HAS_AXTP_DIRECT_CLI)
             axtp::sdk
             axent::transport_tcp_native
             axent::transport_websocket_ix
-            axtp::transport_hidapi
+            axent::transport_hidapi
     )
     target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
 endif()
@@ -231,6 +253,13 @@ if(AXENT_BUILD_TESTING)
     target_link_libraries(tcp_transport_test PRIVATE axent::transport_tcp_native)
     axent_enable_warnings(tcp_transport_test)
     add_test(NAME tcp_transport_test COMMAND tcp_transport_test)
+
+    if(TARGET axent::transport_hidapi)
+        add_executable(hid_transport_test tests/hid_transport_test.cpp)
+        target_link_libraries(hid_transport_test PRIVATE axent::transport_hidapi)
+        axent_enable_warnings(hid_transport_test)
+        add_test(NAME hid_transport_test COMMAND hid_transport_test)
+    endif()
 
     add_executable(media_relay_test tests/media_relay_test.cpp)
     target_link_libraries(media_relay_test PRIVATE axent::libaxent)

@@ -251,6 +251,15 @@ file(GLOB_RECURSE axent_code_boundary_files LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/tests/*.hpp"
 )
 
+file(GLOB_RECURSE axent_hid_ownership_files LIST_DIRECTORIES false
+    "${AXENT_REPO_ROOT}/src/adapters/*.cpp"
+    "${AXENT_REPO_ROOT}/src/adapters/*.hpp"
+    "${AXENT_REPO_ROOT}/src/tooling/*.cpp"
+    "${AXENT_REPO_ROOT}/src/tooling/*.hpp"
+    "${AXENT_REPO_ROOT}/tests/*.cpp"
+    "${AXENT_REPO_ROOT}/tests/*.hpp"
+)
+
 file(GLOB_RECURSE axent_public_contract_headers LIST_DIRECTORIES false
     "${AXENT_REPO_ROOT}/include/axent/*.hpp"
 )
@@ -284,6 +293,24 @@ assert_files_do_not_contain(
     axent_public_contract_headers
     "axtp::|#[ \\t]*include[ \\t]*[<\"](axtp_|core/runtime/|core/protocol/|json_rpc/|transports/)"
     "Axent production public headers must not expose cpp-runtime types or headers"
+)
+
+assert_files_do_not_contain(
+    axent_hid_ownership_files
+    "axtp::Hid|axtp::enumerateHid|axtp::transport_hidapi|#[ \\t]*include[ \\t]*[<\"]transports/hidapi/hid_transport\\.hpp"
+    "Axent adapters, tooling, and tests must use the Axent-owned HID provider"
+)
+
+assert_file_does_not_contain(
+    "${axent_cmake_file}"
+    "axtp::transport_hidapi"
+    "Axent CMake must not consume the cpp-runtime HID provider target"
+)
+
+assert_file_contains(
+    "${axent_cmake_file}"
+    "add_library\\(axent::transport_hidapi ALIAS axent_axtp_transport_hidapi\\)"
+    "Axent must define its owned HID provider target"
 )
 
 assert_files_do_not_contain(
@@ -498,11 +525,10 @@ assert_text_appears_before(
     "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "Axent must validate its hidapi provider before adding axtp-cpp-runtime"
 )
-assert_text_appears_before(
+assert_text_contains(
     "${axent_effective_deps}"
-    "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
-    "axent_require_target(\n        axtp::transport_hidapi"
-    "Axent must validate the runtime HID wrapper after adding axtp-cpp-runtime"
+    "set\\(AXTP_BUILD_OPTIONAL_TRANSPORTS OFF CACHE BOOL \"\" FORCE\\)"
+    "Axent must keep cpp-runtime concrete transports disabled"
 )
 assert_text_contains(
     "${axent_gitmodules}"
@@ -516,6 +542,10 @@ assert_text_contains(
 )
 
 foreach(required_file
+        "src/transports/hidapi/hid_transport.hpp"
+        "src/transports/hidapi/hid_transport.cpp"
+        "src/adapters/axtp_adapter_test_seam.hpp"
+        "tests/hid_transport_test.cpp"
         "third_party/hidapi/CMakeLists.txt"
         "third_party/IXWebSocket/CMakeLists.txt"
         "third_party/axtp-cpp-runtime/CMakeLists.txt")
@@ -543,8 +573,8 @@ add_library(axtp_runtime INTERFACE)
 add_library(axtp::runtime ALIAS axtp_runtime)
 add_library(axtp_sdk INTERFACE)
 add_library(axtp::sdk ALIAS axtp_sdk)
-add_library(axtp_transport_hidapi INTERFACE)
-add_library(axtp::transport_hidapi ALIAS axtp_transport_hidapi)
+add_library(hidapi INTERFACE)
+add_library(hidapi::hidapi ALIAS hidapi)
 set(AXENT_USE_EXTERNAL_AXTP_RUNTIME ON CACHE BOOL "" FORCE)
 set(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS OFF CACHE BOOL "" FORCE)
 set(AXENT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -604,6 +634,9 @@ if(NOT TARGET axent::axtp_control_endpoint)
 endif()
 if(NOT TARGET axent::axtp_adapter_test_support)
     message(FATAL_ERROR "Expected opt-in axent::axtp_adapter_test_support target")
+endif()
+if(NOT TARGET axent::transport_hidapi)
+    message(FATAL_ERROR "Expected Axent-owned axent::transport_hidapi target")
 endif()
 if(NOT TARGET axtpctl)
     message(FATAL_ERROR "Expected Axent-owned axtpctl target")
