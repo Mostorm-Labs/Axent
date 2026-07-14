@@ -493,6 +493,12 @@ int main()
             "real adapter without a transport should be unavailable");
     require(result.body.at("error") == "AXTP HID transport target is unavailable",
             "unavailable transport message mismatch");
+    const auto firmware_route = unavailable_adapter->start_firmware_update(
+        "hid:0581:2581:NA20-SERIAL", "firmware.bin");
+    require(firmware_route.status == axent::ControlStatus::Unavailable &&
+                firmware_route.body.at("error") ==
+                    "AXTP firmware update skeleton only",
+            "real adapter firmware route must remain unavailable");
 
     ScriptedAxtpTransport* scripted = nullptr;
     int session_transport_factory_calls = 0;

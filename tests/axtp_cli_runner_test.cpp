@@ -268,7 +268,7 @@ void test_exception_prefix_uses_invocation_name()
 
 void test_firmware_update()
 {
-#if defined(AXENT_HAS_AXTP_FIRMWARE_PROFILE)
+#if defined(AXENT_HAS_AXTP_FIRMWARE_SERVICE)
     const auto root = std::filesystem::temp_directory_path() / "axent-axtp-cli-firmware";
     const auto firmware_path = root / "firmware.bin";
     std::filesystem::remove_all(root);
@@ -289,15 +289,27 @@ void test_firmware_update()
         "--chunk-size", "4",
     });
     require(success.code == 0, "mock firmware update should succeed");
-    require(success.output.find(R"("ok":true)") != std::string::npos,
-            "firmware output should report success");
-    require(success.output.find(R"("md5":"25f9e794323b453885f5181f1b624d0b")") !=
-                std::string::npos,
-            "firmware output should contain the RFC MD5 vector");
-    require(success.output.find(R"("chunks":3)") != std::string::npos,
-            "nine bytes should be sent in three mock chunks");
-    require(success.output.find(R"("fileId":"application")") != std::string::npos,
-            "firmware output should preserve file-id");
+    const auto success_json = nlohmann::json::parse(success.output);
+    require(success_json.at("ok") == true &&
+                success_json.at("method") == "firmware.update" &&
+                success_json.at("fileId") == "application" &&
+                success_json.at("size") == 9 &&
+                success_json.at("md5") == "25f9e794323b453885f5181f1b624d0b" &&
+                success_json.at("updateSessionId") == "mock-update-1" &&
+                success_json.at("streamId") == 0x1001 &&
+                success_json.at("chunkSize") == 4 &&
+                success_json.at("chunks") == 3 &&
+                success_json.at("begin").at("state") == "receiving" &&
+                success_json.at("finish").at("accepted") == true,
+            "firmware output should preserve the legacy JSON contract");
+
+    const auto default_file_id = run({
+        "-t", "mock", "-o", "json", "firmware", "update",
+        "--file", firmware_path.string(),
+    });
+    require(default_file_id.code == 0 &&
+                nlohmann::json::parse(default_file_id.output).at("fileId") == "firmware",
+            "firmware update should preserve the default file id");
 
     const auto missing_subcommand = run({"firmware"});
     require(missing_subcommand.code == 2, "firmware should require the update subcommand");
@@ -312,12 +324,46 @@ void test_firmware_update()
     const auto invalid_chunk = run(
         {"firmware", "update", "--file", firmware_path.string(), "--chunk-size", "0"});
     require(invalid_chunk.code == 2, "firmware update should reject chunk size zero");
+    const auto overflow_chunk = run(
+        {"firmware", "update", "--file", firmware_path.string(),
+         "--chunk-size", "4294967296"});
+    require(overflow_chunk.code == 2,
+            "firmware update should reject an overflowing chunk size");
+
+    const auto empty_path = root / "empty.bin";
+    std::ofstream(empty_path, std::ios::binary).close();
+    const auto empty = run(
+        {"firmware", "update", "--file", empty_path.string()});
+    require(empty.code == 2 &&
+                empty.error.find("must not be empty") != std::string::npos,
+            "firmware update should reject an empty image before transport setup");
 
     const auto websocket = run(
         {"-t", "websocket", "firmware", "update", "--file", firmware_path.string()});
     require(websocket.code == 2, "firmware update should reject WebSocket transport");
     require(websocket.error.find("framed-binary") != std::string::npos,
             "WebSocket rejection should explain the transport requirement");
+    const auto websocket_alias = run(
+        {"-t", "ws", "firmware", "update", "--file", firmware_path.string()});
+    require(websocket_alias.code == 2,
+            "firmware update should reject the WebSocket alias");
+
+    const auto missing_hid = run({
+        "-t", "hid",
+        "--hid-path", "__axent_missing_firmware_device__",
+        "--no-app-ready",
+        "--timeout", "1",
+        "-o", "json",
+        "firmware", "update",
+        "--file", firmware_path.string(),
+    });
+    require(missing_hid.code == 4,
+            "missing direct HID firmware target should fail without flashing");
+    const auto missing_hid_json = nlohmann::json::parse(missing_hid.output);
+    require(missing_hid_json.at("ok") == false &&
+                missing_hid_json.at("error").at("method") ==
+                    "firmware.beginUpdate",
+            "direct HID failure should identify the begin transaction");
 
     std::filesystem::remove_all(root);
 #else

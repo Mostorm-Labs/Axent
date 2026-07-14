@@ -3,7 +3,7 @@
 #include <array>
 #include <vector>
 
-namespace axent::tooling_detail {
+namespace axent::firmware::detail {
 namespace {
 
 constexpr std::array<std::uint32_t, 64> k_constants{
@@ -121,4 +121,4 @@ std::string md5_hex(const std::uint8_t* data, std::size_t size)
     return result;
 }
 
-} // namespace axent::tooling_detail
+} // namespace axent::firmware::detail

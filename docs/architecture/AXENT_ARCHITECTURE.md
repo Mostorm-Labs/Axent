@@ -41,10 +41,12 @@ must not depend on `libaxent`, Axent Core internals, product hosts, or the
 retired cpp-runtime `axtp_toolkit`. Axent Core must not include tooling headers.
 
 The current cpp-runtime checkout still contains transitional concrete
-transport targets plus media and firmware profile coordinators. It is therefore
-not yet a protocol-only library. Their ownership will be migrated separately;
-the retired cpp-runtime `axtpctl`, `axtp_toolkit`, and mediahost demo are not
-build or dependency sources for Axent.
+transport targets and media/profile code, so it is not yet a protocol-only
+library. Firmware file handling, maintenance leases, progress, and the
+deterministic AXTP update transaction are now Axent-owned; Axent no longer
+consumes the runtime firmware profile. The remaining ownership migrations are
+separate work. The retired cpp-runtime `axtpctl`, `axtp_toolkit`, and
+mediahost demo are not build or dependency sources for Axent.
 
 ## Core Responsibilities
 

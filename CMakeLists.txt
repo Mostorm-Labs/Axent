@@ -30,6 +30,15 @@ target_include_directories(axent_media_contract INTERFACE
 )
 target_compile_features(axent_media_contract INTERFACE cxx_std_17)
 
+add_library(axent_firmware STATIC
+    src/firmware/firmware_update_service.cpp
+    src/firmware/md5.cpp
+)
+add_library(axent::firmware ALIAS axent_firmware)
+target_include_directories(axent_firmware PUBLIC include)
+target_compile_features(axent_firmware PUBLIC cxx_std_17)
+axent_enable_warnings(axent_firmware)
+
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
@@ -59,7 +68,7 @@ add_library(libaxent
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)
 target_link_libraries(libaxent
-    PUBLIC nlohmann_json::nlohmann_json axent::media_contract
+    PUBLIC nlohmann_json::nlohmann_json axent::media_contract axent::firmware
     PRIVATE axtp::core axtp::json_rpc axtp::runtime axtp::sdk
 )
 if(TARGET axtp::transport_hidapi)
@@ -95,14 +104,17 @@ endif()
 
 add_library(axent_axtp_tooling STATIC
     src/tooling/axtp_cli.cpp
-    src/tooling/md5.cpp
 )
 add_library(axent::axtp_tooling ALIAS axent_axtp_tooling)
 target_include_directories(axent_axtp_tooling
     PUBLIC include
     PRIVATE src/tooling
 )
+target_link_libraries(axent_axtp_tooling PRIVATE axent::firmware)
 if(AXENT_HAS_AXTP_DIRECT_CLI)
+    target_sources(axent_axtp_tooling PRIVATE
+        src/firmware/axtp_firmware_backend.cpp
+    )
     target_link_libraries(axent_axtp_tooling
         PRIVATE
             axtp::core
@@ -114,10 +126,6 @@ if(AXENT_HAS_AXTP_DIRECT_CLI)
             axtp::transport_websocket_ix
     )
     target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
-    if(TARGET axtp::firmware_profile)
-        target_link_libraries(axent_axtp_tooling PRIVATE axtp::firmware_profile)
-        target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_FIRMWARE_PROFILE=1)
-    endif()
 endif()
 axent_enable_warnings(axent_axtp_tooling)
 
@@ -207,6 +215,16 @@ if(AXENT_BUILD_TESTING)
     axent_enable_warnings(axent_host_test)
     add_test(NAME axent_host_test COMMAND axent_host_test)
 
+    add_executable(firmware_update_service_test tests/firmware_update_service_test.cpp)
+    target_link_libraries(firmware_update_service_test PRIVATE axent::firmware)
+    axent_enable_warnings(firmware_update_service_test)
+    add_test(NAME firmware_update_service_test COMMAND firmware_update_service_test)
+
+    add_executable(maintenance_lease_test tests/maintenance_lease_test.cpp)
+    target_link_libraries(maintenance_lease_test PRIVATE axent::libaxent)
+    axent_enable_warnings(maintenance_lease_test)
+    add_test(NAME maintenance_lease_test COMMAND maintenance_lease_test)
+
     add_executable(manager_registry_test tests/manager_registry_test.cpp)
     target_link_libraries(manager_registry_test PRIVATE axent::libaxent)
     axent_enable_warnings(manager_registry_test)
@@ -233,11 +251,16 @@ if(AXENT_BUILD_TESTING)
     add_test(NAME cli_options_test COMMAND cli_options_test)
 
     if(AXENT_HAS_AXTP_DIRECT_CLI)
+        add_executable(axtp_firmware_backend_test tests/axtp_firmware_backend_test.cpp)
+        target_include_directories(axtp_firmware_backend_test PRIVATE src/firmware)
+        target_link_libraries(axtp_firmware_backend_test
+            PRIVATE axent::axtp_tooling axtp::core)
+        axent_enable_warnings(axtp_firmware_backend_test)
+        add_test(NAME axtp_firmware_backend_test COMMAND axtp_firmware_backend_test)
+
         add_executable(axtp_cli_runner_test tests/axtp_cli_runner_test.cpp)
         target_link_libraries(axtp_cli_runner_test PRIVATE axent::axtp_tooling axtp::core)
-        if(TARGET axtp::firmware_profile)
-            target_compile_definitions(axtp_cli_runner_test PRIVATE AXENT_HAS_AXTP_FIRMWARE_PROFILE=1)
-        endif()
+        target_compile_definitions(axtp_cli_runner_test PRIVATE AXENT_HAS_AXTP_FIRMWARE_SERVICE=1)
         axent_enable_warnings(axtp_cli_runner_test)
         add_test(NAME axtp_cli_runner_test COMMAND axtp_cli_runner_test)
     endif()

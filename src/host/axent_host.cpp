@@ -43,6 +43,143 @@ private:
     bool previous_ = false;
 };
 
+class HostLeaseRegistry final {
+public:
+    bool acquire_activity(const std::string& device_id, bool media, std::string& reason)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& state = devices_[device_id];
+        if (state.maintenance) {
+            reason = "maintenance lease busy";
+            return false;
+        }
+        if (media) {
+            ++state.media;
+        } else {
+            ++state.control;
+        }
+        return true;
+    }
+
+    void release_activity(const std::string& device_id, bool media) noexcept
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto entry = devices_.find(device_id);
+        if (entry == devices_.end()) {
+            return;
+        }
+        auto& state = entry->second;
+        auto& count = media ? state.media : state.control;
+        if (count != 0) {
+            --count;
+        }
+        erase_if_unused(entry);
+    }
+
+    bool acquire_maintenance(const std::string& device_id, std::string& reason)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& state = devices_[device_id];
+        if (state.maintenance || state.control != 0 || state.media != 0) {
+            reason = "device is busy with an active control, media, or maintenance lease";
+            return false;
+        }
+        state.maintenance = true;
+        return true;
+    }
+
+    void release_maintenance(const std::string& device_id) noexcept
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto entry = devices_.find(device_id);
+        if (entry == devices_.end()) {
+            return;
+        }
+        entry->second.maintenance = false;
+        erase_if_unused(entry);
+    }
+
+private:
+    struct DeviceState {
+        std::size_t control = 0;
+        std::size_t media = 0;
+        bool maintenance = false;
+    };
+
+    using Entry = std::map<std::string, DeviceState>::iterator;
+
+    void erase_if_unused(Entry entry)
+    {
+        const auto& state = entry->second;
+        if (state.control == 0 && state.media == 0 && !state.maintenance) {
+            devices_.erase(entry);
+        }
+    }
+
+    std::mutex mutex_;
+    std::map<std::string, DeviceState> devices_;
+};
+
+class ActivityReservation final {
+public:
+    ActivityReservation(std::shared_ptr<HostLeaseRegistry> registry,
+                        std::string device_id,
+                        bool media)
+        : registry_(std::move(registry))
+        , device_id_(std::move(device_id))
+        , media_(media)
+    {
+    }
+
+    ~ActivityReservation()
+    {
+        if (active_ && registry_) {
+            registry_->release_activity(device_id_, media_);
+        }
+    }
+
+    ActivityReservation(const ActivityReservation&) = delete;
+    ActivityReservation& operator=(const ActivityReservation&) = delete;
+
+    void commit() noexcept
+    {
+        active_ = false;
+    }
+
+private:
+    std::shared_ptr<HostLeaseRegistry> registry_;
+    std::string device_id_;
+    bool media_ = false;
+    bool active_ = true;
+};
+
+class HostMaintenanceLeaseProvider final
+    : public firmware::MaintenanceLeaseProvider {
+public:
+    using Reserve = std::function<bool(const std::string&,
+                                       std::string&,
+                                       std::function<void()>&)>;
+
+    explicit HostMaintenanceLeaseProvider(Reserve reserve)
+        : reserve_(std::move(reserve))
+    {
+    }
+
+    firmware::MaintenanceLease try_acquire_maintenance(
+        const std::string& device_id,
+        std::string& reason) override
+    {
+        std::function<void()> release;
+        if (!reserve_(device_id, reason, release)) {
+            return {};
+        }
+        return grant_maintenance(device_id, std::move(release));
+    }
+
+private:
+    Reserve reserve_;
+};
+
 class MediaSubscriptionState final : public MediaSubscription {
 public:
     MediaSubscriptionState(std::shared_ptr<IMediaFrameSink> sink, MediaSubscriptionOptions options)
@@ -1142,6 +1279,8 @@ struct AxentHost::Impl {
     std::map<std::string, std::vector<std::weak_ptr<MediaStreamSubscriptionState>>> stream_subscriptions;
     std::map<std::string, std::map<std::uint32_t, MediaStreamDescriptor>> active_media_streams;
     std::map<std::string, std::string> media_owner_session_by_device;
+    std::shared_ptr<HostLeaseRegistry> lease_registry = std::make_shared<HostLeaseRegistry>();
+    std::unique_ptr<firmware::MaintenanceLeaseProvider> maintenance_provider;
     std::mutex dispatch_mutex;
 };
 
@@ -1171,6 +1310,9 @@ AxentHost::Impl::ResetSubscriptions AxentHost::Impl::reset()
         }
     }
     relays.clear();
+    for (const auto& entry : leases) {
+        lease_registry->release_activity(entry.second.device_id, entry.second.media);
+    }
     leases.clear();
     media_owner_session_by_device.clear();
     broker.reset();
@@ -1327,6 +1469,12 @@ MediaRelayStats MediaConsumer::stats() const
 AxentHost::AxentHost()
     : impl_(std::make_unique<Impl>())
 {
+    impl_->maintenance_provider = std::make_unique<HostMaintenanceLeaseProvider>(
+        [this](const std::string& device_id,
+               std::string& reason,
+               std::function<void()>& release) {
+            return reserve_maintenance(device_id, reason, release);
+        });
 }
 
 AxentHost::~AxentHost()
@@ -1507,6 +1655,19 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
         }
     }
 
+    std::string activity_reason;
+    if (!impl_->lease_registry->acquire_activity(
+            request.device_id, request.media, activity_reason)) {
+        return {false,
+                "",
+                request.device_id,
+                request.client_id,
+                request.media,
+                std::move(activity_reason),
+                ControlStatus::Busy};
+    }
+    ActivityReservation activity(impl_->lease_registry, request.device_id, request.media);
+
     if (media_adapter != nullptr) {
         std::string error;
         const auto status = media_adapter->open_session_status(request.device_id, error);
@@ -1549,6 +1710,7 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
             impl_->media_owner_session_by_device[request.device_id] = session_id;
         }
     }
+    activity.commit();
     if (media_adapter != nullptr) {
         media_adapter->bind_media_delivery_session(lease.device_id, lease.session_id);
     }
@@ -1595,6 +1757,9 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             impl_->sessions.close_device_session(session_id);
         }
         impl_->leases.erase(session_id);
+        if (lease.has_value()) {
+            impl_->lease_registry->release_activity(lease->device_id, lease->media);
+        }
         if (lease.has_value() &&
             impl_->is_axtp_device_locked(lease->device_id) &&
             !impl_->has_lease_for_device_locked(lease->device_id)) {
@@ -1615,6 +1780,43 @@ void AxentHost::release_session(const std::string& session_id, const std::string
     if (reset_adapter != nullptr && !reset_device_id.empty()) {
         reset_adapter->reset_session_for_device(reset_device_id);
     }
+}
+
+firmware::MaintenanceLeaseProvider& AxentHost::maintenance_lease_provider()
+{
+    return *impl_->maintenance_provider;
+}
+
+bool AxentHost::reserve_maintenance(
+    const std::string& device_id,
+    std::string& reason,
+    std::function<void()>& release)
+{
+    if (g_in_media_stream_sink_callback) {
+        reason = "host lifecycle unavailable during media stream callback";
+        return false;
+    }
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    std::shared_ptr<HostLeaseRegistry> registry;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->running || !impl_->devices) {
+            reason = "host not running";
+            return false;
+        }
+        if (!impl_->devices->get(device_id).has_value()) {
+            reason = "device not found";
+            return false;
+        }
+        registry = impl_->lease_registry;
+    }
+    if (!registry->acquire_maintenance(device_id, reason)) {
+        return false;
+    }
+    release = [registry = std::move(registry), device_id]() {
+        registry->release_maintenance(device_id);
+    };
+    return true;
 }
 
 std::unique_ptr<MediaConsumer> AxentHost::create_media_consumer(const std::string& session_id,

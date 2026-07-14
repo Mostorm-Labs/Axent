@@ -110,10 +110,29 @@ object contains the request `id`, mandatory `status`, and a `result` only for a
 successful response. Tool-only commands such as `ping`, `list-hid`, and
 `firmware update` use their own diagnostic output schemas.
 
-The tooling target does not link `libaxent` or Axent Core. It currently uses
-the AXTP runtime profiles and concrete transport targets as transitional
-private dependencies. The concrete transports and profile coordinators will
-move behind Axent-owned targets in later boundary migrations.
+The tooling target does not link `libaxent` or Axent Core. Its firmware command
+uses the JSON-free `axent::firmware` service and an Axent-owned private AXTP
+transaction backend; it does not consume the cpp-runtime firmware profile.
+Runtime SDK, wire, and concrete transport targets remain private transitional
+dependencies until the later transport-provider migration.
+
+## Firmware Update V1
+
+`FirmwareUpdateService::run()` is the synchronous local firmware entry point.
+It owns file validation and reading, MD5 calculation, maintenance leasing,
+`beginUpdate -> STREAM -> finishUpdate`, typed results, and staged progress.
+The public contract contains no JSON or cpp-runtime types.
+
+An embedded host supplies the composed provider returned by
+`AxentHost::maintenance_lease_provider()`. A maintenance lease fails fast with
+Busy while the same device has a control, media, or maintenance lease, and it
+releases automatically on every return or exception path. `axtpctl` and
+`axent axtp` use the same service while preserving their command and output
+contract.
+
+V1 deliberately has no retry, resume, cancellation, or cross-process lock.
+The real `axentd` firmware route remains unavailable; V1 does not expose remote
+flashing.
 
 ## Logging And CLI
 
