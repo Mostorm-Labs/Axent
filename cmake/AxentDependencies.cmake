@@ -154,10 +154,6 @@ if(AXENT_BUILD_CONCRETE_TRANSPORT_DEPS)
         axtp::transport_hidapi
         "Axent requires axtp::transport_hidapi after adding axtp-cpp-runtime."
     )
-    axent_require_target(
-        axtp::transport_websocket_ix
-        "Axent requires axtp::transport_websocket_ix after adding axtp-cpp-runtime."
-    )
 endif()
 
 set(AXENT_AXDP_ROOT "${AXENT_THIRD_PARTY_DIR}/axdp" CACHE PATH "AXDP source root")

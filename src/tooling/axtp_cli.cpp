@@ -63,7 +63,7 @@ int run_axtp_cli(const std::vector<std::string>& args,
 #include "core/runtime/testing/mock_transport.hpp"
 #include "transports/hidapi/hid_transport.hpp"
 #include "tcp/native_tcp_transport.hpp"
-#include "transports/websocket/ix/websocket_transport.hpp"
+#include "websocket/ix_websocket_transport.hpp"
 
 #include "axent/firmware/firmware_update_service.hpp"
 #include "../firmware/axtp_firmware_backend.hpp"
@@ -963,7 +963,7 @@ TransportBundle make_transport(const TransportOpenOptions& options)
         return bundle;
     }
     if (options.kind == "websocket" || options.kind == "ws") {
-        bundle.transport = std::make_unique<axtp::WebSocketTransport>(
+        bundle.transport = std::make_unique<transport::WebSocketTransport>(
             static_cast<std::uint16_t>(options.port.value_or(0)), options.host.c_str());
         return bundle;
     }

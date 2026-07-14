@@ -49,6 +49,18 @@ if(WIN32)
     target_link_libraries(axent_axtp_transport_tcp_native INTERFACE ws2_32)
 endif()
 
+if(TARGET ixwebsocket::ixwebsocket)
+    add_library(axent_axtp_transport_websocket_ix INTERFACE)
+    add_library(axent::transport_websocket_ix ALIAS axent_axtp_transport_websocket_ix)
+    target_include_directories(axent_axtp_transport_websocket_ix INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/transports>
+    )
+    target_link_libraries(axent_axtp_transport_websocket_ix INTERFACE
+        axtp::runtime
+        ixwebsocket::ixwebsocket
+    )
+endif()
+
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
@@ -102,7 +114,7 @@ endif()
 set(AXENT_HAS_AXTP_DIRECT_CLI OFF)
 if(TARGET axtp::transport_hidapi AND
    TARGET axent::transport_tcp_native AND
-   TARGET axtp::transport_websocket_ix)
+   TARGET axent::transport_websocket_ix)
     set(AXENT_HAS_AXTP_DIRECT_CLI ON)
 endif()
 
@@ -132,8 +144,8 @@ if(AXENT_HAS_AXTP_DIRECT_CLI)
             axtp::runtime
             axtp::sdk
             axent::transport_tcp_native
+            axent::transport_websocket_ix
             axtp::transport_hidapi
-            axtp::transport_websocket_ix
     )
     target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
 endif()
@@ -149,7 +161,7 @@ endif()
 axent_enable_warnings(libaxent)
 
 set(AXENT_HAS_WEBSOCKET_TRANSPORT OFF)
-if(TARGET axtp::transport_websocket_ix)
+if(TARGET axent::transport_websocket_ix)
     set(AXENT_HAS_WEBSOCKET_TRANSPORT ON)
 
     add_library(axent_axtp_control_endpoint STATIC
@@ -163,7 +175,7 @@ if(TARGET axtp::transport_websocket_ix)
             axtp::core
             axtp::json_rpc
             axtp::runtime
-            axtp::transport_websocket_ix
+            axent::transport_websocket_ix
     )
     axent_enable_warnings(axent_axtp_control_endpoint)
 
@@ -173,7 +185,7 @@ if(TARGET axtp::transport_websocket_ix)
     target_include_directories(axent_websocket_control PUBLIC include)
     target_link_libraries(axent_websocket_control
         PUBLIC axent::libaxent
-        PRIVATE axtp::transport_websocket_ix
+        PRIVATE ixwebsocket::ixwebsocket
     )
     axent_enable_warnings(axent_websocket_control)
 
@@ -296,6 +308,12 @@ if(AXENT_BUILD_TESTING)
     add_test(NAME control_contract_test COMMAND control_contract_test)
 
     if(AXENT_HAS_WEBSOCKET_TRANSPORT)
+        add_executable(websocket_transport_test tests/websocket_transport_test.cpp)
+        target_link_libraries(websocket_transport_test
+            PRIVATE axent::transport_websocket_ix ixwebsocket::ixwebsocket)
+        axent_enable_warnings(websocket_transport_test)
+        add_test(NAME websocket_transport_test COMMAND websocket_transport_test)
+
         add_executable(axtp_control_endpoint_test tests/axtp_control_endpoint_test.cpp)
         target_link_libraries(axtp_control_endpoint_test
             PRIVATE axent::axtp_control_endpoint ixwebsocket::ixwebsocket)
@@ -303,7 +321,8 @@ if(AXENT_BUILD_TESTING)
         add_test(NAME axtp_control_endpoint_test COMMAND axtp_control_endpoint_test)
 
         add_executable(websocket_server_test tests/websocket_server_test.cpp)
-        target_link_libraries(websocket_server_test PRIVATE axent_websocket_control axtp::transport_websocket_ix)
+        target_link_libraries(websocket_server_test
+            PRIVATE axent_websocket_control ixwebsocket::ixwebsocket)
         axent_enable_warnings(websocket_server_test)
         add_test(NAME websocket_server_test COMMAND websocket_server_test)
     endif()
