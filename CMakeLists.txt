@@ -39,6 +39,16 @@ target_include_directories(axent_firmware PUBLIC include)
 target_compile_features(axent_firmware PUBLIC cxx_std_17)
 axent_enable_warnings(axent_firmware)
 
+add_library(axent_axtp_transport_tcp_native INTERFACE)
+add_library(axent::transport_tcp_native ALIAS axent_axtp_transport_tcp_native)
+target_include_directories(axent_axtp_transport_tcp_native INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/transports>
+)
+target_link_libraries(axent_axtp_transport_tcp_native INTERFACE axtp::runtime)
+if(WIN32)
+    target_link_libraries(axent_axtp_transport_tcp_native INTERFACE ws2_32)
+endif()
+
 add_library(libaxent
     src/version.cpp
     src/control/protocol_codecs.cpp
@@ -91,7 +101,7 @@ endif()
 
 set(AXENT_HAS_AXTP_DIRECT_CLI OFF)
 if(TARGET axtp::transport_hidapi AND
-   TARGET axtp::transport_tcp_native AND
+   TARGET axent::transport_tcp_native AND
    TARGET axtp::transport_websocket_ix)
     set(AXENT_HAS_AXTP_DIRECT_CLI ON)
 endif()
@@ -121,8 +131,8 @@ if(AXENT_HAS_AXTP_DIRECT_CLI)
             axtp::json_rpc
             axtp::runtime
             axtp::sdk
+            axent::transport_tcp_native
             axtp::transport_hidapi
-            axtp::transport_tcp_native
             axtp::transport_websocket_ix
     )
     target_compile_definitions(axent_axtp_tooling PRIVATE AXENT_HAS_AXTP_DIRECT_CLI=1)
@@ -204,6 +214,11 @@ if(AXENT_BUILD_TESTING)
     target_link_libraries(transport_media_types_test PRIVATE axent::libaxent)
     axent_enable_warnings(transport_media_types_test)
     add_test(NAME transport_media_types_test COMMAND transport_media_types_test)
+
+    add_executable(tcp_transport_test tests/tcp_transport_test.cpp)
+    target_link_libraries(tcp_transport_test PRIVATE axent::transport_tcp_native)
+    axent_enable_warnings(tcp_transport_test)
+    add_test(NAME tcp_transport_test COMMAND tcp_transport_test)
 
     add_executable(media_relay_test tests/media_relay_test.cpp)
     target_link_libraries(media_relay_test PRIVATE axent::libaxent)

@@ -62,7 +62,7 @@ int run_axtp_cli(const std::vector<std::string>& args,
 
 #include "core/runtime/testing/mock_transport.hpp"
 #include "transports/hidapi/hid_transport.hpp"
-#include "transports/tcp/native/tcp_transport.hpp"
+#include "tcp/native_tcp_transport.hpp"
 #include "transports/websocket/ix/websocket_transport.hpp"
 
 #include "axent/firmware/firmware_update_service.hpp"
@@ -958,7 +958,7 @@ TransportBundle make_transport(const TransportOpenOptions& options)
         return bundle;
     }
     if (options.kind == "tcp") {
-        bundle.transport = std::make_unique<axtp::TcpTransport>(
+        bundle.transport = std::make_unique<transport::TcpServerTransport>(
             static_cast<std::uint16_t>(options.port.value_or(0)), options.host.c_str());
         return bundle;
     }
