@@ -2,11 +2,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
-#include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <ixwebsocket/IXGetFreePort.h>
 #include <ixwebsocket/IXNetSystem.h>
@@ -14,6 +16,7 @@
 #include <ixwebsocket/IXWebSocketMessage.h>
 #include <ixwebsocket/IXWebSocketMessageType.h>
 #include <ixwebsocket/IXWebSocketServer.h>
+#include <nlohmann/json.hpp>
 
 #include "core/runtime/transport/transport.hpp"
 
@@ -53,36 +56,45 @@ public:
         _server->disablePerMessageDeflate();
         _server->setOnClientMessageCallback(
             [this](std::shared_ptr<ix::ConnectionState> connectionState,
-                   ix::WebSocket&,
+                   ix::WebSocket& webSocket,
                    const ix::WebSocketMessagePtr& message) {
                 if (!message) {
                     return;
                 }
                 if (message->type == ix::WebSocketMessageType::Open) {
+                    auto client = findClient(webSocket);
                     {
                         std::lock_guard<std::mutex> lock(_clientsMutex);
-                        _activeClients.insert(connectionId(connectionState));
+                        const bool firstClient = _clients.empty();
+                        const auto id = connectionId(connectionState);
+                        _clients[id] = std::move(client);
+                        _pendingHelloClients.push(id);
+                        if (firstClient) {
+                            // The runtime adapter owns one shared AXTP session.  Only the
+                            // empty-to-connected transition starts a new session generation;
+                            // extra WebSocket peers join the active session.
+                            _helloText.clear();
+                            _connectionGeneration.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        _hasConnection.store(true);
                     }
-                    _connectionGeneration.fetch_add(1, std::memory_order_relaxed);
-                    _hasConnection.store(true);
                     return;
                 }
                 if (message->type == ix::WebSocketMessageType::Close ||
                     message->type == ix::WebSocketMessageType::Error) {
-                    bool hasClients = false;
                     {
                         std::lock_guard<std::mutex> lock(_clientsMutex);
-                        _activeClients.erase(connectionId(connectionState));
-                        hasClients = !_activeClients.empty();
+                        _clients.erase(connectionId(connectionState));
+                        _hasConnection.store(!_clients.empty());
                     }
-                    _hasConnection.store(hasClients);
                     return;
                 }
                 if (message->type != ix::WebSocketMessageType::Message || message->binary) {
                     return;
                 }
                 std::lock_guard<std::mutex> lock(_rxMutex);
-                _rxMessages.push(message->str);
+                _rxMessages.push(
+                    ReceivedMessage{connectionId(connectionState), message->str});
             });
         const bool started = _server->listenAndStart();
         _open.store(started);
@@ -101,11 +113,14 @@ public:
         _hasConnection.store(false);
         {
             std::lock_guard<std::mutex> lock(_clientsMutex);
-            _activeClients.clear();
+            _clients.clear();
+            std::queue<std::string> empty;
+            _pendingHelloClients.swap(empty);
+            _helloText.clear();
         }
         {
             std::lock_guard<std::mutex> lock(_rxMutex);
-            std::queue<std::string> empty;
+            std::queue<ReceivedMessage> empty;
             _rxMessages.swap(empty);
         }
         _open.store(false);
@@ -119,18 +134,39 @@ public:
         if (!_open.load() || _sink == nullptr) {
             return;
         }
+        if (_polling.exchange(true)) {
+            return;
+        }
+
+        struct PollGuard {
+            explicit PollGuard(std::atomic<bool>& polling)
+                : polling_(polling) {}
+            ~PollGuard() { polling_.store(false); }
+            std::atomic<bool>& polling_;
+        } guard(_polling);
+
+        sendCachedHelloToPendingClients();
 
         while (true) {
-            std::string message;
+            ReceivedMessage message;
             {
                 std::lock_guard<std::mutex> lock(_rxMutex);
                 if (_rxMessages.empty()) {
+                    _dispatchConnectionId.clear();
                     return;
                 }
                 message = std::move(_rxMessages.front());
                 _rxMessages.pop();
             }
-            _sink->onBytes(reinterpret_cast<const Byte*>(message.data()), message.size());
+            _dispatchConnectionId = message.connectionId;
+            struct DispatchGuard {
+                explicit DispatchGuard(std::string& connectionId)
+                    : connectionId_(connectionId) {}
+                ~DispatchGuard() { connectionId_.clear(); }
+                std::string& connectionId_;
+            } dispatchGuard(_dispatchConnectionId);
+            _sink->onBytes(
+                reinterpret_cast<const Byte*>(message.text.data()), message.text.size());
         }
     }
 
@@ -139,11 +175,29 @@ public:
             return;
         }
         const std::string text(reinterpret_cast<const char*>(data), size);
-        for (const auto& client : _server->getClients()) {
+
+        if (isHello(text)) {
+            std::vector<std::shared_ptr<ix::WebSocket>> clients;
+            {
+                std::lock_guard<std::mutex> lock(_clientsMutex);
+                _helloText = text;
+                clients = takePendingHelloClientsLocked();
+            }
+            if (!clients.empty()) {
+                sendText(clients, text);
+                return;
+            }
+        }
+
+        if (!_dispatchConnectionId.empty()) {
+            auto client = clientFor(_dispatchConnectionId);
             if (client) {
                 (void)client->sendText(text);
             }
+            return;
         }
+
+        sendText(activeClients(), text);
     }
 
     TransportProfile profile() const override {
@@ -170,8 +224,89 @@ public:
     }
 
 private:
+    struct ReceivedMessage {
+        std::string connectionId;
+        std::string text;
+    };
+
     static std::string connectionId(const std::shared_ptr<ix::ConnectionState>& connectionState) {
         return connectionState ? connectionState->getId() : std::string();
+    }
+
+    std::shared_ptr<ix::WebSocket> findClient(ix::WebSocket& webSocket) const {
+        if (!_server) {
+            return {};
+        }
+        for (const auto& client : _server->getClients()) {
+            if (client && client.get() == &webSocket) {
+                return client;
+            }
+        }
+        return {};
+    }
+
+    std::shared_ptr<ix::WebSocket> clientFor(const std::string& id) const {
+        std::lock_guard<std::mutex> lock(_clientsMutex);
+        const auto client = _clients.find(id);
+        return client == _clients.end() ? std::shared_ptr<ix::WebSocket>{} : client->second;
+    }
+
+    std::vector<std::shared_ptr<ix::WebSocket>> activeClients() const {
+        std::vector<std::shared_ptr<ix::WebSocket>> clients;
+        std::lock_guard<std::mutex> lock(_clientsMutex);
+        clients.reserve(_clients.size());
+        for (const auto& [id, client] : _clients) {
+            (void)id;
+            if (client) {
+                clients.push_back(client);
+            }
+        }
+        return clients;
+    }
+
+    std::vector<std::shared_ptr<ix::WebSocket>> takePendingHelloClientsLocked() {
+        std::vector<std::shared_ptr<ix::WebSocket>> clients;
+        while (!_pendingHelloClients.empty()) {
+            const auto id = std::move(_pendingHelloClients.front());
+            _pendingHelloClients.pop();
+            const auto client = _clients.find(id);
+            if (client != _clients.end() && client->second) {
+                clients.push_back(client->second);
+            }
+        }
+        return clients;
+    }
+
+    void sendCachedHelloToPendingClients() {
+        std::string hello;
+        std::vector<std::shared_ptr<ix::WebSocket>> clients;
+        {
+            std::lock_guard<std::mutex> lock(_clientsMutex);
+            if (_helloText.empty() || _pendingHelloClients.empty()) {
+                return;
+            }
+            hello = _helloText;
+            clients = takePendingHelloClientsLocked();
+        }
+        sendText(clients, hello);
+    }
+
+    static void sendText(const std::vector<std::shared_ptr<ix::WebSocket>>& clients,
+                         const std::string& text) {
+        for (const auto& client : clients) {
+            if (client) {
+                (void)client->sendText(text);
+            }
+        }
+    }
+
+    static bool isHello(const std::string& text) {
+        try {
+            const auto message = nlohmann::json::parse(text);
+            return message.is_object() && message.value("op", -1) == 0;
+        } catch (const std::exception&) {
+            return false;
+        }
     }
 
     std::uint16_t _port = 0;
@@ -181,12 +316,18 @@ private:
     IByteSink* _sink = nullptr;
     std::atomic<bool> _open{false};
     std::atomic<bool> _hasConnection{false};
+    std::atomic<bool> _polling{false};
     std::atomic<std::uint64_t> _connectionGeneration{0};
     bool _netInitialized = false;
     mutable std::mutex _clientsMutex;
-    std::set<std::string> _activeClients;
+    std::map<std::string, std::shared_ptr<ix::WebSocket>> _clients;
+    // Additional peers receive the cached Hello directly, without making the
+    // shared runtime adapter reset the active SID.
+    std::queue<std::string> _pendingHelloClients;
+    std::string _helloText;
     mutable std::mutex _rxMutex;
-    std::queue<std::string> _rxMessages;
+    std::queue<ReceivedMessage> _rxMessages;
+    std::string _dispatchConnectionId;
 };
 
 }  // namespace axent::transport

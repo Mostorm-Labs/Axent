@@ -3,6 +3,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -126,10 +127,13 @@ int main()
     assert(transport.localPort() != 0);
 
     WebSocketProbe first(transport.localPort());
-    WebSocketProbe second(transport.localPort());
     assert(wait_until([&] {
-        return transport.hasConnection() && transport.connectionGeneration() >= 2;
+        return transport.hasConnection() && transport.connectionGeneration() >= 1;
     }));
+    const auto active_generation = transport.connectionGeneration();
+    WebSocketProbe second(transport.localPort());
+    assert(wait_until([&] { return transport.hasConnection(); }));
+    assert(transport.connectionGeneration() == active_generation);
 
     first.send_text("first-request");
     assert(wait_until([&] {
@@ -153,8 +157,17 @@ int main()
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     assert(transport.hasConnection());
 
+    std::unique_ptr<WebSocketProbe> replacement;
+    std::thread replacement_opener([&] {
+        replacement = std::make_unique<WebSocketProbe>(transport.localPort());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    second.stop();
+    replacement_opener.join();
+    assert(wait_until([&] { return transport.hasConnection(); }));
+
     const std::string queued = "discard-on-close";
-    second.send_text(queued);
+    replacement->send_text(queued);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     const auto delivered_before_close = sink.messages.size();
     const auto generation_before_restart = transport.connectionGeneration();
@@ -164,7 +177,7 @@ int main()
     assert(!transport.hasConnection());
     assert(sink.messages.size() == delivered_before_close);
 
-    second.stop();
+    replacement.reset();
     transport.open();
     assert(transport.localPort() != 0);
     {
