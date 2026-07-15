@@ -7,6 +7,7 @@ product-specific workflow logic into Core.
 
 Architecture guardrails:
 
+- [Protocol-Bus Layer Boundaries](docs/architecture/LAYER_BOUNDARIES.md) — read before changing code
 - [Axent Roadmap](docs/ROADMAP.md)
 - [Axent Architecture](docs/architecture/AXENT_ARCHITECTURE.md)
 - [Axent Host Model](docs/architecture/AXENT_HOST_MODEL.md)

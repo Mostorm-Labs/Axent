@@ -5,12 +5,14 @@ endif()
 set(axent_deps_file "${AXENT_REPO_ROOT}/cmake/AxentDependencies.cmake")
 set(axent_cmake_file "${AXENT_REPO_ROOT}/CMakeLists.txt")
 set(axent_readme "${AXENT_REPO_ROOT}/README.md")
+set(axent_agents "${AXENT_REPO_ROOT}/AGENTS.md")
 set(gitmodules_file "${AXENT_REPO_ROOT}/.gitmodules")
 set(axent_roadmap_doc "${AXENT_REPO_ROOT}/docs/ROADMAP.md")
 set(axent_architecture_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_ARCHITECTURE.md")
 set(axent_host_model_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_HOST_MODEL.md")
 set(axent_extension_model_doc "${AXENT_REPO_ROOT}/docs/architecture/AXENT_EXTENSION_MODEL.md")
 set(axent_codex_guardrails_doc "${AXENT_REPO_ROOT}/docs/dev/CODEX_GUARDRAILS.md")
+set(axent_layer_boundary_doc "${AXENT_REPO_ROOT}/docs/architecture/LAYER_BOUNDARIES.md")
 
 if(NOT EXISTS "${axent_deps_file}")
     message(FATAL_ERROR "Missing ${axent_deps_file}")
@@ -136,6 +138,30 @@ function(assert_files_do_not_contain files_variable pattern message)
         assert_file_does_not_contain("${file_path}" "${pattern}" "${message}")
     endforeach()
 endfunction()
+
+assert_file_contains(
+    "${axent_agents}"
+    "docs/architecture/LAYER_BOUNDARIES.md"
+    "AGENTS.md must require the layer-boundary document before code changes"
+)
+
+assert_file_contains(
+    "${axent_readme}"
+    "docs/architecture/LAYER_BOUNDARIES.md"
+    "Axent README must link the layer-boundary document"
+)
+
+assert_file_contains(
+    "${axent_layer_boundary_doc}"
+    "NearCast product host -> Axent protocol bus -> axtp-cpp-runtime"
+    "Axent layer-boundary documentation must define dependency direction"
+)
+
+assert_file_contains(
+    "${axent_layer_boundary_doc}"
+    "Public Axent headers must not include"
+    "Axent layer-boundary documentation must prohibit runtime types in public contracts"
+)
 
 assert_file_contains(
     "${axent_roadmap_doc}"
