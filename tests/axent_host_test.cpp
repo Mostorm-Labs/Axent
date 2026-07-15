@@ -894,6 +894,24 @@ int main()
     real_request.media = true;
     const auto media_lease = real_host.acquire_session(real_request);
     require(media_lease.acquired, "real AXTP media lease should be acquired");
+    const auto initial_video_params = real_host.video_stream_params_state(
+        media_lease.session_id);
+    require(initial_video_params.session_id == media_lease.session_id &&
+                initial_video_params.active_stream_id.has_value(),
+            "Host video stream parameter state should bind the media lease session");
+    auto video_params_subscription = real_host.subscribe_video_stream_params(
+        media_lease.session_id,
+        [](const axent::VideoStreamParamsState&) {});
+    require(video_params_subscription != nullptr,
+            "Host should expose an RAII video parameter subscription for a media lease");
+    axent::VideoStreamParamsRequest invalid_video_params;
+    invalid_video_params.frame_rate = 0;
+    const auto invalid_video_params_result = real_host.set_video_stream_params(
+        media_lease.session_id, invalid_video_params);
+    require(invalid_video_params_result.status_code == 0x000A &&
+                !invalid_video_params_result.accepted &&
+                invalid_video_params_result.state.session_id == media_lease.session_id,
+            "Host should preserve typed validation status and bind result session id");
 
     auto stream_sink = std::make_shared<RecordingMediaStreamSink>();
     auto stream_subscription =

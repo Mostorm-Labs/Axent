@@ -2,16 +2,24 @@ id: rpc.invalid_params
 title: Invalid parameters use standard RPC parameter errors
 since: spec/v0.0.2
 level: core
+semantic:
+  kind: invalid_params
 profiles:
   - core
   - websocket-jsonrpc
   - framed-binary
 
 given:
+  device_profile: audio_device
   method: audio.setAlgorithmConfig
+  capability: audio.algorithm
+  method_available: true
+  expected_validation_error: OUT_OF_RANGE
 
 steps:
-  - direction: client_to_server
+  - id: invalid_request
+    direction: client_to_server
+    role: trigger
     rpc:
       encoding: json
       op: REQUEST
@@ -22,17 +30,29 @@ steps:
           noiseSuppression:
             level: 999
 
-  - direction: server_to_client
+  - id: validation_response
+    responseTo: invalid_request
+    direction: server_to_client
+    role: degraded
     expect:
       rpc:
         op: REQUEST_RESPONSE
         requestId: 3
-        statusCode:
-          oneOf:
-            - RPC_PARAM_INVALID
-            - OUT_OF_RANGE
-            - INVALID_ARGUMENT
+        statusCode: OUT_OF_RANGE
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: validation_response
+    direction: client_to_server
+    rpc: { encoding: json, op: REQUEST, requestId: 4, method: audio.getAlgorithmConfig, params: {} }
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect: { rpc: { op: REQUEST_RESPONSE, requestId: 4, statusCode: SUCCESS } }
 
 assertions:
   - response.requestId == request.requestId
-  - response.statusCode != SUCCESS
+  - response.statusCode == OUT_OF_RANGE
+  - response.statusCode != NOT_SUPPORTED

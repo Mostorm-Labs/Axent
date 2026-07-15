@@ -1,0 +1,134 @@
+id: stream.video_stream_params_active_reconfigure
+title: Active NT10 video stream is replaced through close then open
+since: spec/v0.0.2
+level: stream
+profiles:
+  - stream
+  - framed-binary
+
+given:
+  session:
+    state: identified
+    id: cast-session-17
+  source:
+    id: wireless_cast_video
+    state: receiving
+    active_video_stream:
+      streamId: 4097
+      streamProfile: media.video
+      syncGroupId: cast-av-17
+    frameRates: [1, 24, 30, 60]
+    bitratesKbps: [256, 4000, 6000, 12000]
+    supportsReconfigure: true
+  capability:
+    cast.flowControl:
+      supportsVideoStreamParams: true
+      supportsActiveVideoReconfigure: true
+  audio:
+    streamId: 8193
+    syncGroupId: cast-av-17
+
+steps:
+  - id: set_params
+    role: trigger
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 630
+      method: cast.setVideoStreamParams
+      params:
+        sessionId: cast-session-17
+        frameRate: 30
+        bitrateKbps: 6000
+
+  - id: set_pending
+    role: observe
+    responseTo: set_params
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 630
+        result:
+          accepted: true
+          state: pending
+          previousStreamId: 4097
+          sourceVideo:
+            type: object
+
+  - id: close_old
+    role: observe
+    triggeredBy: set_pending
+    direction: server_to_client
+    rpc:
+      op: REQUEST
+      requestId: 631
+      method: video.closeStream
+      params:
+        streamId: 4097
+        reason: encodingReconfigure
+
+  - id: close_old_result
+    role: observe
+    responseTo: close_old
+    direction: client_to_server
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 631
+        statusCode: SUCCESS
+        result:
+          streamId: 4097
+          state: closed
+          reason: encodingReconfigure
+
+  - id: open_new
+    role: observe
+    triggeredBy: close_old_result
+    direction: server_to_client
+    rpc:
+      op: REQUEST
+      requestId: 632
+      method: video.openStream
+      params:
+        source: wireless_cast_video
+        peerRole: transmitter
+        codec: h264
+        streamProfile: media.video
+        syncGroupId: cast-av-17
+        castSessionId: cast-session-17
+        frameRate: 30
+        bitrateKbps: 6000
+
+  - id: open_new_result
+    role: observe
+    responseTo: open_new
+    direction: client_to_server
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 632
+        statusCode: SUCCESS
+        result:
+          streamId: 4098
+          state:
+            oneOf: [opening, streaming]
+          source: wireless_cast_video
+          peerRole: transmitter
+          codec: h264
+          streamProfile: media.video
+          syncGroupId: cast-av-17
+          frameRate: 30
+          bitrateKbps: 6000
+
+assertions:
+  - close_old.params.streamId == 4097
+  - close_old.params.reason == encodingReconfigure
+  - close_old_result.result.state == closed
+  - open_new.params.peerRole == transmitter
+  - open_new.params.syncGroupId == cast-av-17
+  - open_new_result.result.streamId == 4098
+  - open_new_result.result.streamId != 4097
+  - old stream 4097 is terminal and no longer accepts media packets
+  - audio.streamId == 8193 and audio.syncGroupId == cast-av-17
+  - video reconfiguration does not restart the audio stream

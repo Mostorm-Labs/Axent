@@ -12,6 +12,16 @@ given:
 
 steps:
   - direction: server_to_client
+    jsonrpc:
+      sid: "12345678"
+      op: EVENT
+      d:
+        event: audio.algorithmConfigChanged
+        data:
+          reason: user_request
+          applyState: applied
+
+  - direction: client_observes
     event:
       name: audio.algorithmConfigChanged
       data:
@@ -26,5 +36,7 @@ steps:
           type: object
 
 assertions:
+  - jsonrpc.sid != ""
+  - jsonrpc.op == EVENT
   - event.name == "audio.algorithmConfigChanged"
   - event.data.reason != null

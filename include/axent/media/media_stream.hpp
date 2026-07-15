@@ -23,6 +23,7 @@ struct MediaStreamDescriptor {
     std::uint32_t channels = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t frame_rate = 0;
 };
 
 enum class MediaStreamEventKind {

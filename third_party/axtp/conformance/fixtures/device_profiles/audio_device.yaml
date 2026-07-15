@@ -2,6 +2,10 @@ id: audio_device
 name: AXTP Audio Algorithm Device
 capabilities:
   - id: audio.algorithm
+    features:
+      autoGainControl:
+        registered: true
+        supported: false
     methods:
       - audio.getAlgorithmCapabilities
       - audio.getAlgorithmConfig
@@ -23,3 +27,11 @@ methods:
       noiseSuppression:
         enabled: true
         level: 1
+  audio.setAlgorithmConfig:
+    result:
+      applyState: applied
+      requiresAudioRestart: false
+      config:
+        noiseSuppression:
+          enabled: false
+          level: 1

@@ -18,12 +18,12 @@ Flow 文档负责描述业务场景和交互步骤、判断每一步协议覆盖
 | Flow 目标 | NA20 通过 USB HID 向上位机 MediaHost 暴露 NT10 无线投屏产生的 H.264 视频和 AAC 透传音频；NT10 插入触发的是 NT10->NA20 upstream source ready/receiving；NA20 可据此主动向 MediaHost 发起 `video.openStream` / `audio.openStream` 请求 Host 接收，MediaHost 也可在 source 仍 available/receiving 时主动 `openStream` 拉取；两种方式都只建立 NA20->MediaHost 下游 receiver stream。已建立的 stream 支持 NA20 或 MediaHost 任一方发起 `closeStream`；MediaHost 结束投屏只关闭 NA20->MediaHost 的 AXTP 下行 stream，不默认断开 NT10->NA20 的无线 source；NA20 被拔出、重启或 MediaHost 崩溃时按 AXTP session/transport hard-disconnect 处理，所有 stream context 本地立即失效。 |
 | 当前协议覆盖 | partial |
 | 涉及 domain.feature | draft `video.stream`, draft `audio.stream`, draft `stream.flowControl`; pairing 前置依赖 draft `network.ap` / `network.wifi` |
-| 已有 adopted/generated | `AXTP-USB-HID`, `PayloadType=STREAM`, STREAM 16B header (`streamId`, `seqId`, `cursor`), STREAM common error codes。 |
-| 缺口 | `video.stream` / `audio.stream` 业务建流、状态事件、payload envelope、同步字段、producer-initiated open、receiver-initiated pull open、source available/receiving 事件、bidirectional close、对端媒体角色字段、close 幂等与竞态规则尚未 generated；receiver close 不停止 upstream source、Host 重新打开窗口后的 retained source reopen 规则、异常硬断流的 reason taxonomy、session-lost 清理规则和重连重建流规则需在草案或 runtime profile 中固化；AAC `transportFormat` 仍需确认；generated 输出仍需与双向 RPC request 语义对齐。 |
-| 是否需要新增协议草案 | no new flow-only draft；已有 `video.stream` / `audio.stream` 草案需继续评审、补充并采纳。 |
+| 已有 adopted/generated | `AXTP-USB-HID`, `PayloadType=STREAM`, STREAM 16B header (`streamId`, `seqId`, `cursor`), STREAM common error codes, generated `audio.stream` / `video.stream` timing metadata, generated `stream.flowControl` / `stream.clockReport`。 |
+| 缺口 | `video.stream` / `audio.stream` 的 producer-initiated open、receiver-initiated pull open、source available/receiving 事件、bidirectional close、对端媒体角色字段、close 幂等与竞态规则仍需继续评审；receiver close 不停止 upstream source、Host 重新打开窗口后的 retained source reopen 规则、异常硬断流的 reason taxonomy、session-lost 清理规则和重连重建流规则需在草案或 runtime profile 中固化；AAC `transportFormat` 仍需确认；generated 输出仍需与双向 RPC request 语义对齐。 |
+| 是否需要新增协议草案 | no new clock feature；当前继续维护 generated `video.stream` / `audio.stream` / `stream.flowControl`，后续只补齐 profile lifecycle 与 source-state 语义。 |
 | 是否涉及 Legacy | no，业务文档未提供旧协议命令或字段级证据；NA20/NT10 内部无线投屏实现仅作为设备实现边界。 |
 | 是否涉及 STREAM | yes，音频和视频媒体数据必须走 AXTP STREAM 数据面。 |
-| 下一步 | 评审并更新 `video.stream` / `audio.stream` 草案；明确 open 可由媒体生产方主动请求接收，也可由媒体消费方主动拉取；close 可由任一端发起，并用对端 receiver/transmitter 角色表达双方职责；同步确认 source available/receiving 事件、AXTP RPC 双向 request 语义、close 竞态规则、session-lost 硬断流清理规则和 AAC transportFormat。 |
+| 下一步 | 评审并更新 `video.stream` / `audio.stream` 的 lifecycle/source-state 语义；明确 open 可由媒体生产方主动请求接收，也可由媒体消费方主动拉取；close 可由任一端发起，并用对端 receiver/transmitter 角色表达双方职责；同步确认 source available/receiving 事件、AXTP RPC 双向 request 语义、close 竞态规则、session-lost 硬断流清理规则和 AAC transportFormat。 |
 
 ## 1. Story Summary
 
@@ -62,7 +62,11 @@ Flow 文档负责描述业务场景和交互步骤、判断每一步协议覆盖
 - NA20 不在本流程中本地播放；它作为媒体桥，将收到的音视频经 USB HID 给上位机。
 - NA20 到 MediaHost 的视频 H.264 使用 Annex-B，SPS/PPS 随关键帧发送。
 - NA20 到 MediaHost 的音频采用 AAC 透传；不采用 NA20 解码 PCM 后再给 MediaHost 作为本场景 MVP。
-- 音视频时间戳同时使用 NT10 源媒体时间戳和 NA20 接收时钟；播放主时间轴使用 NT10 源媒体 `timestampUs`。
+- 音视频 STREAM 16B `cursor` 统一使用 NT10 源端单调时钟域下的采集时间戳 `sourceCaptureTimestampUs`；不得使用 UTC/wall clock、编码完成时间、发送时间或 NA20 转发时间覆盖该语义。
+- 音频 MVP 使用固定 packetization 推导 PTS：`audioPtsMode=derivedFromSeq`、`timebase=48000`、`sampleRate=48000`、`samplesPerPacket=1024`、`firstMediaSeqId=0`、`audioPtsBase=0`、`packetizationMode=fixedSamplesPerPacket`、`cursorUnit=sourceCaptureTimestampUs`。
+- 视频 MVP 使用采集时间作为 PTS：`videoPtsMode=sameAsCursor`、`timebase=1000000`、`cursorUnit=sourceCaptureTimestampUs`、`packetizationMode=completeFrame`。
+- NT10 需要产生源端 clock report，NA20 可以将其重新封装为 AXTP `stream.clockReport` 发给 MediaHost；MediaHost 使用 report 建立 NT10 媒体时间线、NT10 单调时钟、NA20 中转时钟和本地 monotonic arrival time 的映射。
+- MediaHost 不得直接用本地当前时间减去 `cursor` 判断设备是否发包超时；传输健康看本地 arrival interval、seq gap、jitter buffer 和 `stream.clockReport` 拟合后的 drift/offset。
 - 主流程由用户插入 NT10 到源端 PC 触发；NT10 自动向 NA20 开始推流，不要求 MediaHost 先下发“开始投屏”命令。
 - NA20 检测到 NT10 视频源或音频源 ready/receiving 后，可分别向 MediaHost 发起对应 `openStream`；也可只发出 source available/receiving 事件，可能只有视频或只有音频进入可拉取状态。
 - MediaHost 也可以在任一 source 仍 available/receiving 时主动向 NA20 发起 `video.openStream` / `audio.openStream` 拉取该 source 的下游 receiver stream。
@@ -154,7 +158,11 @@ HID/NA20 不新增独立 `cast.streaming` method domain，但 MediaHost/Launcher
 | Decision | MediaHost MVP 同时从 NA20 接收视频和音频；不按 audio-only 范围设计。 | `[REVIEW-OK]` |
 | Decision | NA20 到 MediaHost 的音频格式采用 AAC 透传方案；AAC 具体封装如 ADTS/LATM/raw AAC 由 `audio.stream` 草案继续确认。 | `[REVIEW-OK]` |
 | Decision | NA20 到 MediaHost 的视频 H.264 使用 Annex-B，SPS/PPS 随关键帧发送。 | `[REVIEW-OK]` |
-| Decision | 播放同步主时间轴使用 NT10 源媒体 `timestampUs`，NA20 接收时钟用于 jitter/诊断。 | `[REVIEW-OK]` |
+| Decision | STREAM `cursor` 使用 NT10 源端 `sourceCaptureTimestampUs`；NA20 可记录接收/转发时钟用于中转诊断，但不得覆盖源端 cursor。 | `[REVIEW-OK]` |
+| Decision | 音频 PTS 在 MVP 中由 `seqId` 按固定 1024 samples 推导，不在每个 AAC STREAM data 前重复携带 `mediaPts`；如果未来允许变长包、静音抑制、合包/拆包或 NA20 重打包，必须切换到 explicit audio mediaPts。 | `[REVIEW-OK]` |
+| Decision | 视频 PTS 在 MVP 中等同于 `cursor`，`videoPtsMode=sameAsCursor` 且 `timebase=1000000`；每个 STREAM 包承载完整视频帧，媒体层不再重复定义 frame offset。 | `[REVIEW-OK]` |
+| Decision | 播放同步主时间轴使用 NT10 源媒体时间线；NA20 接收/转发时钟用于 relay delay、queue 和 jitter 诊断；MediaHost 通过 `stream.clockReport` 做长期 drift/offset 估计。 | `[REVIEW-OK]` |
+| Decision | 当前 MVP 的时钟校准入口为 `stream.flowControl` 下的 `stream.clockReport`，作为通用 STREAM runtime 诊断事件，latest-wins，不阻塞媒体数据。 | `[REVIEW-OK]` |
 | Decision | NT10 开始/停止无线推流可以做成可选 AXTP source proxy control；NA20 与 NT10 之间实现看设备，主流程仍由 NT10 插入/拔出触发。 | `[REVIEW-OK]` |
 | Non-goal | 不设计 NT10 到 NA20 的私有 Wi-Fi 媒体协议、无线丢包恢复或 Wi-Fi 加密细节。 | `[REVIEW-OK]` |
 | Non-goal | 不设计设备升级、AP/Wi-Fi 配对、UI 文案或上位机播放器内部渲染实现。 | `[REVIEW-OK]` |
@@ -178,10 +186,12 @@ HID/NA20 不新增独立 `cast.streaming` method domain，但 MediaHost/Launcher
 | AXTP RPC request 方向支持 NA20 主动调用 MediaHost | partial / generated sync gap | bidirectional business RPC request or Host-side receiver service | `specs/20-core.md`, `contract/generated/protocol.md` | Core spec 已澄清 Identified 后双方可作为 requester；generated 输出和协议草案仍需同步 requester/responder 与 role policy。 |
 | 查询或订阅 NA20 是否有投屏输入源和媒体桥能力 | draft | `video.stream` source `wireless_cast`, `audio.stream` source `wireless_cast_audio`, optional source state event | `workspace/protocol/video/video.stream.md`, `workspace/protocol/audio/audio.stream.md` | 可作为诊断/预检能力，也可作为 MediaHost 主动拉取和 rejected producer-open fallback 的状态依据。 |
 | 打开 H.264 视频到 MediaHost | draft | `video.getStreamCapabilities`, `video.openStream`, `video.closeStream`, `video.streamStateChanged` | `workspace/protocol/video/video.stream.md` | 采纳 `video.stream`，固化 `wireless_cast` source、对端 receiver 角色和同步字段。 |
-| 视频分片、帧边界、关键帧和丢包重同步 | draft | `VideoChunkHeaderV1`, `video.requestKeyFrame`, `media.video` profile | `workspace/protocol/video/video.stream.md` | H.264 Annex-B、SPS/PPS 随关键帧需采纳固化。 |
+| 视频完整帧 envelope、minimal flags 和丢包重同步 | draft amendment | minimal video payload flags such as keyFrame/config/discontinuity, `video.requestKeyFrame`, `media.video` profile | `workspace/protocol/video/video.stream.md` | `packetizationMode=completeFrame` 下不增加媒体层 frame offset；H.264 Annex-B、SPS/PPS 随关键帧需采纳固化。 |
 | 打开 AAC 透传音频到 MediaHost | draft | `audio.getStreamCapabilities`, `audio.openStream`, `audio.closeStream`, `audio.streamStateChanged` | `workspace/protocol/audio/audio.stream.md` | 采纳前确认 AAC `transportFormat` 和对端 receiver 角色。 |
-| 音频分片、时间戳和丢包统计 | draft | `AudioChunkHeaderV1`, `media.audio` / `realtime_audio` profile | `workspace/protocol/audio/audio.stream.md`, `workspace/protocol/stream/stream.flowControl.md` | 确认 AAC frame/chunk envelope。 |
-| 音视频同步 | draft | `syncGroupId`, `castSessionId`, `clockDomain`, `receiverClockDomain`, `timestampUs` | `workspace/protocol/video/video.stream.md`, `workspace/protocol/audio/audio.stream.md` | 采纳时统一 video/audio schema。 |
+| 音频 AAC packet envelope、minimal flags 和丢包统计 | draft amendment | minimal audio payload flags such as config/discontinuity, `media.audio` / `realtime_audio` profile | `workspace/protocol/audio/audio.stream.md`, `workspace/protocol/stream/stream.flowControl.md` | `fixedSamplesPerPacket` 下不在每包重复 `mediaPts` / duration / sampleCount；变长、静音抑制或重打包时再切 explicit audio `mediaPts`。 |
+| 音频固定包 PTS 推导参数 | generated draft | `audio.openStream` / `AudioOpenStreamResult` fields: `audioPtsMode=derivedFromSeq`, `timebase=48000`, `sampleRate=48000`, `samplesPerPacket=1024`, `firstMediaSeqId=0`, `audioPtsBase=0`, `packetizationMode=fixedSamplesPerPacket`, `cursorUnit=sourceCaptureTimestampUs` | `contract/generated/protocol.md`, `workspace/protocol/audio/audio.stream.md` | 已固化为 stream context metadata；该模式下每个音频 STREAM packet 消耗固定 1024 samples，NA20 不得重打包。 |
+| 视频 PTS 与 cursor 同源参数 | generated draft | `video.openStream` / `VideoOpenStreamResult` fields: `videoPtsMode=sameAsCursor`, `timebase=1000000`, `cursorUnit=sourceCaptureTimestampUs`, `packetizationMode=completeFrame` | `contract/generated/protocol.md`, `workspace/protocol/video/video.stream.md` | 已固化为 stream context metadata；该模式下视频 media PTS 等同于 STREAM `cursor`，且每个 STREAM packet 是完整视频帧。 |
+| 音视频同步和时钟校准 | generated draft | `stream.clockReport` event carrying NT10 media PTS anchors plus NA20 relay timestamps | `contract/generated/protocol.md`, `workspace/protocol/stream/stream.flowControl.md` | 当前 MVP 将 clock report 放在 `stream.flowControl`；它是 runtime 诊断事件，不改变 STREAM 16B header，也不替代 ACK/window/pause/resume。 |
 | MediaHost 本地解码、jitter buffer、A/V sync 和播放 | local-only | MediaHost player/runtime | business implementation | 不进入协议；测试验收需覆盖。 |
 | NT10 到 NA20 无线推流 | non-protocol | device-specific wireless cast | `workspace/business/device-streaming.md` | 不进入 AXTP wire。 |
 
@@ -220,23 +230,23 @@ sequenceDiagram
     Note over NA20,MediaHost: Opening only creates NA20->MediaHost downstream streams; it does not stop or rebuild NT10->NA20 upstream media.
 
     alt Producer-open accepted
-        NA20->>MediaHost: Draft video.openStream(peerRole=receiver, source=wireless_cast, codec=h264)
+        NA20->>MediaHost: Draft video.openStream(peerRole=receiver, source=wireless_cast, codec=h264, videoPtsMode=sameAsCursor)
         MediaHost-->>NA20: accepted video stream context / receiver ready
-        NA20->>MediaHost: Draft audio.openStream(peerRole=receiver, source=wireless_cast_audio, codec=aac)
+        NA20->>MediaHost: Draft audio.openStream(peerRole=receiver, source=wireless_cast_audio, codec=aac, audioPtsMode=derivedFromSeq)
         MediaHost-->>NA20: accepted audio stream context / receiver ready
     else Producer-open rejected, receiver pulls later
         NA20->>MediaHost: Draft video/audio.openStream(peerRole=receiver, source=wireless_cast or wireless_cast_audio)
         MediaHost-->>NA20: rejected(receiver not ready or policy)
         NA20-->>MediaHost: Draft per-media source available/receiving event(no streamId)
-        MediaHost->>NA20: Draft video.openStream(peerRole=transmitter, source=wireless_cast)
+        MediaHost->>NA20: Draft video.openStream(peerRole=transmitter, source=wireless_cast, videoPtsMode=sameAsCursor)
         NA20-->>MediaHost: accepted video stream context
-        MediaHost->>NA20: Draft audio.openStream(peerRole=transmitter, source=wireless_cast_audio)
+        MediaHost->>NA20: Draft audio.openStream(peerRole=transmitter, source=wireless_cast_audio, audioPtsMode=derivedFromSeq)
         NA20-->>MediaHost: accepted audio stream context
     else Receiver pulls from available source first
         NA20-->>MediaHost: Draft per-media source available/receiving event
-        MediaHost->>NA20: Draft video.openStream(peerRole=transmitter, source=wireless_cast)
+        MediaHost->>NA20: Draft video.openStream(peerRole=transmitter, source=wireless_cast, videoPtsMode=sameAsCursor)
         NA20-->>MediaHost: accepted video stream context
-        MediaHost->>NA20: Draft audio.openStream(peerRole=transmitter, source=wireless_cast_audio)
+        MediaHost->>NA20: Draft audio.openStream(peerRole=transmitter, source=wireless_cast_audio, audioPtsMode=derivedFromSeq)
         NA20-->>MediaHost: accepted audio stream context
     end
 
@@ -246,11 +256,18 @@ sequenceDiagram
     MediaHost->>Player: Create decoders and A/V sync group
 
     loop realtime media
-        NA20-->>MediaHost: STREAM(videoStreamId, seqId, cursor=timestampUs, H.264 chunk)
-        NA20-->>MediaHost: STREAM(audioStreamId, seqId, cursor=timestampUs, AAC chunk)
+        NT10-->>NA20: Source media packet(cursor=sourceCaptureTimestampUs)
+        NA20-->>MediaHost: STREAM(videoStreamId, seqId, cursor=sourceCaptureTimestampUs, H.264 frame)
+        NA20-->>MediaHost: STREAM(audioStreamId, seqId, cursor=sourceCaptureTimestampUs, AAC packet)
         MediaHost->>Player: Decode, jitter-buffer, sync, render/play
         Player-->>MediaHost: first frame rendered / audio playback started
         MediaHost-->>MediaHost: receiverPhase=rendering
+    end
+
+    loop clock report interval
+        NT10-->>NA20: source clock report(media PTS anchors, nt10 monotonic clock)
+        NA20-->>MediaHost: Generated draft stream.clockReport(source=NT10 anchors, relay=NA20 receive/send time)
+        MediaHost-->>MediaHost: Record local receive time and fit NT10/NA20/Nearcast drift
     end
 
     alt MediaHost stops receiving first
@@ -284,6 +301,64 @@ sequenceDiagram
     end
 ```
 
+### 5.1 Simplified Stream Timing Contract
+
+本流程采用最简时钟方案，保持 STREAM 16B header 不变：
+
+```text
+streamId = NA20->MediaHost 下游 stream id
+seqId    = NA20->MediaHost 当前 stream 的包序号
+cursor   = NT10 sourceCaptureTimestampUs，源端单调时钟域采集时间，单位 us
+```
+
+音频 stream context 在 `audio.openStream` / result 中确认：
+
+```json
+{
+  "audioPtsMode": "derivedFromSeq",
+  "timebase": 48000,
+  "sampleRate": 48000,
+  "samplesPerPacket": 1024,
+  "firstMediaSeqId": 0,
+  "audioPtsBase": 0,
+  "packetizationMode": "fixedSamplesPerPacket",
+  "cursorUnit": "sourceCaptureTimestampUs"
+}
+```
+
+该模式下 MediaHost 使用 `extendedSeqId` 推导音频 PTS：
+
+```text
+audioPts = audioPtsBase + (extendedSeqId - firstMediaSeqId) * samplesPerPacket
+audioTimeSec = audioPts / timebase
+```
+
+视频 stream context 在 `video.openStream` / result 中确认：
+
+```json
+{
+  "videoPtsMode": "sameAsCursor",
+  "timebase": 1000000,
+  "cursorUnit": "sourceCaptureTimestampUs",
+  "packetizationMode": "completeFrame"
+}
+```
+
+该模式下视频 PTS 等同于 `cursor`，MediaHost 使用：
+
+```text
+videoPts = cursor
+videoTimeSec = videoPts / 1000000
+```
+
+约束：
+
+- NT10 必须从源端采集链路取得 `sourceCaptureTimestampUs`；不得使用 wall clock、编码完成时间或发送时间。
+- NA20 转发时不得覆盖 NT10 的 `cursor`，也不得在 `audioPtsMode=derivedFromSeq` 的 stream 中重新合包、拆包或插入不消耗 samples 的媒体包。
+- 每个音频 STREAM packet 固定消耗 1024 samples；如果未来该约束不成立，必须改为显式携带音频 `mediaPts`。
+- 每个视频 STREAM packet 承载完整视频帧；AXTP frame fragmentation 可在 STREAM parser 前完成重组，但媒体层不拆成多个 STREAM seqId。
+- `stream.clockReport` 周期性把 NT10 源端媒体 PTS、NT10 单调时钟、NA20 中转时钟和 MediaHost 本地接收时间关联起来，用于漂移估计和诊断；它不替代 STREAM `seqId` / `cursor`。
+
 ## 6. Interaction Steps
 
 | Step | Actor | Action | Capability / precondition | Protocol call/event | Payload fields | Result / state change | Coverage | Error / fallback |
@@ -292,15 +367,16 @@ sequenceDiagram
 | 2 | MediaHost | 确认 NA20/NT10 配对已完成，并准备接收 NA20 发起的 Host-side stream request 或后续主动拉取 source。 | Pairing flow done, host receiver service ready。 | local-only / previous flow result | pair record, receiver role, source availability cache | 进入投屏媒体等待阶段。 | local-only | 未配对时跳转 `cast-rxtx-pairing` flow。 |
 | 3 | User / Source PC | 用户将 NT10 插入源端 PC。 | NT10 已与 NA20 配对，源端 PC 供电。 | non-protocol | source power, source media availability | NT10 具备向 NA20 发起无线投屏的条件。 | non-protocol | NT10 未供电或未配对时 NA20 不会产生 ready 事件。 |
 | 4 | NT10 | 自动向 NA20 发起无线投屏。 | NT10 connected to NA20 AP。 | device-specific wireless cast | H.264 Annex-B video, AAC passthrough audio | NA20 开始接收上游音视频。 | non-protocol | 无线连接失败由设备侧重连或提示处理，不进入 AXTP wire。 |
-| 5 | NA20 | 检测视频 source available/receiving，并选择主动请求 Host 接收或发出 source state。 | 收到 NT10 H.264 输入。 | Draft `video.openStream` from NA20, or per-media source available/receiving event | source, codec=h264, stream profile, peer media role=receiver when producer-open, sync/clock metadata | 若 producer-open 被接受，MediaHost 创建 H.264 decoder/buffer；若只发 source event，MediaHost 缓存可拉取状态。 | draft amendment | 若 MediaHost 拒绝或不支持 receiver service，NA20 不发送 STREAM；source 仍可用时可继续通知 Host 后续 pull。 |
-| 6 | NA20 | 检测音频 source available/receiving，并选择主动请求 Host 接收或发出 source state。 | 收到 NT10 AAC 输入。 | Draft `audio.openStream` from NA20, or per-media source available/receiving event | source, codec=aac, transportFormat, sampleRate, channels, peer media role=receiver when producer-open, sync/clock metadata | 若 producer-open 被接受，MediaHost 创建 AAC decoder/playback pipeline；若只发 source event，MediaHost 缓存可拉取状态。 | draft amendment | 可能只有音频或只有视频进入 available/receiving；AV MVP 成功仍需要两路都成功建流。 |
-| 7 | MediaHost | 响应 NA20 producer-open。 | open request valid, resources available。 | Draft openStream response | accept/reject, stream context confirmation, limits | 接受时双方确认 streamId、codec、syncGroup、clock；拒绝时不创建下游 stream。 | draft amendment | 拒绝后 NA20 不发送该 streamId 的 STREAM；若 source 仍 available/receiving，可发 source event 提醒 Host 主动拉取。 |
-| 8 | MediaHost | 在 source available/receiving 时主动拉取视频或音频。 | Host receiver service ready, source state known or queried。 | Draft `video.openStream` / `audio.openStream` from MediaHost | source, mediaKind, peer media role=transmitter, requested profile/format, sync metadata | NA20 知道自己是 transmitter/producer，接受后创建新的 NA20->MediaHost downstream stream context。 | draft amendment | source 已停止则返回 unavailable；资源不足则 Host 保持 source cache 并等待下一次 state event 或用户重试。 |
+| 5 | NA20 | 检测视频 source available/receiving，并选择主动请求 Host 接收或发出 source state。 | 收到 NT10 H.264 输入。 | Draft `video.openStream` from NA20, or per-media source available/receiving event | source, codec=h264, stream profile, peer media role=receiver when producer-open, `videoPtsMode=sameAsCursor`, `timebase=1000000`, `cursorUnit=sourceCaptureTimestampUs`, `packetizationMode=completeFrame` | 若 producer-open 被接受，MediaHost 创建 H.264 decoder/buffer；若只发 source event，MediaHost 缓存可拉取状态。 | draft amendment | 若 MediaHost 拒绝或不支持 receiver service，NA20 不发送 STREAM；source 仍可用时可继续通知 Host 后续 pull。 |
+| 6 | NA20 | 检测音频 source available/receiving，并选择主动请求 Host 接收或发出 source state。 | 收到 NT10 AAC 输入。 | Draft `audio.openStream` from NA20, or per-media source available/receiving event | source, codec=aac, transportFormat, sampleRate=48000, peer media role=receiver when producer-open, `audioPtsMode=derivedFromSeq`, `samplesPerPacket=1024`, `firstMediaSeqId=0`, `audioPtsBase=0`, `packetizationMode=fixedSamplesPerPacket`, `cursorUnit=sourceCaptureTimestampUs` | 若 producer-open 被接受，MediaHost 创建 AAC decoder/playback pipeline；若只发 source event，MediaHost 缓存可拉取状态。 | draft amendment | 可能只有音频或只有视频进入 available/receiving；AV MVP 成功仍需要两路都成功建流。 |
+| 7 | MediaHost | 响应 NA20 producer-open。 | open request valid, resources available。 | Draft openStream response | accept/reject, stream context confirmation, limits, timing metadata | 接受时双方确认 streamId、codec、syncGroup、clock、音频 PTS 推导参数和视频 PTS 模式；拒绝时不创建下游 stream。 | draft amendment | 拒绝后 NA20 不发送该 streamId 的 STREAM；若 source 仍 available/receiving，可发 source event 提醒 Host 主动拉取。 |
+| 8 | MediaHost | 在 source available/receiving 时主动拉取视频或音频。 | Host receiver service ready, source state known or queried。 | Draft `video.openStream` / `audio.openStream` from MediaHost | source, mediaKind, peer media role=transmitter, requested profile/format, sync metadata, timing mode requirements | NA20 知道自己是 transmitter/producer，接受后创建新的 NA20->MediaHost downstream stream context。 | draft amendment | source 已停止则返回 unavailable；资源不足则 Host 保持 source cache 并等待下一次 state event 或用户重试。 |
 | 9 | NA20 | 视频进入 streaming 状态。 | Video stream accepted and producer bound。 | Draft `video.streamStateChanged` | streamId, state, codec, resolution, syncGroupId | MediaHost 开始接收 H.264 STREAM；聚合 `receiverPhase=streaming`。 | draft | 启动失败需暴露 media stream start failure。 |
 | 10 | NA20 | 音频进入 streaming 状态。 | Audio stream accepted and producer bound。 | Draft `audio.streamStateChanged` | streamId, state, codec=aac, sampleRate, channels, syncGroupId | MediaHost 开始接收 AAC STREAM；聚合 `receiverPhase=streaming`。 | draft | 启动失败需区分 source 不可用、codec 不支持、音频设备忙。 |
-| 11 | NA20 | 发送视频数据。 | Video stream accepted/opened。 | `PayloadType=STREAM` | streamId, seqId, cursor, video chunk envelope, H.264 bytes | MediaHost 按 seqId 检测丢包并重组帧。 | generated + draft | Core STREAM generated；video chunk envelope/profile binding 仍是 draft。 |
-| 12 | NA20 | 发送音频数据。 | Audio stream accepted/opened。 | `PayloadType=STREAM` | streamId, seqId, cursor, audio chunk envelope, AAC bytes | MediaHost 按 timestamp 放入音频 jitter buffer。 | generated + draft | Core STREAM generated；audio chunk envelope/profile binding 仍是 draft。 |
-| 13 | MediaHost / Player | 音频与视频同步播放。 | video/audio share syncGroupId and clock semantics。 | local-only using stream metadata | syncGroupId, timestampUs, receiverClockDomain | Player 做 A/V sync、缓冲控制和漂移修正；首帧/播放开始后聚合 `receiverPhase=rendering`。 | local-only | 缺少源媒体时间戳或 clock mapping 时需草案补字段。 |
+| 11 | NA20 | 发送视频数据。 | Video stream accepted/opened。 | `PayloadType=STREAM` | streamId, seqId, cursor=NT10 `sourceCaptureTimestampUs`, H.264 complete frame, minimal video flags such as keyFrame/config/discontinuity | MediaHost 按 seqId 检测丢包，按 cursor 作为 videoPts 放入视频时间线。 | generated + draft | Core STREAM 和 `videoPtsMode=sameAsCursor` metadata 已生成；flags/profile binding 仍按草案说明实现。 |
+| 12 | NA20 | 发送音频数据。 | Audio stream accepted/opened。 | `PayloadType=STREAM` | streamId, seqId, cursor=NT10 `sourceCaptureTimestampUs`, AAC packet, minimal audio flags such as config/discontinuity | MediaHost 使用 extended seqId 推导 audioPts，并按 cursor 记录源采集时间和 jitter。 | generated + draft | Core STREAM 和 `audioPtsMode=derivedFromSeq` metadata 已生成；minimal flags/profile binding 仍按草案说明实现。 |
+| 13 | MediaHost / Player | 音频与视频同步播放。 | video/audio share syncGroupId and clock semantics。 | local-only using stream metadata | syncGroupId, audio derived pts, video cursor pts, clock report samples | Player 做 A/V sync、缓冲控制和漂移修正；首帧/播放开始后聚合 `receiverPhase=rendering`。 | local-only | 缺少源媒体时间戳或 clock mapping 时需草案补字段。 |
+| 13a | NT10 / NA20 / MediaHost | 周期性上报和转发 clock report。 | Media streaming active。 | Generated draft `stream.clockReport` emitted by NA20 to MediaHost, sourced from NT10 report | reportSeq, syncGroupId, sourceDeviceId, sourceClockDomain, audio/video anchors, NT10 monotonic time, NA20 receivedAt/sentAt | MediaHost 记录本地 receive monotonic time，拟合 NT10 media timeline -> NT10 clock -> NA20 relay -> MediaHost clock。 | generated draft | 若 report 丢失，latest-wins；不阻塞媒体数据，下一次 report 继续校准。 |
 | 14 | MediaHost | 提前停止接收某一路或全部媒体。 | Streaming active, user stop or receiver resource policy。 | Draft `audio.closeStream` / `video.closeStream` | streamId, peer media role=transmitter, reason=receiver_closed/user_stop/not_needed | NA20 关闭对应 NA20->MediaHost downstream streamId，停止向 Host 发送 STREAM；NT10->NA20 upstream source 可继续 active。 | draft amendment | close 必须幂等；若 NA20 已关闭，返回 already closed 或等价 closed；不得把 receiver close 当成 source stop。 |
 | 15 | MediaHost / NA20 | 用户重新打开投屏窗口，从保留的 upstream source 重新接收。 | NT10->NA20 upstream source retained, Host receiver service ready。 | Draft `video.openStream` / `audio.openStream` from MediaHost or NA20 re-offer | source, peer media role=transmitter or receiver by initiator, new stream context, sync metadata | 建立新的 NA20->MediaHost downstream streamId；无需重建 NT10->NA20 无线推流。 | draft amendment | 若 upstream source 已超时或停止，则 NA20 返回 source unavailable 或等待新的 NT10 source ready。 |
 | 16 | User / Source PC | 用户拔出 NT10 或源端停止。 | Streaming active, receiver inactive, or source receiving。 | non-protocol | source power/media lost | NT10 不再向 NA20 发流；NA20 retained source 失效。 | non-protocol | NA20 不保留 streamId 等待快速重连；重连后重新 open。 |
@@ -322,6 +398,7 @@ sequenceDiagram
 | receiver pulls source | MediaHost 窗口打开、receiver service 恢复或用户重新选择 source | Draft `video.openStream` / `audio.openStream` from MediaHost | source id, mediaKind, peer media role=transmitter, requested profile/format | NA20 作为 transmitter/producer 接受后创建新的 downstream streamId。 | draft amendment |
 | video opening / streaming / closed | producer-open 或 receiver-pull accepted 后，NA20 发送或关闭视频流 | Draft `video.streamStateChanged` | streamId, state, codec, syncGroupId, reason | 创建/释放 video decoder。 | draft |
 | audio opening / streaming / closed | producer-open 或 receiver-pull accepted 后，NA20 发送或关闭音频流 | Draft `audio.streamStateChanged` | streamId, state, codec, syncGroupId, reason | 创建/释放 audio decoder。 | draft |
+| source clock report available | NT10 周期上报媒体 PTS 与源端单调时钟锚点，NA20 收到并准备转发 | Generated draft `stream.clockReport` from NA20 to MediaHost | reportSeq, syncGroupId, source device id, NT10 audio/video anchors, NA20 receivedAt/sentAt | MediaHost 记录本地 receive time，更新 drift/offset 估计；report latest-wins，不阻塞媒体。 | generated draft |
 | receiverPhase streaming / rendering | stream 进入 `streaming`，随后播放器首帧或音频播放开始 | local aggregated state | receiverPhase, source id, active stream ids, firstFrame/audioStarted | UI 先展示正在接收，再展示已开始播放；重连后可由 source/stream/player state 重建。 | local-only |
 | receiver closes video | MediaHost 用户停止、切换 source 或资源不足 | Draft `video.closeStream` from MediaHost | streamId, peer media role=transmitter, reason=receiver_closed/user_stop/not_needed | NA20 停止该 Host downstream video producer 并关闭 streamId；不默认停止 NT10 upstream video source。 | draft amendment |
 | receiver closes audio | MediaHost 用户停止、切换 source 或资源不足 | Draft `audio.closeStream` from MediaHost | streamId, peer media role=transmitter, reason=receiver_closed/user_stop/not_needed | NA20 停止该 Host downstream audio producer 并关闭 streamId；不默认停止 NT10 upstream audio source。 | draft amendment |
@@ -350,8 +427,8 @@ sequenceDiagram
 
 | Gap | Candidate domain.feature | Candidate method/event/schema | Routed skill | Review question |
 |---|---|---|---|---|
-| `video.stream` 尚未采纳到 generated。 | `video.stream` | `video.getStreamCapabilities`, `video.openStream`, `video.closeStream`, `video.requestKeyFrame`, state/stats events, optional source proxy control | `tooling/skills/30-adopt-protocol-draft/SKILL.md` after review | `[REVIEW-DRAFT]` 需补充 producer-initiated open、receiver-initiated pull open、source available/receiving event、bidirectional close、对端 receiver/transmitter 角色、close 幂等竞态、`wireless_cast` source、H.264 Annex-B、SPS/PPS 随关键帧和同步字段。 |
-| 投屏音频实时流需要采纳。 | `audio.stream` | `audio.getStreamCapabilities`, `audio.openStream`, `audio.closeStream`, `audio.getStreamState`, `audio.streamStateChanged`, `AudioChunkHeaderV1`, audio source available/receiving event | `tooling/skills/30-adopt-protocol-draft/SKILL.md` after review | `[REVIEW-ASK]` 需补充 producer-initiated open、receiver-initiated pull open、source available/receiving event、bidirectional close、对端 receiver/transmitter 角色和 close 幂等竞态；AAC `transportFormat` 仍需确认。 |
+| `video.stream` lifecycle 语义仍需补齐。 | `video.stream` | generated `video.getStreamCapabilities`, `video.openStream`, `video.closeStream`, `video.requestKeyFrame`, state/stats events, `videoPtsMode=sameAsCursor` timing metadata; draft source proxy/source-state semantics | `tooling/skills/40-amend-adopted-protocol/SKILL.md` after review | `[REVIEW-DRAFT]` 需补充 producer-initiated open、receiver-initiated pull open、source available/receiving event、bidirectional close、对端 receiver/transmitter 角色、close 幂等竞态、`wireless_cast` source、H.264 Annex-B、SPS/PPS 随关键帧和同步字段。 |
+| 投屏音频实时流 lifecycle 语义仍需补齐。 | `audio.stream` | generated `audio.getStreamCapabilities`, `audio.openStream`, `audio.closeStream`, `audio.getStreamState`, `audio.streamStateChanged`, `audioPtsMode=derivedFromSeq` timing metadata; draft minimal audio flags/source-state semantics | `tooling/skills/40-amend-adopted-protocol/SKILL.md` after review | `[REVIEW-ASK]` 需补充 producer-initiated open、receiver-initiated pull open、source available/receiving event、bidirectional close、对端 receiver/transmitter 角色和 close 幂等竞态；AAC `transportFormat` 仍需确认。 |
 | NA20 producer 需要主动向 MediaHost 发起分媒体 openStream。 | `video.stream` / `audio.stream` | `video.openStream`, `audio.openStream` with peer media role receiver | `tooling/skills/20-draft-business-protocol/SKILL.md` if current drafts lack this semantic | `[REVIEW-OK]` producer-initiated openStream 表达“请对端接收”；可能只有一路 open，accepted 前不得发送 STREAM。 |
 | MediaHost receiver 需要在 source available/receiving 时主动拉取。 | `video.stream` / `audio.stream` | `video.openStream`, `audio.openStream` with peer media role transmitter | `tooling/skills/20-draft-business-protocol/SKILL.md` if current drafts lack this semantic | `[REVIEW-OK]` receiver-initiated pull 表达“请对端作为 transmitter 发送”；只建立 NA20->MediaHost downstream stream，不重建 upstream source。 |
 | NA20 producer-open 被拒后需要通知 Host 后续可拉取。 | `video.stream` / `audio.stream` | per-media source available/receiving event/query | `tooling/skills/20-draft-business-protocol/SKILL.md` if current drafts lack source state event | `[REVIEW-OK]` rejected open 后不得发送 STREAM；source 仍可用时可发事件让 Host 主动 `openStream`。 |
@@ -360,7 +437,8 @@ sequenceDiagram
 | streamId 复用和旧包竞态需要约束。 | `video.stream` / `audio.stream` / runtime | stream instance guard or no-fast-reuse policy | `tooling/skills/20-draft-business-protocol/SKILL.md` if drafts lack lifecycle rule | `[REVIEW-DRAFT]` close 后的旧 STREAM 或旧 close 不得影响新 stream。 |
 | 异常硬断流需要明确 lifecycle rule。 | `video.stream` / `audio.stream` / runtime profile | session-lost stream cleanup rule, terminal reason taxonomy such as session_lost / peer_disconnected / receiver_timeout | `tooling/skills/20-draft-business-protocol/SKILL.md` if drafts lack lifecycle rule | `[REVIEW-OK]` hard-disconnect 不要求业务 closeStream；旧 session 下所有 stream 立即失效。 |
 | AXTP RPC request 方向需要支持设备调用 Host。 | core RPC / runtime profile | bidirectional request/response or explicit Host-side receiver service | `tooling/skills/50-generate-axtp-protocol/SKILL.md` after core/spec adoption, plus Stage 20 for feature role policy | `[REVIEW-DRAFT]` 本 flow 依赖 NA20 能向 MediaHost 发起业务 RPC request；generated 输出仍需同步。 |
-| 音视频同步字段需要采纳。 | `video.stream` / `audio.stream` | `syncGroupId`, `castSessionId`, `clockDomain`, `receiverClockDomain`, `timestampBaseUs`, `firstPtsUs` | `tooling/skills/30-adopt-protocol-draft/SKILL.md` after review | `[REVIEW-DRAFT]` 时间戳来源包含 NT10 源媒体时钟和 NA20 接收时钟。 |
+| 音视频同步字段需要采纳。 | `video.stream` / `audio.stream` | `syncGroupId`, `castSessionId`, `clockDomain`, `receiverClockDomain`, `cursorUnit=sourceCaptureTimestampUs`, fixed packetization timing fields | `tooling/skills/30-adopt-protocol-draft/SKILL.md` after review | `[REVIEW-DRAFT]` 时间戳来源包含 NT10 源媒体采集时钟和 NA20 接收/转发时钟；`timestampBaseUs` / `firstPtsUs` 候选应被当前简化参数替代或映射。 |
+| NT10 source clock report 需要透传到 MediaHost。 | `stream.flowControl` | generated draft `stream.clockReport` event from NA20 containing NT10 source anchors, NA20 relay timestamps, stream ids and syncGroupId | `contract/generated/protocol.md` | `[REVIEW-OK]` 当前 MVP 放在 `stream.flowControl`；该事件为 diagnostic latest-wins sample，不改变媒体包格式。 |
 | NT10 开始/停止无线推流为可选 source proxy control。 | `video.stream` optional source control | `video.startStreamSource`, `video.stopStreamSource`, `video.getStreamSourceState`, `video.streamSourceStateChanged` | `tooling/skills/20-draft-business-protocol/SKILL.md` only if MVP/P1 需要修改草案 | `[REVIEW-OK]` 主流程不依赖该控制；可通过 NA20 控制，但 NA20 与 NT10 之间实现看设备。 |
 | 整体投屏会话状态不新建独立 method domain。 | none | MediaHost/Launcher 聚合 source、stream 和 player state 为 `receiverPhase`；`castSessionId` 仅作为透明关联字段。 | Runtime/App implementation | `[REVIEW-OK]` 不治理独立 `cast.streaming`。 |
 
@@ -370,7 +448,7 @@ sequenceDiagram
 |---|---|---|
 | `video.stream` | NA20 到 MediaHost 的视频业务流控制面、视频状态事件、视频 payload envelope 和关键帧重同步。 | 不定义 NT10 到 NA20 的无线协议；不定义音频数据。 |
 | `audio.stream` | NA20 到 MediaHost 的 AAC 透传实时音频业务流控制面、音频状态事件和音频 payload envelope。 | 不要求 NA20 PCM fallback；不负责文件化录制。 |
-| `stream.flowControl` | 公共 ACK/window/pause/resume/abort、低带宽流控和统计策略。 | 普通业务 App 不需要直接调用，runtime/SDK 可管理。 |
+| `stream.flowControl` | 公共 ACK/window/pause/resume/abort、低带宽流控、统计策略和 `stream.clockReport` 诊断事件。 | 普通业务 App 不需要直接调用 ACK/window；MediaHost runtime/SDK 使用 `stream.clockReport` 建立源媒体时间线、设备单调时钟、中转时钟和本地接收时钟之间的锚点。 |
 | MediaHost player/runtime | 本地解码、jitter buffer、A/V sync、渲染播放和 UI 展示。 | local-only，不新增 AXTP method。 |
 
 ## 9. Test / Conformance Notes
@@ -382,6 +460,9 @@ sequenceDiagram
 | receiver-pull available source | MediaHost 已知或查询到 source available/receiving | 用户打开投屏窗口或 receiver service 恢复 | MediaHost 主动调用 video/audio openStream，声明对端 NA20 是 transmitter；成功后接收 NA20->MediaHost downstream STREAM | Draft receiver-initiated `video.openStream`, draft `audio.openStream`, generated STREAM |
 | single-media available | 只检测到视频或只检测到音频 source available/receiving | NA20 只 open 或只通知对应一路 source | MediaHost 只接收或拉取已成功建流的 stream；AV MVP 不判定整体成功 | Draft per-media openStream / source state event |
 | happy streaming | MediaHost 已接受两路 openStream | NA20 发送 H.264 + AAC chunk | 播放器同步播放视频和音频 | Draft `video.streamStateChanged`, draft `audio.streamStateChanged`, generated STREAM |
+| audio derived pts | Audio stream accepted with `audioPtsMode=derivedFromSeq` | NA20 发送 seqId 连续的 AAC packets | MediaHost 以 `audioPtsBase + (extendedSeqId - firstMediaSeqId) * samplesPerPacket` 推导音频 PTS，不要求每包携带 audio mediaPts | Generated `audio.openStream` timing metadata + generated STREAM seqId |
+| video same-as-cursor pts | Video stream accepted with `videoPtsMode=sameAsCursor` | NA20 发送 H.264 complete frame STREAM packets | MediaHost 使用 STREAM `cursor` 作为 video PTS，timebase 为 1000000 | Generated `video.openStream` timing metadata + generated STREAM cursor |
+| clock report relay | NT10 正在向 NA20 推流，NA20 与 MediaHost stream active | NT10 周期发送 source clock report，NA20 转发 `stream.clockReport` | MediaHost 记录本地 receive time，估计 NT10 media clock drift、NA20 relay delay 和端到端延迟趋势；丢失单个 report 不阻塞媒体 | Generated draft `stream.clockReport` in `stream.flowControl` |
 | unsupported audio | NA20 不支持 `audio.stream` 或 AAC 透传 | MediaHost 查询音频能力 | AV MVP 不应判定成功，除非产品定义 video-only 降级 | Draft `audio.getStreamCapabilities` |
 | unsupported video | NA20 producer-open 或 MediaHost receiver-pull 请求了不支持的 codec/resolution | 被请求端校验 open request | open 被拒绝或返回 typed error；NA20 不发送该 streamId 的 STREAM 数据 | Draft `video.getStreamCapabilities`, draft `video.openStream` |
 | host early close | 音视频 stream active | MediaHost 用户停止播放或只关闭其中一路 | MediaHost 发起 closeStream，NA20 停止对应 downstream producer，不再发送该 streamId 数据，但 NT10->NA20 upstream source 继续 active | Draft bidirectional `audio.closeStream`, draft `video.closeStream` |
@@ -409,14 +490,17 @@ sequenceDiagram
 - 两种 open 方式都只建立 NA20->MediaHost downstream stream，不得隐式停止、断开或重建 NT10->NA20 upstream source。
 - MediaHost 拒绝 NA20 producer-open 后，NA20 不得发送该 streamId 的 STREAM；若 source 仍 available/receiving，NA20 可发出 source available/receiving event，让 MediaHost 后续主动拉取。
 - 每一路成功建流前，NA20 与 MediaHost 必须确认明确的 `streamId`、profile、cursorUnit、codec/format、状态和限制。
+- 音频建流必须确认 `audioPtsMode=derivedFromSeq`、`timebase=48000`、`sampleRate=48000`、`samplesPerPacket=1024`、`firstMediaSeqId=0`、`audioPtsBase=0`、`packetizationMode=fixedSamplesPerPacket` 和 `cursorUnit=sourceCaptureTimestampUs`。
+- 视频建流必须确认 `videoPtsMode=sameAsCursor`、`timebase=1000000`、`cursorUnit=sourceCaptureTimestampUs` 和 `packetizationMode=completeFrame`。
 - MediaHost MVP 同时接受视频和音频 stream；单路成功不能直接判定 AV 投屏成功。
 - 已建立 stream 的 `closeStream` 必须双向可发起；MediaHost 可提前关闭接收，NA20 可因 source stopped 关闭 producer。
 - MediaHost 结束投屏或关闭窗口时，`closeStream(reason=receiver_closed/user_stop/not_needed)` 只关闭 NA20->MediaHost downstream stream，不得默认触发 NT10->NA20 source stop 或无线重建。
 - MediaHost 重新打开投屏窗口时，若 NA20 仍保留 `wireless_cast` upstream source，双方必须能以新的 downstream stream context 恢复接收；旧 streamId 不复用，NT10->NA20 无线推流不重建。
 - `closeStream` 必须幂等；重复 close、交叉 close 或 close 与 terminal state 同时到达时，双方必须收敛到同一 `closed` / `failed` 终态。
-- 视频 H.264 chunk 能被 MediaHost 依据 `seqId`、`cursor`、frame metadata 和 keyframe 策略重组并解码。
-- 音频 AAC 透传 chunk 能被 MediaHost 依据 `seqId` 和 NT10 源媒体 `timestampUs` 放入音频播放 pipeline。
+- 视频 H.264 chunk 能被 MediaHost 依据 `seqId`、`cursor=sourceCaptureTimestampUs`、minimal flags 和 keyframe 策略解码；在 `packetizationMode=completeFrame` 下不依赖媒体层 frame offset。
+- 音频 AAC 透传 chunk 能被 MediaHost 依据 `seqId` 推导 audio PTS，并依据 `cursor=sourceCaptureTimestampUs` 记录源端采集时间和 jitter。
 - 音频和视频具备共同 `syncGroupId/castSessionId` 与统一时钟语义，MediaHost 可做 A/V sync。
+- NA20 必须周期向 MediaHost 发出或转发 `stream.clockReport`，报告 NT10 source media PTS anchors、NT10 monotonic clock、NA20 receive/send timestamp；MediaHost 必须记录本地 monotonic receive time 并用于 drift/offset 估计。
 - NT10 拔出或停止发流后，NA20 必须立即关闭相关 streamId，并通过 device-initiated `video.closeStream` / `audio.closeStream` 或对应 stream terminal state 携带 source disconnected reason；MediaHost 释放播放器资源。
 - NA20 被拔出、重启、掉电或 AXTP session/transport lost 时，MediaHost 必须本地终止该 session 下所有 stream，释放播放器资源，不等待业务 `closeStream`。
 - MediaHost 崩溃、进程退出、卡死或 receiver timeout 时，NA20 必须停止向旧 session 发送 STREAM 并释放旧 stream context；重连后重新建 session 和 stream。
@@ -424,10 +508,11 @@ sequenceDiagram
 - session lost 后旧 `streamId`、旧 stream context、旧 open/close response 和迟到 STREAM packet 全部无效；新连接不得继承旧 session 的流状态。
 - 同一 AXTP session 内媒体 streamId 不应快速复用；若协议允许复用，必须有 stream instance 或 castSessionId 校验避免旧包误伤新流。
 - 丢包、背压、NT10 断连、source 不可用、codec 不支持等错误路径都有状态或错误码可观测。
-- 本流程不修改 registry、generated、protocol IR；后续协议事实必须通过 Stage 20/30/50 工作流进入正式生成路径。
+- 本流程的简化 timing metadata 和 `stream.clockReport` 已进入 registry/generated；后续新增协议事实仍必须通过 Stage 20/30/40/50 工作流进入正式生成路径。
 
 ## 11. Open Questions
 
 | Question | Impact | Owner | Status | Next action |
 |---|---|---|---|---|
 | AAC 透传的具体 `transportFormat` 是 ADTS、LATM、raw AAC，还是多种都支持？ | protocol / firmware | TBD | REVIEW-ASK | Stage 20/30 固化 `audio.stream` schema。 |
+| `sourceCaptureTimestampUs` 的 NT10 时钟源使用 `CLOCK_MONOTONIC_RAW`、硬件 capture timestamp，还是设备平台等价 monotonic clock？ | firmware / runtime | TBD | REVIEW-ASK | 固件确认可用时钟源；协议只要求同一 stream 内单调、同源、不可被 wall clock/NTP 调整影响。 |

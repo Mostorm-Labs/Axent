@@ -9,6 +9,7 @@ levels:
       - rpc.request_response_json
       - rpc.method_not_found
       - rpc.request_id_match
+      - rpc.invalid_params
       - error.standard_error_shape
 
   capability:
@@ -17,6 +18,12 @@ levels:
       - capability.get_all
       - capability.method_binding
       - capability.unsupported_method
+      - capability.registered_method_not_supported
+      - capability.session_survives_not_supported
+      - capability.unknown_optional_field_ignored
+      - capability.known_optional_feature_not_supported
+      - capability.profile_mismatch_not_supported
+      - capability.video_stream_params_not_supported
 
   event:
     description: RPC event decode/encode behavior.
@@ -24,6 +31,8 @@ levels:
       - event.subscribe_event
       - event.unsubscribe_event
       - event.emit_event
+      - event.unknown_event_ignored
+      - event.unsupported_capability_not_emitted
 
   stream:
     description: Phase 1 Standard Framed STREAM payload behavior.
@@ -31,11 +40,17 @@ levels:
       - stream.stream_open
       - stream.stream_data
       - stream.stream_close
+      - stream.video_stream_params_idle_open
+      - stream.video_stream_params_active_reconfigure
+      - stream.video_stream_params_precedence
+      - stream.video_stream_params_rollback
+      - stream.video_stream_params_validation
 
   websocket-jsonrpc:
     description: WebSocket unframed JSON RPC behavior.
     required_cases:
       - session.hello_identify_identified
+      - session.axtp_version_advisory
       - session.request_before_identified
       - rpc.request_response_json
       - rpc.method_not_found

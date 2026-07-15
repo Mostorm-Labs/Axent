@@ -1,0 +1,64 @@
+id: capability.profile_mismatch_not_supported
+title: Profile mismatch degrades only the affected operation
+since: spec/v0.0.2
+level: capability
+semantic:
+  kind: profile_degradation
+profiles:
+  - capability
+  - websocket-jsonrpc
+
+given:
+  device_profile: audio_device
+  active_profile: websocket-jsonrpc
+  unavailable_operation_profile: framed-binary
+  method: stream.getCapabilities
+  session:
+    state: identified
+
+steps:
+  - id: profile_request
+    direction: client_to_server
+    role: trigger
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 49
+      method: stream.getCapabilities
+      params: {}
+
+  - id: degraded_response
+    responseTo: profile_request
+    direction: server_to_client
+    role: degraded
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 49
+        statusCode: NOT_SUPPORTED
+
+  - id: liveness_request
+    triggeredBy: degraded_response
+    direction: client_to_server
+    role: liveness
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 50
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - id: liveness_response
+    responseTo: liveness_request
+    direction: server_to_client
+    role: liveness
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 50
+        statusCode: SUCCESS
+
+assertions:
+  - first_response.statusCode == NOT_SUPPORTED
+  - liveness_response.statusCode == SUCCESS
+  - session.state == identified

@@ -2064,6 +2064,84 @@ bool AxentHost::publish_media_stream_event_for_device(MediaStreamEvent event)
         session_id, std::move(event));
 }
 
+VideoStreamParamsResult AxentHost::set_video_stream_params(
+    const std::string& session_id,
+    const VideoStreamParamsRequest& request)
+{
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    AxtpAdapter* adapter = nullptr;
+    std::string device_id;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value() || !lease->media) {
+            return {0x0004, false, {}};
+        }
+        adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+        device_id = lease->device_id;
+    }
+    if (adapter == nullptr) {
+        return {0x000F, false, {}};
+    }
+    auto result = adapter->set_video_stream_params(device_id, request);
+    result.state.session_id = session_id;
+    return result;
+}
+
+VideoStreamParamsState AxentHost::video_stream_params_state(
+    const std::string& session_id) const
+{
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    const AxtpAdapter* adapter = nullptr;
+    std::string device_id;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value() || !lease->media) {
+            return {};
+        }
+        adapter = dynamic_cast<const AxtpAdapter*>(impl_->axtp_adapter.get());
+        device_id = lease->device_id;
+    }
+    if (adapter == nullptr) {
+        return {};
+    }
+    auto state = adapter->video_stream_params_state(device_id);
+    state.session_id = session_id;
+    return state;
+}
+
+VideoStreamParamsSubscriptionPtr AxentHost::subscribe_video_stream_params(
+    const std::string& session_id,
+    VideoStreamParamsObserver observer)
+{
+    if (!observer) {
+        return {};
+    }
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    AxtpAdapter* adapter = nullptr;
+    std::string device_id;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value() || !lease->media) {
+            return {};
+        }
+        adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+        device_id = lease->device_id;
+    }
+    if (adapter == nullptr) {
+        return {};
+    }
+    return adapter->subscribe_video_stream_params(
+        device_id,
+        [session_id, observer = std::move(observer)](const VideoStreamParamsState& update) {
+            auto state = update;
+            state.session_id = session_id;
+            observer(state);
+        });
+}
+
 ControlResult AxentHost::call(const std::string& session_id,
                               const std::string& method,
                               const nlohmann::json& params)

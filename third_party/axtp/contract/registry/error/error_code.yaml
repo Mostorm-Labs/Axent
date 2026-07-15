@@ -24,7 +24,7 @@ errors:
     name: NOT_SUPPORTED
     domain: common
     status: mvp
-    description: Feature is not supported by the current device or mode.
+    description: Canonical error new senders use when a registered operation is unavailable under the current runtime, device, profile, mode, or capability set; the session remains usable.
     retryable: false
 
   - id: 0x0004
@@ -339,14 +339,14 @@ errors:
     name: RPC_METHOD_NOT_FOUND
     domain: rpc
     status: mvp
-    description: MethodId or method name is not registered.
+    description: MethodId or method name is not registered; do not use for a registered but currently unavailable method.
     retryable: false
 
   - id: 0x0037
     name: RPC_METHOD_NOT_SUPPORTED
     domain: rpc
     status: mvp
-    description: Method exists but is not supported by the current device.
+    description: Compatibility error for a registered but unsupported method. Receivers must continue to decode it; new senders use common NOT_SUPPORTED.
     retryable: false
 
   - id: 0x0038
@@ -507,7 +507,7 @@ errors:
     name: CAPABILITY_METHOD_UNSUPPORTED
     domain: capability
     status: mvp
-    description: Method capability is not supported.
+    description: Compatibility error for an unsupported method capability. Receivers must continue to decode it; new senders use common NOT_SUPPORTED.
     retryable: false
 
   - id: 0x0204
@@ -814,7 +814,7 @@ errors:
   - id: 0x0806
     name: MEDIA_BITRATE_UNSUPPORTED
     domain: video
-    status: draft
+    status: mvp
     description: Requested media bitrate is unsupported.
     retryable: false
 

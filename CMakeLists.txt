@@ -104,6 +104,7 @@ add_library(libaxent
     src/host/axent_host.cpp
     src/media/media_relay.cpp
     src/media/media_subscription.cpp
+    src/media/video_stream_params.cpp
 )
 add_library(axent::libaxent ALIAS libaxent)
 target_include_directories(libaxent PUBLIC include)

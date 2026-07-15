@@ -9,6 +9,7 @@
 | `0x0101` | `device.info` | device | draft | object | DeviceInfoCapability |
 | `0x0102` | `device.enrollment` | device | draft | object | DeviceEnrollmentCapability |
 | `0x0401` | `firmware.update` | firmware | draft | object | FirmwareUpdateCapabilities |
+| `0x0501` | `stream.flowControl` | stream | draft | object | StreamFlowControlCapabilities |
 | `0x0801` | `video.stream` | video | draft | object | VideoStreamCapabilities |
 | `0x0901` | `audio.algorithm` | audio | stable | object | AudioAlgorithmCapability |
 | `0x0902` | `audio.stream` | audio | draft | object | AudioStreamCapabilities |

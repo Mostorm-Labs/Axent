@@ -1,0 +1,50 @@
+id: capability.unknown_optional_field_ignored
+title: Unknown valid optional field is ignored and session remains usable
+since: spec/v0.0.2
+level: capability
+profiles:
+  - capability
+  - core
+
+given:
+  device_profile: minimal_device
+  session:
+    state: identified
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 43
+      method: audio.getAlgorithmConfig
+      params:
+        futureOptionalField:
+          mode: future-value
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 43
+        statusCode: SUCCESS
+
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 44
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 44
+        statusCode: SUCCESS
+
+assertions:
+  - first_response.statusCode == SUCCESS
+  - second_response.statusCode == SUCCESS
+  - session.state == identified

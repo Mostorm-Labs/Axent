@@ -1,0 +1,68 @@
+id: capability.video_stream_params_not_supported
+title: Unsupported NT10 video encoder parameters degrade without closing the session
+since: spec/v0.0.2
+level: capability
+profiles:
+  - capability
+  - core
+
+given:
+  device_profile: minimal_device
+  method: cast.setVideoStreamParams
+  session:
+    state: identified
+  capability:
+    cast.flowControl:
+      supportsVideoStreamParams: false
+  source_encoder_capability: absent
+
+steps:
+  - id: params_request
+    role: trigger
+    direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 610
+      method: cast.setVideoStreamParams
+      params:
+        frameRate: 30
+        bitrateKbps: 6000
+
+  - id: params_not_supported
+    role: degraded
+    responseTo: params_request
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 610
+        statusCode: NOT_SUPPORTED
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: params_not_supported
+    direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 611
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 611
+        statusCode: SUCCESS
+
+assertions:
+  - registry.method("cast.setVideoStreamParams") != null
+  - capability("cast.flowControl").supportsVideoStreamParams == false
+  - response.statusCode == NOT_SUPPORTED
+  - liveness_response.statusCode == SUCCESS
+  - session.state == identified

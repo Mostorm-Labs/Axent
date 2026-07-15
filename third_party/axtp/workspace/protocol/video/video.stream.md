@@ -29,6 +29,8 @@ lastReviewed: 2026-06-15
 
 NA20/NT10 投屏场景中，NT10 插入源端 PC 后自动向 NA20 推送上游 H.264 视频。NA20 只把该上游 source 暴露成 `wireless_cast` source，并通过 `video.openStream` 建立 `NA20 -> MediaHost` 下游视频 stream。该下游 stream 可以由 NA20 producer 主动请求 Host 接收，也可以由 MediaHost receiver 在 source 仍 `available/receiving` 时主动拉取。
 
+Nearcast 控制面可通过 `cast.setVideoStreamParams` 为当前 cast session 设置 NT10 编码器的目标 `frameRate` / `bitrateKbps`。这两个字段也可直接放在 `video.openStream` 中；它们表示 source encoder target，不是 MediaHost 本地 render fps。活动 downstream stream 变更时，Nearcast/NA20 必须先以 `reason=encodingReconfigure` 关闭旧视频 stream，再以新参数打开视频 stream；音频 stream 和 `syncGroupId` 保持不变。
+
 本文不定义 NT10 到 NA20 的无线投屏协议，也不定义音频流。音频同步字段需要与 `audio.stream` 保持一致。
 
 ## 2. 能力边界
@@ -38,6 +40,7 @@ NA20/NT10 投屏场景中，NT10 插入源端 PC 后自动向 NA20 推送上游 
 | 包含 | 查询视频 stream capability、source 能力和 source 当前状态。 |
 | 包含 | `video.openStream` 同时支持 producer-initiated open 和 receiver-initiated pull。 |
 | 包含 | `video.closeStream` 可由任一端发起，且只关闭指定 downstream stream。 |
+| 包含 | `video.openStream.frameRate` / `bitrateKbps` 的 source encoder target，以及由 `cast.setVideoStreamParams` 协调的 close -> open 视频重配置。 |
 | 包含 | 视频 stream lifecycle event、source available/receiving event、统计 event 和关键帧请求。 |
 | 包含 | H.264 Annex-B 投屏路径，`wireless_cast` source 的 SPS/PPS 随关键帧发送。 |
 | 不包含 | NT10 到 NA20 的 Wi-Fi 媒体协议、重传、加密、配对和 source 内部控制。 |
@@ -192,15 +195,28 @@ success:
 | `stream` | string | no | `main`, `sub`, source-defined | `main` | 同一 source 的码流档位。 |
 | `width` | uint32 | no | capability range | omitted | 期望宽度；省略表示由 source/设备决定。 |
 | `height` | uint32 | no | capability range | omitted | 期望高度。 |
-| `frameRate` | number | no | capability range | omitted | 期望帧率。 |
-| `bitrateKbps` | uint32 | no | capability range | omitted | 期望码率。 |
+| `frameRate` | uint32 | no | capability range，且 `>=1`（`0` 非法） | omitted | 选定 source encoder 的目标帧率；不是接收端本地 render fps。省略时使用 session/source 默认值。 |
+| `bitrateKbps` | uint32 | no | capability range，且 `>=1`（`0` 非法） | omitted | 选定 source encoder 的目标码率，单位 kbps。省略时使用 session/source 默认值。 |
 | `streamProfile` | string | no | `media.video` | `media.video` | STREAM profile。 |
-| `cursorUnit` | enum | no | `timestampUs` | `timestampUs` | STREAM 16B header 中 `cursor` 的业务单位。 |
+| `cursorUnit` | enum | no | `timestampUs`, `sourceCaptureTimestampUs` | `sourceCaptureTimestampUs` for wireless cast | STREAM 16B header 中 `cursor` 的业务单位；NA20/NT10 投屏使用 NT10 源端采集时间戳。 |
 | `syncGroupId` | string | no | product/session scoped | omitted | 与 audio stream 绑定的同步组，可由 requester 指定或 responder 返回。 |
 | `castSessionId` | string | no | product/session scoped | omitted | 投屏会话关联 ID，不单独创建 cast domain。 |
 | `clockDomain` | string | no | `nt10_media_clock`, source-defined | `nt10_media_clock` for wireless cast | 媒体时间戳来源。 |
 | `receiverClockDomain` | string | no | `na20_receive_clock`, receiver-defined | omitted | NA20 接收时钟域，用于 jitter/诊断。 |
 | `maxDataSize` | uint32 | no | transport/profile limit | omitted | 单个 STREAM payload data 最大大小建议。 |
+| `videoPtsMode` | enum | no | `sameAsCursor`, `explicit` | `sameAsCursor` for wireless cast | 视频 PTS 来源；MVP 中 video PTS 等于 STREAM `cursor`。 |
+| `timebase` | uint32 | no | ticks/sec | `1000000` for wireless cast | video PTS 的 timebase。 |
+| `packetizationMode` | enum | no | `completeFrame`, `fragmentedFrame` | `completeFrame` for wireless cast | 视频 packetization 模式；MVP 每个 STREAM packet 是完整帧。 |
+
+#### 3.2.1a 编码参数优先级与重配置
+
+`video.openStream` 的显式 `frameRate` / `bitrateKbps` 只作用于本次 open，不写回 cast session；显式 `0` 对这两个字段均非法。省略字段时继承当前 session 的 `cast.setVideoStreamParams` 值，不能用省略来清除 session 配置；清除必须调用 `cast.setVideoStreamParams(resetFields=[...])`。未显式提供时，Nearcast 按以下顺序选择 source encoder target：
+
+1. 本次 `video.openStream` 的显式字段；
+2. 当前 cast session 通过 `cast.setVideoStreamParams` 设置的值；
+3. `VideoStreamSource` / stream profile 声明的 source 默认值。
+
+当 source 没有活动 downstream 视频 stream 时，应用 session 参数可直接发送 `video.openStream`。已有活动 stream 时，不得并行 open replacement：Nearcast/NA20 先使用旧 `streamId` 发送 `video.closeStream`，并将 `reason` 设为 `encodingReconfigure`；旧 stream 进入 `closed` 后，再以 `peerRole=transmitter`、原 `source` / `codec` / `streamProfile` / `syncGroupId` 和新的 `frameRate` / `bitrateKbps` 发送 `video.openStream`。成功后必须返回新的 `streamId`，旧 streamId 及其后续媒体包全部失效。只重开视频，不自动重启音频。
 
 #### 3.2.2 返回结果 Result：`VideoOpenStreamResult`
 
@@ -211,15 +227,22 @@ success:
 | `source` | string | yes | source id | none | 实际绑定 source。 |
 | `peerRole` | enum | yes | `receiver`, `transmitter` | none | 被请求端确认的对端媒体角色。 |
 | `codec` | enum | yes | `h264`, `mjpeg`, `raw` | none | 实际 codec。 |
+| `width` | uint32 | no | negotiated width | omitted | 协商后的帧宽度。 |
+| `height` | uint32 | no | negotiated height | omitted | 协商后的帧高度。 |
+| `frameRate` | uint32 | no | negotiated value | omitted | source encoder 实际生效的帧率。 |
+| `bitrateKbps` | uint32 | no | negotiated value | omitted | source encoder 实际生效的码率，单位 kbps。 |
 | `codecFormat` | enum | no | `annexb`, `avcc` | omitted | H.264 格式。 |
 | `streamProfile` | string | yes | `media.video` | none | 归一化后的 profile。 |
-| `cursorUnit` | enum | yes | `timestampUs` | none | STREAM `cursor` 单位。 |
+| `cursorUnit` | enum | yes | `timestampUs`, `sourceCaptureTimestampUs` | none | STREAM `cursor` 单位。 |
 | `syncGroupId` | string | no | product/session scoped | omitted | 与音频同步组。 |
 | `castSessionId` | string | no | product/session scoped | omitted | 投屏会话关联 ID。 |
 | `clockDomain` | string | no | source-defined | omitted | 源媒体时钟域。 |
 | `receiverClockDomain` | string | no | receiver-defined | omitted | 接收时钟域。 |
 | `maxDataSize` | uint32 | no | negotiated limit | omitted | 每个 STREAM chunk data 最大长度。 |
 | `parameterSetsInKeyFrame` | bool | no | `true`, `false` | capability default | `wireless_cast` H.264 Annex-B 必须为 `true`。 |
+| `videoPtsMode` | enum | no | `sameAsCursor`, `explicit` | omitted | 协商后的视频 PTS 来源。 |
+| `timebase` | uint32 | no | ticks/sec | omitted | 协商后的 video PTS timebase。 |
+| `packetizationMode` | enum | no | `completeFrame`, `fragmentedFrame` | omitted | 协商后的视频 packetization 模式。 |
 
 #### 3.2.3 d block 示例
 
@@ -232,7 +255,9 @@ request:
   "params": {
     "source": "wireless_cast_video",
     "peerRole": "receiver",
-    "codec": "h264"
+    "codec": "h264",
+    "frameRate": 30,
+    "bitrateKbps": 6000
   }
 }
 ```
@@ -252,9 +277,14 @@ success:
     "source": "wireless_cast_video",
     "peerRole": "receiver",
     "codec": "h264",
+    "frameRate": 30,
+    "bitrateKbps": 6000,
     "streamProfile": "media.video",
-    "cursorUnit": "timestampUs",
-    "parameterSetsInKeyFrame": true
+    "cursorUnit": "sourceCaptureTimestampUs",
+    "parameterSetsInKeyFrame": true,
+    "videoPtsMode": "sameAsCursor",
+    "timebase": 1000000,
+    "packetizationMode": "completeFrame"
   }
 }
 ```
@@ -278,7 +308,7 @@ success:
 
 ### 3.3 `video.closeStream`
 
-**用途**：关闭一路已建立的视频 stream。该方法关闭 downstream stream，不默认停止 upstream source。
+**用途**：关闭一路已建立的视频 stream。该方法关闭 downstream stream，不默认停止 upstream source。`reason=encodingReconfigure` 仅表示为 source encoder 参数变更让出旧 stream；调用方应在 close 完成后用新参数重新 `video.openStream`。
 
 | 项 | 内容 |
 |---|---|
@@ -295,7 +325,7 @@ success:
 |---|---|---:|---|---|---|
 | `streamId` | uint32 | yes | active stream id | none | 要关闭的 video stream。 |
 | `peerRole` | enum | no | `receiver`, `transmitter` | omitted | 被请求端在该 stream 中的媒体角色。Host 关闭 NA20 producer 时可填 `transmitter`。 |
-| `reason` | enum | no | `receiver_closed`, `user_stop`, `not_needed`, `source_disconnected`, `producer_stopped`, `session_lost`, `receiver_timeout`, `error` | `user_stop` | 关闭原因。 |
+| `reason` | enum | no | `receiver_closed`, `user_stop`, `not_needed`, `source_disconnected`, `producer_stopped`, `session_lost`, `receiver_timeout`, `encodingReconfigure`, `error` | `user_stop` | 关闭原因；编码参数替换使用 `encodingReconfigure`。 |
 | `finalCursor` | uint64 | no | cursorUnit-defined | omitted | 调用方最后处理到的 cursor。 |
 
 #### 3.3.2 返回结果 Result：`VideoCloseStreamResult`
@@ -304,7 +334,7 @@ success:
 |---|---|---:|---|---|---|
 | `streamId` | uint32 | yes | stream id | none | 被关闭的 stream。 |
 | `state` | enum | yes | `closing`, `closed`, `failed` | none | close 后状态。 |
-| `reason` | enum | no | same as params | omitted | 最终关闭原因。 |
+| `reason` | enum | no | same as params（含 `encodingReconfigure`） | omitted | 最终关闭原因。 |
 | `alreadyClosed` | bool | no | `true`, `false` | `false` | 是否此前已经进入 terminal state。 |
 
 #### 3.3.3 d block 示例
@@ -352,7 +382,16 @@ success:
 |---|---|---|
 | `STREAM_NOT_FOUND` | streamId 不属于当前 AXTP session。 | 调用方本地清理旧 context。 |
 | `STREAM_CLOSED` | stream 已关闭且实现选择返回错误。 | 也可返回 `alreadyClosed=true` 的成功结果。 |
-| `MEDIA_STREAM_STOP_FAILED` | 设备无法停止 producer。 | 返回 typed error，并尽快进入 `failed` terminal state。 |
+| `MEDIA_STREAM_STOP_FAILED` | 设备无法停止 producer 或关闭旧 stream。 | 返回 typed error，并尽快进入 `failed` terminal state；若由编码参数重配置触发，按回退规则恢复旧参数/旧流。 |
+
+#### 3.3.6 编码重配置失败与回退
+
+Nearcast 将 `cast.setVideoStreamParams` 的 close -> open 视为一个视频重配置事务：
+
+- `video.closeStream(reason=encodingReconfigure)` 成功后，旧 `streamId` 不得复用；关闭事件和后续数据包都以旧流为 terminal。
+- 新 `video.openStream` 返回 `MEDIA_FRAMERATE_UNSUPPORTED`、`MEDIA_BITRATE_UNSUPPORTED` 或其他启动错误时，Nearcast 恢复 session 中的旧参数，并尝试以原 source/profile/syncGroupId 重新 open 旧视频语义。
+- 旧流恢复成功时，cast 控制面报告 `state=rolledBack`；回退也失败时报告 `state=failed`，明确当前没有 active video stream，并保留最后一个 typed error。
+- `NOT_SUPPORTED` 仅表示能力或 source/profile 不支持该操作，不应关闭 AXTP/cast session；调用方可继续使用其他 RPC。
 
 ### 3.4 `video.getStreamState`
 
@@ -381,6 +420,8 @@ success:
 | `state` | enum | yes | `opening`, `streaming`, `closing`, `closed`, `failed` | none | 业务流状态。 |
 | `source` | string | yes | source id | none | 绑定 source。 |
 | `codec` | enum | yes | `h264`, `mjpeg`, `raw` | none | 当前 codec。 |
+| `frameRate` | uint32 | no | effective value | omitted | source encoder 当前实际帧率。 |
+| `bitrateKbps` | uint32 | no | effective value | omitted | source encoder 当前实际码率，单位 kbps。 |
 | `syncGroupId` | string | no | product/session scoped | omitted | 同步组。 |
 | `castSessionId` | string | no | product/session scoped | omitted | 投屏会话关联 ID。 |
 | `lastSeqId` | uint32 | no | uint32 | omitted | 最近发送或接收的 STREAM seq。 |
@@ -606,6 +647,8 @@ success:
 | `state` | enum | yes | `opening`, `streaming`, `closing`, `closed`, `failed` | none | 新状态。 |
 | `source` | string | yes | source id | none | 绑定 source。 |
 | `codec` | enum | no | `h264`, `mjpeg`, `raw` | omitted | 当前 codec。 |
+| `frameRate` | uint32 | no | effective value | omitted | 事件时 source encoder 实际帧率。 |
+| `bitrateKbps` | uint32 | no | effective value | omitted | 事件时 source encoder 实际码率，单位 kbps。 |
 | `reason` | string | no | reason enum/string | omitted | 变化原因。 |
 | `closeOrigin` | enum | no | `producer`, `receiver`, `session`, `unknown` | `unknown` | terminal state 来源。 |
 | `syncGroupId` | string | no | product/session scoped | omitted | 同步组。 |
@@ -746,6 +789,8 @@ Capability name: `video.stream`。
 | `supportsRequestKeyFrame` | bool | no | bool | `true` for H.264 | 是否支持关键帧请求。 |
 | `flowControlManagedByRuntime` | bool | yes | bool | `true` | 普通业务 App 是否无需直接调用公共流控。 |
 
+`video.stream` 的 `VideoStreamCapabilities` 不新增 cast 控制方法字段：`cast.setVideoStreamParams` 的方法能力由 `cast.flowControl.supportsVideoStreamParams` / `supportsActiveVideoReconfigure` 声明；所选 source profile 的范围和重配置字段由 `VideoStreamSource.frameRates`、`bitratesKbps`、`supportsReconfigure`、`reconfigureFields` 声明。
+
 ## 6. 字段 / Schemas
 
 ### 6.1 Schema 层级速览
@@ -756,7 +801,8 @@ Capability name: `video.stream`。
 VideoStreamCapabilities
   sources: VideoStreamSource[]
 VideoStreamSource
-  sourceId, type, codecs, states
+  source, displayName, codecs, resolutions, frameRates, state,
+  bitratesKbps, encoder, supportsReconfigure, reconfigureFields
 VideoOpenStreamParams -> VideoOpenStreamResult
 VideoStreamStateChangedEvent -> VideoStreamState
 VideoStreamSourceStateChangedEvent -> VideoStreamSourceState
@@ -767,28 +813,29 @@ VideoChunkHeaderV1 + H.264 bytes
 
 | 字段名 | 类型 | 必填 | 取值范围 / 枚举 | 默认值 | 说明 |
 |---|---|---:|---|---|---|
-| `sourceId` | string | yes | source id | none | 例如 `wireless_cast`、`main_camera`、`hdmi`。 |
-| `type` | enum | yes | `wireless_cast`, `camera`, `hdmi`, `mixed`, `virtual` | none | source 类型。 |
-| `codecs` | enum[] | yes | `h264`, `mjpeg`, `raw` | none | 支持 codec。 |
-| `codecFormats` | enum[] | no | `annexb`, `avcc` | omitted | H.264 格式。 |
-| `resolutions` | object[] | no | capability-defined | omitted | 分辨率候选。 |
-| `frameRates` | number[] | no | capability-defined | omitted | 帧率候选。 |
-| `currentState` | enum | no | `idle`, `available`, `receiving`, `stopped`, `failed` | omitted | 若请求包含 runtime state，可返回当前状态。 |
-| `parameterSetsInKeyFrame` | bool | no | bool | omitted | H.264 SPS/PPS 是否随关键帧。`wireless_cast` 必须为 `true`。 |
+| `source` | string | yes | source id | none | 例如 `wireless_cast_video`。 |
+| `displayName` | string | no | maxLength=128 | omitted | 用户可见的 source 名称。 |
+| `codecs` | string[] | yes | source-defined codec ids | none | 支持的 video codec 列表。 |
+| `resolutions` | string[] | no | source-defined descriptors | omitted | 支持的分辨率描述。 |
+| `frameRates` | number[] | no | source-defined values | omitted | source encoder 支持的帧率候选。 |
+| `state` | enum | no | `available`, `receiving`, `stopped`, `unavailable` | omitted | source 当前 runtime 状态。 |
+| `bitratesKbps` | uint32[] | no | source-defined values | omitted | source encoder 支持的码率候选，单位 kbps。 |
+| `encoder` | string | no | maxLength=128 | omitted | source 使用的编码器或编码 profile。 |
+| `supportsReconfigure` | bool | no | bool | `false` | 是否支持活动视频编码参数重配置；为 false 时相关请求返回 `NOT_SUPPORTED`。 |
+| `reconfigureFields` | string[] | no | `frameRate`, `bitrateKbps` | omitted | 可通过编码重配置变更的 source video 字段。 |
 
 ### 6.3 STREAM payload envelope：`VideoChunkHeaderV1`
 
 `VideoChunkHeaderV1` 是 STREAM data 内的视频业务 envelope，位于 STREAM 16B header 之后。二进制字段编号和布局以 contract/registry/generated schema 为准；不得把这些字段加入 STREAM 16B header。
 
+NA20/NT10 MVP 使用 `packetizationMode=completeFrame` 和 `videoPtsMode=sameAsCursor`。该模式下每个 STREAM packet 是完整视频帧，video PTS 等于 STREAM `cursor`，`timebase=1000000`；媒体层不需要 `frameOffset` / `frameLength` 来描述拆包，AXTP transport fragmentation 必须在 STREAM parser 前完成重组。
+
 | 字段名 | 类型 | 必填 | 取值范围 / 枚举 | 默认值 | 说明 |
 |---|---|---:|---|---|---|
 | `headerLength` | uint16 | yes | bytes | none | envelope 长度。 |
-| `flags` | bitmap | yes | `frameStart`, `frameEnd`, `keyFrame`, `config` | none | chunk 标记。 |
+| `flags` | bitmap | yes | `keyFrame`, `config`, `discontinuity` | none | 完整帧标记。 |
 | `frameId` | uint32 | yes | uint32 | none | 视频帧 ID。 |
-| `frameOffset` | uint32 | yes | bytes | none | 当前 chunk 在帧内偏移。 |
-| `frameLength` | uint32 | no | bytes | omitted | 完整帧长度。 |
-| `timestampUs` | uint64 | yes | microseconds | none | NT10 源媒体时间戳。 |
-| `receiverTimestampUs` | uint64 | no | microseconds | omitted | NA20 接收时钟时间戳。 |
+| `sourceCaptureTimestampUs` | uint64 | no | microseconds | STREAM `cursor` | 可省略；默认使用 STREAM `cursor` 表达 NT10 源端采集时间戳。 |
 | `payloadBytes` | bytes | yes | H.264 Annex-B / other codec bytes | none | 实际视频数据。 |
 
 ### 6.4 State / lifecycle 约束
@@ -888,6 +935,23 @@ VideoChunkHeaderV1 + H.264 bytes
 }
 ```
 
+### 7.4 Nearcast 调整 NT10 编码参数
+
+`cast.setVideoStreamParams` 在 WS 控制面设置 session 级 encoder target；`video.openStream` 显式字段只覆盖当前一次 open。活动视频流的调整必须按以下顺序执行：
+
+```text
+Nearcast WS client -> cast.setVideoStreamParams(frameRate, bitrateKbps)
+Nearcast -> NA20: video.closeStream(streamId=old, reason=encodingReconfigure)
+NA20 -> Nearcast: close state=closed
+Nearcast -> NA20: video.openStream(peerRole=transmitter,
+                                   source/codec/streamProfile/syncGroupId unchanged,
+                                   frameRate/bitrateKbps=new)
+NA20 -> Nearcast: open result(streamId=new, frameRate/effective bitrate)
+Nearcast -> WS client: cast.flowControlChanged(sourceVideo.state=streaming)
+```
+
+若 source 没有活动视频 stream，则省略 close，直接执行 `video.openStream`。open 失败时恢复旧参数并尝试重开旧流；回退成功由 cast 控制面报告 `rolledBack`，回退失败报告 `failed`。不支持编码参数或活动重配置时返回 `NOT_SUPPORTED`，不得关闭 AXTP session。
+
 ## 8. 错误
 
 | 错误 | 适用场景 | 说明 |
@@ -900,6 +964,8 @@ VideoChunkHeaderV1 + H.264 bytes
 | `MEDIA_SOURCE_NOT_FOUND` | source 不存在。 | source id 错误或 capability 过期。 |
 | `MEDIA_SOURCE_UNAVAILABLE` | source 当前未 available/receiving。 | 等待 source event 或用户重新插入 NT10。 |
 | `MEDIA_CODEC_UNSUPPORTED` | codec 或 H.264 format 不支持。 | 对 `wireless_cast`，H.264 Annex-B 是 MVP。 |
+| `MEDIA_FRAMERATE_UNSUPPORTED` | source/profile 不支持请求的编码帧率。 | 读取 `VideoStreamSource.frameRates` 后调整请求。 |
+| `MEDIA_BITRATE_UNSUPPORTED` | source/profile 不支持请求的编码码率。 | 读取 `VideoStreamSource.bitratesKbps` 后调整请求。 |
 | `MEDIA_STREAM_START_FAILED` / `MEDIA_STREAM_STOP_FAILED` | producer pipeline 绑定或释放失败。 | 可配合 terminal state event。 |
 | `VIDEO_RECEIVER_NOT_READY` | 候选业务错误；MediaHost 暂不可接收 NA20 producer-open。 | `[REVIEW-DRAFT]`；采纳前确认是否需要独立 errorCode，或复用 `BUSY` / `UNAVAILABLE`。 |
 

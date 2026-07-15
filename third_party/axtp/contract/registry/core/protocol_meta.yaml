@@ -90,7 +90,7 @@ guide:
         - Send Identify using the JSON sid/op/d envelope.
         - Wait for Identified.
         - Load generated protocol registry for the current product build.
-        - Start JSON RPC requests and receive JSON events.
+        - Start JSON RPC requests and receive JSON events; event payload data does not repeat sid, but every event message still carries sid in the JSON sid/op/d envelope.
     - title: Cloud Reverse Connection
       steps:
         - Device opens the WebSocket connection to the cloud endpoint.

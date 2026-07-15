@@ -1,0 +1,139 @@
+id: stream.video_stream_params_validation
+title: NT10 video encoder parameter updates validate fields, profile limits, and concurrency
+since: spec/v0.0.2
+level: stream
+profiles:
+  - stream
+  - framed-binary
+
+given:
+  session:
+    state: identified
+    id: cast-session-validation
+  source:
+    id: wireless_cast_video
+    state: receiving
+    frameRates: [1, 24, 30, 60]
+    bitratesKbps: [256, 4000, 6000, 12000]
+    supportsReconfigure: true
+  capability:
+    cast.flowControl:
+      supportsVideoStreamParams: true
+      supportsActiveVideoReconfigure: true
+
+steps:
+  - id: empty_update
+    role: trigger
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 670
+      method: cast.setVideoStreamParams
+      params: {}
+
+  - id: empty_update_result
+    role: degraded
+    responseTo: empty_update
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 670
+        statusCode: INVALID_ARGUMENT
+
+  - id: duplicate_field_update
+    role: trigger
+    triggeredBy: empty_update_result
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 671
+      method: cast.setVideoStreamParams
+      params:
+        frameRate: 30
+        resetFields: [frameRate]
+
+  - id: duplicate_field_result
+    role: degraded
+    responseTo: duplicate_field_update
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 671
+        statusCode: INVALID_ARGUMENT
+
+  - id: out_of_profile_update
+    role: trigger
+    triggeredBy: duplicate_field_result
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 672
+      method: cast.setVideoStreamParams
+      params:
+        frameRate: 120
+
+  - id: out_of_profile_result
+    role: degraded
+    responseTo: out_of_profile_update
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 672
+        statusCode: MEDIA_FRAMERATE_UNSUPPORTED
+
+  - id: start_reconfigure
+    role: trigger
+    triggeredBy: out_of_profile_result
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 673
+      method: cast.setVideoStreamParams
+      params:
+        frameRate: 30
+        bitrateKbps: 6000
+
+  - id: start_reconfigure_result
+    role: observe
+    responseTo: start_reconfigure
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 673
+        result:
+          accepted: true
+          state: pending
+
+  - id: concurrent_update
+    role: trigger
+    triggeredBy: start_reconfigure_result
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 674
+      method: cast.setVideoStreamParams
+      params:
+        frameRate: 25
+        bitrateKbps: 4000
+
+  - id: concurrent_update_result
+    role: degraded
+    responseTo: concurrent_update
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 674
+        statusCode: BUSY
+
+assertions:
+  - empty_update_result.statusCode == INVALID_ARGUMENT
+  - duplicate_field_result.statusCode == INVALID_ARGUMENT
+  - out_of_profile_result.statusCode == MEDIA_FRAMERATE_UNSUPPORTED
+  - start_reconfigure_result.result.state == pending
+  - concurrent_update_result.statusCode == BUSY
+  - session.state == identified

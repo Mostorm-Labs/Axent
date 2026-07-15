@@ -77,6 +77,18 @@
       "idHex": "0x0401"
     },
     {
+      "id": 1281,
+      "name": "stream.flowControl",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Device supports common STREAM runtime flow control, statistics, abort, and clock-report diagnostics.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "type": "object",
+      "schema": "StreamFlowControlCapabilities",
+      "idHex": "0x0501"
+    },
+    {
       "id": 2049,
       "name": "video.stream",
       "domain": "video",

@@ -4,6 +4,154 @@ This changelog records AXTP Spec releases published with `spec/vMAJOR.MINOR.PATC
 
 Current repository path note: conformance cases now live at the root `conformance/` directory. Older release entries may mention their historical paths.
 
+## spec/v0.13.0
+
+NT10 source video encoder parameter control through the Nearcast cast flow-control surface.
+
+### Protocol
+
+- Adds `cast.setVideoStreamParams` under `cast.flowControl` so Nearcast can configure the current cast session's NT10/source encoder frame rate and bitrate.
+- Defines coordinated active-stream replacement as `video.closeStream(reason=encodingReconfigure)` followed by `video.openStream(peerRole=transmitter)` with a new `streamId`; idle sources open directly.
+- Keeps audio running, preserves the existing `syncGroupId`, and defines rollback to the previous parameters and stream when the replacement open fails.
+- Defines parameter precedence as explicit `video.openStream` values, then current-session cast values, then source/profile defaults; omitted set fields remain unchanged and only `resetFields` clears them.
+
+### Registry
+
+- Adds `cast.setVideoStreamParams` as method `0x1614`, `bitOffset=19`, bound to the existing `cast.flowControl` capability and `cast.flowControlChanged` event.
+- Extends cast flow-control capability and state metadata with video parameter support, active reconfiguration support, desired/effective encoder values, reconfiguration state, stream identifiers, rollback status, and diagnostics.
+- Extends `video.stream` source, open, state, event, and close-reason facts with encoder frame-rate/bitrate capabilities and `encodingReconfigure` lifecycle metadata.
+- Promotes `MEDIA_BITRATE_UNSUPPORTED` to the MVP error set and exposes it from the relevant cast/video methods.
+
+### Schemas
+
+- Adds `CastSetVideoStreamParamsParams`, `CastSetVideoStreamParamsResult`, and `CastVideoStreamParamsState`.
+- Extends `CastFlowControlState`, `CastFlowControlChangedEvent`, `CastFlowControlCapability`, `VideoStreamSource`, `VideoStreamState`, and `VideoStreamStateChangedEvent` without changing existing field IDs.
+- Treats zero encoder frame rate or bitrate as invalid; callers omit fields to preserve current values and use `resetFields` to restore source/profile defaults.
+
+### Conformance
+
+- Adds capability degradation coverage proving unsupported encoder control returns `NOT_SUPPORTED` without closing the AXTP session.
+- Adds idle-open, active close/open replacement, explicit-open precedence, rollback, validation, and concurrent-`BUSY` cases.
+- Expands the shared conformance manifest from 30 to 36 cases.
+
+### Migration
+
+- Existing runtimes remain compatible when they do not advertise `cast.flowControl.supportsVideoStreamParams`; registered-but-unavailable calls return `NOT_SUPPORTED`.
+- Implementations that advertise the new fields must preserve session-local values, reject unsupported profile values with typed media errors, and serialize active reconfiguration operations.
+
+### Runtime Impact
+
+- `axtp-cpp-runtime` should bind to `spec/v0.13.0`, regenerate protocol metadata, implement or explicitly degrade `cast.setVideoStreamParams`, and run the new conformance cases.
+- Existing CONTROL/RPC/STREAM framing and previously registered method, event, capability, and schema IDs remain backward compatible with `spec/v0.12.0`.
+- No npm, pub, PyPI, Docker, or runtime package registry publish is part of this Spec release.
+
+## spec/v0.12.0
+
+Cast receiver audio delay compensation and event envelope clarification.
+
+### Protocol
+
+- Adds `cast.setAudioDelay` so receivers can configure local cast audio playback delay compensation, with `0` disabling compensation.
+- Documents the intended receiver behavior: audio delay shifts local output timing only, does not change media cursors, and does not replace AV drift correction.
+- Clarifies that JSON RPC event payload data does not repeat `sid`, while every event message still carries `sid` in the outer `sid/op/d` envelope.
+
+### Registry
+
+- Extends the generated `cast` domain with `cast.setAudioDelay` as method `0x1613`, `bitOffset=18`, request schema `CastSetAudioDelayParams`, response schema `CastAudioState`, and event `cast.audioChanged`.
+- Updates `cast.audioChanged` metadata so delay changes are part of the event trigger surface.
+- Preserves existing cast method IDs, event IDs, field IDs, and bit offsets for previously generated facts.
+
+### Schemas
+
+- Adds `CastSetAudioDelayParams.audioDelayMs:uint32` with range `0..1000`.
+- Adds optional `CastAudioState.audioDelayMs` with default `250`.
+- Adds `CastAudioCapability.supportsAudioDelay`, `defaultAudioDelayMs`, and `maxAudioDelayMs` capability fields.
+
+### Conformance
+
+- Does not add new hand-written conformance cases in this release.
+- Generator build, generator tests, source validation, protocol validation, and generated protocol output checks cover the new registry and schema facts.
+
+### Migration
+
+- Cast runtimes may keep existing behavior if they do not advertise or implement audio delay support.
+- Cast receivers that implement `cast.audio` should expose the configured delay through `CastAudioState.audioDelayMs` and clear runtime PCM delay buffers on stream open, close, device reopen, or format change.
+- Event consumers should continue reading RPC `sid` from the outer event envelope, not from event `data`.
+
+### Runtime Impact
+
+- Runtime and SDK teams should regenerate protocol metadata from `spec/v0.12.0` before exposing `cast.setAudioDelay` or the new cast audio capability fields.
+- Existing CONTROL/RPC/STREAM wire layout, generated domains outside `cast`, shared errors, and previously generated cast facts remain backward compatible with `spec/v0.11.2`.
+- No npm, pub, PyPI, Docker, or runtime package registry publish is part of this Spec release.
+
+## spec/v0.11.2
+
+Core RPC `sid` receiver compatibility patch.
+
+### Protocol
+
+- Clarifies that AXTP-native Logical Servers should continue generating `sid` values as non-zero `uint32` rendered as 8-character hex strings in JSON object encodings.
+- Loosens JSON / CBOR / MSGPACK receiver requirements so assigned `sid` values are treated as opaque non-empty strings, allowing legacy or external session strings that are not 8-character hex.
+- Keeps JSON_BINARY `sid` as a 4-byte Big-Endian `uint32`, with `0` reserved for the unassigned state.
+
+### Registry
+
+- Does not change registry YAML, generated method/event/capability facts, schema facts, profile facts, or stable IDs.
+
+### Schemas
+
+- Does not change business schema definitions.
+
+### Conformance
+
+- Does not add new hand-written conformance cases in this release.
+- Existing generator validation, protocol validation, generated drift checks, release artifact checks, and Markdown/link checks cover the clarified core text.
+
+### Migration
+
+- JSON runtimes and SDKs that previously rejected assigned `sid` strings only because they were not 8-character hex should preserve and match the returned non-empty string instead.
+- AXTP-native servers may continue producing 8-character hex `sid` strings such as `"00000003"`.
+
+### Runtime Impact
+
+- Runtime and SDK teams are not required to regenerate generated business protocol metadata for this patch, because machine-readable registry facts are unchanged.
+- Existing CONTROL/RPC/STREAM wire layout, generated domains, shared errors, and business contract facts remain unchanged from `spec/v0.11.1`.
+- No npm, pub, PyPI, Docker, or runtime package registry publish is part of this Spec release.
+
+## spec/v0.11.1
+
+Core RPC envelope clarification patch.
+
+### Protocol
+
+- Corrects the core RPC JSON RequestResponse example so `d.status` is an object carrying `status.ok` and `status.code` instead of a numeric shortcut.
+- Clarifies that JSON / CBOR / MSGPACK RequestResponse envelopes MUST carry `status.ok` and `status.code`, while JSON_BINARY uses its fixed-header `statusCode:uint16` with the same semantics.
+- Restores the explicit `sid` generation and encoding rules in the current core spec: `sid` is a `uint32`, JSON forms are fixed 8-character hex strings after Identified, `0` is reserved, and examples such as `"00000003"` are valid non-zero session IDs.
+
+### Registry
+
+- Does not change registry YAML, generated method/event/capability facts, schema facts, profile facts, or stable IDs.
+
+### Schemas
+
+- Does not change business schema definitions.
+
+### Conformance
+
+- Does not add new hand-written conformance cases in this release.
+- Existing generator validation, protocol validation, generated drift checks, release artifact checks, and Markdown/link checks cover the corrected core text.
+
+### Migration
+
+- Runtime implementations that already use `status.ok` / `status.code` and fixed 8-character hex `sid` values do not need code changes.
+- Implementations that copied the erroneous `status: 0` JSON example should emit the standard status object form.
+
+### Runtime Impact
+
+- Runtime and SDK teams are not required to regenerate generated business protocol metadata for this patch, because machine-readable registry facts are unchanged.
+- Existing CONTROL/RPC/STREAM wire layout, generated domains, shared errors, and `cast` contract facts remain unchanged from `spec/v0.11.0`.
+- No npm, pub, PyPI, Docker, or runtime package registry publish is part of this Spec release.
+
 ## spec/v0.11.0
 
 Cast receiver snapshot status and window schema simplification.

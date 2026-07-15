@@ -2,6 +2,8 @@ id: session.hello_identify_identified
 title: HELLO / IDENTIFY / IDENTIFIED session setup
 since: spec/v0.0.2
 level: websocket-jsonrpc
+semantic:
+  kind: baseline_handshake
 profiles:
   - websocket-jsonrpc
 
@@ -9,28 +11,34 @@ given:
   transport: websocket_jsonrpc
 
 steps:
-  - direction: server_to_client
+  - id: hello
+    role: input
+    direction: server_to_client
     expect:
       jsonrpc:
         sid: ""
         op: HELLO
-        d:
-          axtpVersion:
-            type: string
+        d: {}
 
-  - direction: client_to_server
+  - id: identify
+    role: trigger
+    direction: client_to_server
     jsonrpc:
       sid: ""
       op: IDENTIFY
       d:
         randomSeed: 305419896
 
-  - direction: server_to_client
+  - id: identified_response
+    role: observe
+    responseTo: identify
+    direction: server_to_client
     expect:
       jsonrpc:
         op: IDENTIFIED
         sid:
           type: string
+          minLength: 1
 
 assertions:
   - identified.sid != ""

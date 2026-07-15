@@ -1,7 +1,9 @@
 id: capability.unsupported_method
-title: Unsupported method uses standard method capability error
+title: Unknown method uses exact RPC_METHOD_NOT_FOUND
 since: spec/v0.0.2
 level: capability
+semantic:
+  kind: unknown_method_error
 profiles:
   - capability
   - core
@@ -10,7 +12,9 @@ given:
   method: vendor.unsupported
 
 steps:
-  - direction: client_to_server
+  - id: unknown_request
+    role: trigger
+    direction: client_to_server
     rpc:
       encoding: json
       op: REQUEST
@@ -18,16 +22,28 @@ steps:
       method: vendor.unsupported
       params: {}
 
-  - direction: server_to_client
+  - id: not_found_response
+    role: degraded
+    responseTo: unknown_request
+    direction: server_to_client
     expect:
       rpc:
         op: REQUEST_RESPONSE
         requestId: 4
-        statusCode:
-          oneOf:
-            - RPC_METHOD_NOT_FOUND
-            - CAPABILITY_METHOD_UNSUPPORTED
+        statusCode: RPC_METHOD_NOT_FOUND
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: not_found_response
+    direction: client_to_server
+    rpc: { encoding: json, op: REQUEST, requestId: 5, method: audio.getAlgorithmConfig, params: {} }
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect: { rpc: { op: REQUEST_RESPONSE, requestId: 5, statusCode: SUCCESS } }
 
 assertions:
   - response.requestId == request.requestId
-  - response.statusCode != SUCCESS
+  - response.statusCode == RPC_METHOD_NOT_FOUND

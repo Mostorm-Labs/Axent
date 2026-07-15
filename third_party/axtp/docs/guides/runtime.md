@@ -84,7 +84,7 @@ sequenceDiagram
 WebSocket open
   -> Server Hello op=0, sid=""
   -> Client Identify op=2, sid="", randomSeed:uint32
-  -> Server Identified op=3, sid="<8 hex chars>"
+  -> Server Identified op=3, sid="<session string>"
   -> Client Request op=7, d.id=<request id>, method=<generated method>
   -> Server RequestResponse op=8, d.id matches request
 ```
@@ -94,7 +94,7 @@ WebSocket open
 | 项 | 要求 |
 |---|---|
 | Hello | Logical Server 先发，客户端收到 Hello 后才能 Identify。 |
-| `sid` | 新 session 使用 `sid=""`；APP_READY 后使用 Identified 返回的固定 8 位 hex string。 |
+| `sid` | 新 session 使用 `sid=""`；AXTP-native server 生成固定 8 位 hex string；JSON 接收端兼容并精确回显 Identified 返回的非空 session string。 |
 | `requestId` | `d.id` 从 1 开始，同一 session 内未完成请求不得复用。 |
 | method/event | 必须来自 generated protocol。 |
 | error | 失败返回 `status.ok=false` 和稳定错误码，不携带成功 `result`。 |

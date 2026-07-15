@@ -1,0 +1,225 @@
+id: session.axtp_version_advisory
+title: Hello axtpVersion differences are advisory
+since: spec/v0.0.2
+level: websocket-jsonrpc
+semantic:
+  kind: advisory_version_handshake
+  requiredRows:
+    - 1.0.0->1.1.0
+    - 1.1.0->1.0.0
+    - 1.0.1->1.0.0
+    - 2.0.0->1.0.0
+    - not-semver->1.0.0
+    - absent->1.0.0
+profiles:
+  - websocket-jsonrpc
+
+given:
+  transport: websocket_jsonrpc
+  execution: each_scenario
+
+scenarios:
+  - name: minor_forward
+    given:
+      client_axtp_version: 1.1.0
+    steps:
+      - id: hello
+        role: input
+        direction: server_to_client
+        jsonrpc: { sid: "", op: HELLO, d: { axtpVersion: 1.0.0 } }
+      - id: identify
+        role: trigger
+        direction: client_to_server
+        jsonrpc: { sid: "", op: IDENTIFY, d: { randomSeed: 305419896 } }
+      - id: identified_response
+        role: observe
+        responseTo: identify
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+      - id: reidentify
+        role: liveness
+        triggeredBy: identified_response
+        direction: client_to_server
+        jsonrpc: { sid: { ref: identified.sid }, op: REIDENTIFY, d: {} }
+      - id: reidentified_response
+        role: liveness
+        responseTo: reidentify
+        captureAs: reidentified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+    assertions:
+      - identified.sid != ""
+      - reidentify.sid == identified.sid
+      - reidentified.sid != ""
+
+  - name: minor_backward
+    given:
+      client_axtp_version: 1.0.0
+    steps:
+      - id: hello
+        role: input
+        direction: server_to_client
+        jsonrpc: { sid: "", op: HELLO, d: { axtpVersion: 1.1.0 } }
+      - id: identify
+        role: trigger
+        direction: client_to_server
+        jsonrpc: { sid: "", op: IDENTIFY, d: { randomSeed: 305419897 } }
+      - id: identified_response
+        role: observe
+        responseTo: identify
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+      - id: reidentify
+        role: liveness
+        triggeredBy: identified_response
+        direction: client_to_server
+        jsonrpc: { sid: { ref: identified.sid }, op: REIDENTIFY, d: {} }
+      - id: reidentified_response
+        role: liveness
+        responseTo: reidentify
+        captureAs: reidentified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+    assertions:
+      - identified.sid != ""
+      - reidentify.sid == identified.sid
+      - reidentified.sid != ""
+
+  - name: patch_difference
+    given:
+      client_axtp_version: 1.0.0
+    steps:
+      - id: hello
+        role: input
+        direction: server_to_client
+        jsonrpc: { sid: "", op: HELLO, d: { axtpVersion: 1.0.1 } }
+      - id: identify
+        role: trigger
+        direction: client_to_server
+        jsonrpc: { sid: "", op: IDENTIFY, d: { randomSeed: 305419898 } }
+      - id: identified_response
+        role: observe
+        responseTo: identify
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+      - id: reidentify
+        role: liveness
+        triggeredBy: identified_response
+        direction: client_to_server
+        jsonrpc: { sid: { ref: identified.sid }, op: REIDENTIFY, d: {} }
+      - id: reidentified_response
+        role: liveness
+        responseTo: reidentify
+        captureAs: reidentified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+    assertions:
+      - identified.sid != ""
+      - reidentify.sid == identified.sid
+      - reidentified.sid != ""
+
+  - name: major_difference
+    given:
+      client_axtp_version: 1.0.0
+    steps:
+      - id: hello
+        role: input
+        direction: server_to_client
+        jsonrpc: { sid: "", op: HELLO, d: { axtpVersion: 2.0.0 } }
+      - id: identify
+        role: trigger
+        direction: client_to_server
+        jsonrpc: { sid: "", op: IDENTIFY, d: { randomSeed: 305419899 } }
+      - id: identified_response
+        role: observe
+        responseTo: identify
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+      - id: reidentify
+        role: liveness
+        triggeredBy: identified_response
+        direction: client_to_server
+        jsonrpc: { sid: { ref: identified.sid }, op: REIDENTIFY, d: {} }
+      - id: reidentified_response
+        role: liveness
+        responseTo: reidentify
+        captureAs: reidentified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+    assertions:
+      - identified.sid != ""
+      - reidentify.sid == identified.sid
+      - reidentified.sid != ""
+
+  - name: malformed
+    given:
+      client_axtp_version: 1.0.0
+    steps:
+      - id: hello
+        role: input
+        direction: server_to_client
+        jsonrpc: { sid: "", op: HELLO, d: { axtpVersion: not-semver } }
+      - id: identify
+        role: trigger
+        direction: client_to_server
+        jsonrpc: { sid: "", op: IDENTIFY, d: { randomSeed: 305419900 } }
+      - id: identified_response
+        role: observe
+        responseTo: identify
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+      - id: reidentify
+        role: liveness
+        triggeredBy: identified_response
+        direction: client_to_server
+        jsonrpc: { sid: { ref: identified.sid }, op: REIDENTIFY, d: {} }
+      - id: reidentified_response
+        role: liveness
+        responseTo: reidentify
+        captureAs: reidentified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+    assertions:
+      - identified.sid != ""
+      - reidentify.sid == identified.sid
+      - reidentified.sid != ""
+
+  - name: absent
+    given:
+      client_axtp_version: 1.0.0
+    steps:
+      - id: hello
+        role: input
+        direction: server_to_client
+        jsonrpc: { sid: "", op: HELLO, d: {} }
+      - id: identify
+        role: trigger
+        direction: client_to_server
+        jsonrpc: { sid: "", op: IDENTIFY, d: { randomSeed: 305419901 } }
+      - id: identified_response
+        role: observe
+        responseTo: identify
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+      - id: reidentify
+        role: liveness
+        triggeredBy: identified_response
+        direction: client_to_server
+        jsonrpc: { sid: { ref: identified.sid }, op: REIDENTIFY, d: {} }
+      - id: reidentified_response
+        role: liveness
+        responseTo: reidentify
+        captureAs: reidentified
+        direction: server_to_client
+        expect: { jsonrpc: { sid: { type: string, minLength: 1 }, op: IDENTIFIED } }
+    assertions:
+      - hello.d does not contain axtpVersion
+      - identified.sid != ""
+      - reidentify.sid == identified.sid
+      - reidentified.sid != ""

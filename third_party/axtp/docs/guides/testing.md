@@ -54,7 +54,7 @@ flowchart TD
 |---|---|
 | Hello | WebSocket open 后，Logical Server 发送 `op=0`、`sid=""`。 |
 | Identify | Client 发送 `op=2`、`sid=""`、`randomSeed:uint32`。 |
-| Identified | Server 返回 `op=3` 和固定 8 位 hex `sid`。 |
+| Identified | AXTP-native Server 返回固定 8 位 hex `sid`；JSON 接收端兼容非空 session string 并在后续请求中精确携带。 |
 | Request | Client 使用 generated method，`d.id` 在未完成前不复用。 |
 | Response | Server 返回相同 `d.id`，成功 `status.ok=true`。 |
 | Error | 非法 method 或非法参数返回 `status.ok=false` 和稳定错误码。 |

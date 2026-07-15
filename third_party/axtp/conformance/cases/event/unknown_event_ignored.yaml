@@ -1,0 +1,70 @@
+id: event.unknown_event_ignored
+title: Unknown event is ignored and session remains usable
+since: spec/v0.0.2
+level: event
+semantic:
+  kind: unknown_event_receiver_tolerance
+profiles:
+  - event
+  - websocket-jsonrpc
+  - framed-binary
+
+given:
+  device_profile: minimal_device
+  input_kind: compatibility_fuzz
+  peer_behavior: deliberately_sends_unknown_event
+  session:
+    state: identified
+
+steps:
+  - id: unknown_event_input
+    role: input
+    direction: peer_to_runtime
+    jsonrpc:
+      sid: "12345678"
+      op: EVENT
+      d:
+        event: vendor.futureStateChanged
+        data:
+          futureOptionalField: true
+
+  - id: disposition
+    role: observe
+    triggeredBy: unknown_event_input
+    direction: runtime_local
+    expect:
+      compatibility_input:
+        kind: compatibility_fuzz
+        outcome:
+          oneOf:
+            - ignored
+            - diagnostic_only
+        applicationDispatched: false
+        sessionState: APP_READY
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: disposition
+    direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 45
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 45
+        statusCode: SUCCESS
+
+assertions:
+  - unknown_event.applicationDispatched == false
+  - unknown_event.outcome in [ignored, diagnostic_only]
+  - response.statusCode == SUCCESS
+  - session.state == identified

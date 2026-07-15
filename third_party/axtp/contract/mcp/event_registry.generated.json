@@ -66,6 +66,88 @@
       "idHex": "0x0403"
     },
     {
+      "id": 1281,
+      "bitOffset": 0,
+      "name": "stream.stateChanged",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Emitted when common STREAM runtime state changes or an abort converges.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "StreamStateChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "stream.abort",
+        "runtime state change"
+      ],
+      "capabilities": [
+        "stream.flowControl"
+      ],
+      "idHex": "0x0501"
+    },
+    {
+      "id": 1282,
+      "bitOffset": 1,
+      "name": "stream.statsReported",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Emitted with bounded STREAM runtime statistics for diagnostics.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "StreamStatsReportedEvent",
+      "severity": "info",
+      "trigger": [
+        "stream statistics interval",
+        "diagnostic sampling"
+      ],
+      "capabilities": [
+        "stream.flowControl"
+      ],
+      "idHex": "0x0502"
+    },
+    {
+      "id": 1283,
+      "bitOffset": 2,
+      "name": "stream.flowControlChanged",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Emitted when ACK, window, pause, or resume changes STREAM sending conditions.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "StreamFlowControlChangedEvent",
+      "severity": "info",
+      "trigger": [
+        "stream.ack",
+        "stream.windowUpdate",
+        "stream.pause",
+        "stream.resume"
+      ],
+      "capabilities": [
+        "stream.flowControl"
+      ],
+      "idHex": "0x0503"
+    },
+    {
+      "id": 1284,
+      "bitOffset": 3,
+      "name": "stream.clockReport",
+      "domain": "stream",
+      "status": "draft",
+      "description": "Emitted as a latest-wins timing sample that anchors source media PTS to source and relay monotonic clocks.",
+      "since": "1.0.0",
+      "deprecated": false,
+      "eventSchema": "StreamClockReportEvent",
+      "severity": "info",
+      "trigger": [
+        "source clock report",
+        "relay diagnostic sampling"
+      ],
+      "capabilities": [
+        "stream.flowControl"
+      ],
+      "idHex": "0x0504"
+    },
+    {
       "id": 2054,
       "bitOffset": 0,
       "name": "video.streamStateChanged",
@@ -514,7 +596,7 @@
       "name": "cast.audioChanged",
       "domain": "cast",
       "status": "draft",
-      "description": "Emitted when local cast audio playback or mute state changes.",
+      "description": "Emitted when local cast audio playback, mute, or delay compensation state changes.",
       "since": "1.0.0",
       "deprecated": false,
       "eventSchema": "CastAudioChangedEvent",
@@ -522,6 +604,7 @@
       "trigger": [
         "cast.setAudio",
         "cast.setMuted",
+        "cast.setAudioDelay",
         "local UI",
         "session started",
         "session stopped"
@@ -644,7 +727,7 @@
       "name": "cast.flowControlChanged",
       "domain": "cast",
       "status": "draft",
-      "description": "Emitted when receiver-local cast flow policy or low-frequency flow statistics change.",
+      "description": "Emitted when receiver-local cast flow policy, video stream parameters, or low-frequency flow statistics change.",
       "since": "1.0.0",
       "deprecated": false,
       "eventSchema": "CastFlowControlChangedEvent",
@@ -652,6 +735,7 @@
       "trigger": [
         "cast.setRenderFps",
         "cast.setFlowPolicy",
+        "cast.setVideoStreamParams",
         "diagnostics sample"
       ],
       "capabilities": [
