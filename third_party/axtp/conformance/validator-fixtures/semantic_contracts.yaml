@@ -1,0 +1,307 @@
+tests:
+  - name: baseline_handshake_positive
+    valid: true
+    id: fixture.baseline_positive
+    title: &title Semantic validator fixture
+    since: &since spec/v0.0.2
+    level: &level core
+    profiles: &profiles [core]
+    given: &given {}
+    semantic: { kind: baseline_handshake }
+    steps: &baseline_steps
+      - { id: hello, role: input, direction: server_to_client, expect: { jsonrpc: { op: HELLO, sid: "", d: {} } } }
+      - { id: identify, role: trigger, direction: client_to_server, jsonrpc: { op: IDENTIFY, sid: "", d: {} } }
+      - { id: identified, role: observe, responseTo: identify, direction: server_to_client, expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string, minLength: 1 } } } }
+    assertions: &assertions [semantic contract holds]
+
+  - name: baseline_handshake_empty_sid
+    valid: false
+    id: fixture.baseline_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: baseline_handshake }
+    steps:
+      - { id: hello, role: input, direction: server_to_client, expect: { jsonrpc: { op: HELLO, sid: "", d: {} } } }
+      - { id: identify, role: trigger, direction: client_to_server, jsonrpc: { op: IDENTIFY, sid: "", d: {} } }
+      - { id: identified, role: observe, responseTo: identify, direction: server_to_client, expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string, minLength: 0 } } } }
+    assertions: *assertions
+
+  - name: advisory_handshake_positive
+    valid: true
+    id: fixture.advisory_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: advisory_version_handshake, requiredRows: [1.0.0->1.1.0] }
+    scenarios:
+      - name: row
+        given: { client_axtp_version: 1.1.0 }
+        steps: &advisory_steps
+          - { id: hello, role: input, direction: server_to_client, jsonrpc: { op: HELLO, sid: "", d: { axtpVersion: 1.0.0 } } }
+          - { id: identify, role: trigger, direction: client_to_server, jsonrpc: { op: IDENTIFY, sid: "", d: {} } }
+          - { id: identified_response, role: observe, responseTo: identify, captureAs: identified, direction: server_to_client, expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string, minLength: 1 } } } }
+          - { id: reidentify, role: liveness, triggeredBy: identified_response, direction: client_to_server, jsonrpc: { op: REIDENTIFY, sid: { ref: identified.sid }, d: {} } }
+          - { id: reidentified_response, role: liveness, responseTo: reidentify, captureAs: reidentified, direction: server_to_client, expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string, minLength: 1 } } } }
+        assertions: *assertions
+
+  - name: advisory_handshake_wrong_required_row
+    valid: false
+    id: fixture.advisory_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: advisory_version_handshake, requiredRows: [2.0.0->1.1.0] }
+    scenarios:
+      - name: row
+        given: { client_axtp_version: 1.1.0 }
+        steps: *advisory_steps
+        assertions: *assertions
+
+  - name: unknown_method_positive
+    valid: true
+    id: fixture.unknown_method_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: unknown_method_error }
+    steps: &unknown_method_steps
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.unknown, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: RPC_METHOD_NOT_FOUND } } }
+      - { id: live_request, role: liveness, triggeredBy: degraded, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - name: unknown_method_wrong_liveness_edge
+    valid: false
+    id: fixture.unknown_method_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: unknown_method_error }
+    steps:
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.unknown, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: RPC_METHOD_NOT_FOUND } } }
+      - { id: live_request, role: liveness, triggeredBy: request, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - &not_supported_positive
+    name: registered_method_positive
+    valid: true
+    id: fixture.registered_method_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: registered_method_unavailable }
+    steps: &not_supported_steps
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.optional, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: NOT_SUPPORTED } } }
+      - { id: live_request, role: liveness, triggeredBy: degraded, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - name: registered_method_wrong_response_id
+    valid: false
+    id: fixture.registered_method_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: registered_method_unavailable }
+    steps:
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.optional, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 9, statusCode: NOT_SUPPORTED } } }
+      - { id: live_request, role: liveness, triggeredBy: degraded, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - <<: *not_supported_positive
+    name: optional_feature_positive
+    id: fixture.optional_feature_positive
+    semantic: { kind: registered_feature_degradation }
+  - name: optional_feature_missing_liveness
+    valid: false
+    id: fixture.optional_feature_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: registered_feature_degradation }
+    steps:
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.optional, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: NOT_SUPPORTED } } }
+    assertions: *assertions
+
+  - name: invalid_params_positive
+    valid: true
+    id: fixture.invalid_params_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: { expected_validation_error: OUT_OF_RANGE }
+    semantic: { kind: invalid_params }
+    steps: &invalid_steps
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.method, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: OUT_OF_RANGE } } }
+      - { id: live_request, role: liveness, triggeredBy: degraded, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+  - name: invalid_params_not_supported
+    valid: false
+    id: fixture.invalid_params_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: { expected_validation_error: OUT_OF_RANGE }
+    semantic: { kind: invalid_params }
+    steps: *not_supported_steps
+    assertions: *assertions
+
+  - <<: *not_supported_positive
+    name: profile_degradation_positive
+    id: fixture.profile_positive
+    semantic: { kind: profile_degradation }
+  - name: profile_degradation_extraneous_response
+    valid: false
+    id: fixture.profile_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: profile_degradation }
+    steps:
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.optional, params: {} } }
+      - { id: degraded, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: NOT_SUPPORTED } } }
+      - { id: extra, role: degraded, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: NOT_SUPPORTED } } }
+      - { id: live_request, role: liveness, triggeredBy: degraded, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - name: unsubscribe_suppression_positive
+    valid: true
+    id: fixture.unsubscribe_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: &event_given { event: vendor.changed }
+    semantic: { kind: unsubscribed_event_sender_suppression }
+    steps:
+      - { id: unsubscribe, role: precondition, direction: client_to_server, jsonrpc: { op: REIDENTIFY, sid: ready, d: { eventMasks: "" } } }
+      - { id: unsubscribe_response, role: precondition, responseTo: unsubscribe, direction: server_to_client, expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string, minLength: 1 } } } }
+      - { id: request, role: trigger, triggeredBy: unsubscribe_response, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.change, params: {} } }
+      - { id: response, role: trigger, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: SUCCESS } } }
+      - { id: observation, role: observe, triggeredBy: response, direction: client_observes, expect: { no_event: { name: vendor.changed, withinMs: 50 } } }
+      - { id: live_request, role: liveness, triggeredBy: observation, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+  - name: unsubscribe_missing_precondition
+    valid: false
+    id: fixture.unsubscribe_missing_precondition
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *event_given
+    semantic: { kind: unsubscribed_event_sender_suppression }
+    steps: &suppression_steps
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.change, params: {} } }
+      - { id: response, role: trigger, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: SUCCESS } } }
+      - { id: observation, role: observe, triggeredBy: response, direction: client_observes, expect: { no_event: { name: vendor.changed, withinMs: 50 } } }
+      - { id: live_request, role: liveness, triggeredBy: observation, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+  - name: unsubscribe_wrong_observation_edge
+    valid: false
+    id: fixture.unsubscribe_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *event_given
+    semantic: { kind: unsubscribed_event_sender_suppression }
+    steps:
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.change, params: {} } }
+      - { id: response, role: trigger, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: SUCCESS } } }
+      - { id: observation, role: observe, triggeredBy: request, direction: client_observes, expect: { no_event: { name: vendor.changed, withinMs: 50 } } }
+      - { id: live_request, role: liveness, triggeredBy: observation, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - name: unsupported_event_positive
+    valid: true
+    id: fixture.unsupported_event_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *event_given
+    semantic: { kind: unsupported_event_sender_suppression }
+    steps: *suppression_steps
+    assertions: *assertions
+  - name: unsupported_event_wrong_liveness_edge
+    valid: false
+    id: fixture.unsupported_event_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *event_given
+    semantic: { kind: unsupported_event_sender_suppression }
+    steps:
+      - { id: request, role: trigger, direction: client_to_server, rpc: { op: REQUEST, requestId: 1, method: vendor.change, params: {} } }
+      - { id: response, role: trigger, responseTo: request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 1, statusCode: SUCCESS } } }
+      - { id: observation, role: observe, triggeredBy: response, direction: client_observes, expect: { no_event: { name: vendor.changed, withinMs: 50 } } }
+      - { id: live_request, role: liveness, triggeredBy: response, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+
+  - name: unknown_event_positive
+    valid: true
+    id: fixture.unknown_event_positive
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: unknown_event_receiver_tolerance }
+    steps: &unknown_event_steps
+      - { id: input, role: input, direction: peer_to_runtime, jsonrpc: { op: EVENT, sid: ready, d: { event: vendor.future } } }
+      - { id: disposition, role: observe, triggeredBy: input, direction: runtime_local, expect: { compatibility_input: { kind: compatibility_fuzz, outcome: { oneOf: [ignored, diagnostic_only] }, applicationDispatched: false, sessionState: APP_READY } } }
+      - { id: live_request, role: liveness, triggeredBy: disposition, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions
+  - name: unknown_event_wrong_disposition_edge_and_kind
+    valid: false
+    id: fixture.unknown_event_negative
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    semantic: { kind: unknown_event_receiver_tolerance }
+    steps:
+      - { id: input, role: input, direction: peer_to_runtime, jsonrpc: { op: EVENT, sid: ready, d: { event: vendor.future } } }
+      - { id: unrelated, role: precondition, direction: runtime_local, expect: { wire: { ready: true } } }
+      - { id: disposition, role: observe, triggeredBy: unrelated, direction: runtime_local, expect: { compatibility_input: { kind: unknown_event, outcome: ignored, applicationDispatched: false, sessionState: APP_READY } } }
+      - { id: live_request, role: liveness, triggeredBy: disposition, direction: client_to_server, rpc: { op: REQUEST, requestId: 2, method: vendor.live, params: {} } }
+      - { id: live_response, role: liveness, responseTo: live_request, direction: server_to_client, expect: { rpc: { op: REQUEST_RESPONSE, requestId: 2, statusCode: SUCCESS } } }
+    assertions: *assertions

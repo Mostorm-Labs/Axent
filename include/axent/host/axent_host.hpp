@@ -14,6 +14,7 @@
 #include "axent/media/media_frame.hpp"
 #include "axent/media/media_relay.hpp"
 #include "axent/media/media_subscription.hpp"
+#include "axent/media/video_stream_params.hpp"
 
 namespace axent {
 
@@ -97,6 +98,14 @@ public:
     bool publish_media_stream_event(const std::string& session_id,
                                     MediaStreamEvent event);
     bool publish_media_frame(const std::string& session_id, MediaFrame frame);
+
+    VideoStreamParamsResult set_video_stream_params(
+        const std::string& session_id,
+        const VideoStreamParamsRequest& request);
+    VideoStreamParamsState video_stream_params_state(const std::string& session_id) const;
+    VideoStreamParamsSubscriptionPtr subscribe_video_stream_params(
+        const std::string& session_id,
+        VideoStreamParamsObserver observer);
 
     ControlResult call(const std::string& session_id,
                        const std::string& method,

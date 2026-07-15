@@ -5,6 +5,10 @@
 | `0x0102` | `device.enrollmentStateChanged` | device | draft | DeviceEnrollmentStateChangedEvent |
 | `0x0402` | `firmware.updateProgressReported` | firmware | draft | FirmwareUpdateProgressEvent |
 | `0x0403` | `firmware.updateStateChanged` | firmware | draft | FirmwareUpdateStateChangedEvent |
+| `0x0501` | `stream.stateChanged` | stream | draft | StreamStateChangedEvent |
+| `0x0502` | `stream.statsReported` | stream | draft | StreamStatsReportedEvent |
+| `0x0503` | `stream.flowControlChanged` | stream | draft | StreamFlowControlChangedEvent |
+| `0x0504` | `stream.clockReport` | stream | draft | StreamClockReportEvent |
 | `0x0806` | `video.streamStateChanged` | video | draft | VideoStreamStateChangedEvent |
 | `0x0807` | `video.streamSourceStateChanged` | video | draft | VideoStreamSourceStateChangedEvent |
 | `0x0808` | `video.streamStatsReported` | video | draft | VideoStreamStatsReportedEvent |

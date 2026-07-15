@@ -1,0 +1,88 @@
+tests:
+  - name: valid_reordered_roles
+    valid: true
+    id: fixture.execution_positive
+    title: &title Execution metadata fixture
+    since: &since spec/v0.0.2
+    level: &level core
+    profiles: &profiles [core]
+    given: &given {}
+    steps:
+      - id: identified_response
+        role: observe
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string } } }
+      - id: diagnostic
+        role: observe
+        direction: runtime_local
+        expect: { wire: { diagnostic: allowed } }
+      - id: reidentify
+        role: liveness
+        direction: client_to_server
+        jsonrpc: { op: REIDENTIFY, sid: { ref: identified.sid }, d: {} }
+    assertions: &assertions [metadata contract holds]
+  - name: forward_reference
+    valid: false
+    id: fixture.execution_forward
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    steps:
+      - id: reidentify
+        direction: client_to_server
+        jsonrpc: { op: REIDENTIFY, sid: { ref: identified.sid }, d: {} }
+      - id: identified_response
+        captureAs: identified
+        direction: server_to_client
+        expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string } } }
+    assertions: *assertions
+  - name: duplicate_capture
+    valid: false
+    id: fixture.execution_duplicate_capture
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    steps:
+      - direction: server_to_client
+        captureAs: identified
+        expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string } } }
+      - direction: server_to_client
+        captureAs: identified
+        expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string } } }
+    assertions: *assertions
+  - name: invalid_capture_field
+    valid: false
+    id: fixture.execution_invalid_field
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    steps:
+      - direction: server_to_client
+        captureAs: identified
+        expect: { jsonrpc: { op: IDENTIFIED, sid: { type: string } } }
+      - direction: client_to_server
+        jsonrpc: { op: REIDENTIFY, sid: { ref: identified.requestId }, d: {} }
+    assertions: *assertions
+  - name: duplicate_step_id
+    valid: false
+    id: fixture.execution_duplicate_id
+    title: *title
+    since: *since
+    level: *level
+    profiles: *profiles
+    given: *given
+    steps:
+      - id: repeated
+        direction: runtime_local
+        expect: { wire: { first: true } }
+      - id: repeated
+        direction: runtime_local
+        expect: { wire: { second: true } }
+    assertions: *assertions

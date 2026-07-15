@@ -221,7 +221,7 @@ public:
                 if (rpc.methodOrEventId ==
                     static_cast<std::uint32_t>(axtp::MethodId::VideoGetStreamCapabilities)) {
                     ++video_capability_requests;
-                    body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast","currentState":"receiving"}]})";
+                    body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast","currentState":"receiving","frameRates":[15,25,30],"supportsReconfigure":true}]})";
                     if (fail_next_video_capabilities.exchange(false)) {
                         body = R"({"supported":false,"openModes":[],"sourceState":{"available":false,"state":"waiting"},"sources":[{"sourceId":"wireless_cast","currentState":"waiting"}]})";
                     }
@@ -230,12 +230,59 @@ public:
                     body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast_audio","currentState":"receiving","channels":[2],"sampleRates":[48000]}]})";
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::VideoOpenStream)) {
-                    ++video_open_requests;
-                    body = R"({"streamId":1,"state":"streaming","source":"wireless_cast","codec":"h264"})";
+                    const auto request_number = ++video_open_requests;
+                    const auto params = nlohmann::json::parse(
+                        std::string(rpc.body.begin(), rpc.body.end()));
+                    {
+                        std::lock_guard<std::mutex> lock(requests_mutex);
+                        video_open_params.push_back(params);
+                    }
+                    auto failures = fail_video_open_count.load();
+                    if (failures > 0 &&
+                        fail_video_open_count.compare_exchange_strong(failures, failures - 1)) {
+                        response.statusCode = axtp::ErrorCode::MediaFramerateUnsupported;
+                        body = R"({"error":"unsupported frame rate"})";
+                    } else {
+                        nlohmann::json result{
+                            {"streamId", unique_video_stream_ids ? 1000 + request_number : 1},
+                            {"state", "streaming"},
+                            {"source", "wireless_cast"},
+                            {"codec", "h264"},
+                        };
+                        if (params.contains("frameRate")) {
+                            result["frameRate"] = params["frameRate"];
+                        }
+                        body = result.dump();
+                    }
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::AudioOpenStream)) {
                     ++audio_open_requests;
                     body = R"({"streamId":2,"state":"streaming","source":"wireless_cast_audio","codec":"aac","transportFormat":"adts"})";
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::VideoCloseStream)) {
+                    ++video_close_requests;
+                    const auto params = nlohmann::json::parse(
+                        std::string(rpc.body.begin(), rpc.body.end()));
+                    {
+                        std::lock_guard<std::mutex> lock(requests_mutex);
+                        video_close_params.push_back(params);
+                    }
+                    body = nlohmann::json{
+                        {"streamId", params.at("streamId")},
+                        {"state", close_returns_closing.exchange(false) ? "closing" : "closed"},
+                        {"reason", "encodingReconfigure"},
+                    }.dump();
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::VideoGetStreamState)) {
+                    ++video_state_requests;
+                    const auto params = nlohmann::json::parse(
+                        std::string(rpc.body.begin(), rpc.body.end()));
+                    body = nlohmann::json{
+                        {"streamId", params.at("streamId")},
+                        {"state", "closed"},
+                        {"source", "wireless_cast"},
+                        {"codec", "h264"},
+                    }.dump();
                 }
                 response.body = axtp::Bytes(body.begin(), body.end());
                 if (queue_terminal_frame_before_next_response.exchange(false)) {
@@ -287,8 +334,16 @@ public:
     std::atomic<std::uint32_t> video_open_requests{0};
     std::atomic<std::uint32_t> audio_open_requests{0};
     std::atomic<std::uint32_t> video_capability_requests{0};
+    std::atomic<std::uint32_t> video_close_requests{0};
+    std::atomic<std::uint32_t> video_state_requests{0};
     std::atomic<bool> fail_next_video_capabilities{false};
     std::atomic<bool> queue_terminal_frame_before_next_response{false};
+    std::atomic<bool> close_returns_closing{false};
+    std::atomic<int> fail_video_open_count{0};
+    bool unique_video_stream_ids = false;
+    std::mutex requests_mutex;
+    std::vector<nlohmann::json> video_open_params;
+    std::vector<nlohmann::json> video_close_params;
 
 private:
     void queueBytes(axtp::Bytes bytes)
@@ -1266,6 +1321,180 @@ int main()
         require(reentrant_frames.size() == 1, "reentrant callback should receive one media frame");
     }
     require(reentrant_call_succeeded.load(), "media callback should be able to re-enter adapter call");
+
+    axent::AxtpAdapterConfig frame_rate_config = axent::AxtpAdapter::na20_defaults();
+    frame_rate_config.video_frame_rate = 25;
+    ScriptedAxtpTransport* frame_rate_scripted = nullptr;
+    auto frame_rate_adapter = axent::testing::AxtpAdapterTestSeam::make(
+        frame_rate_config, [&](const axent::transport::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->unique_video_stream_ids = true;
+            transport->close_returns_closing.store(true);
+            frame_rate_scripted = transport.get();
+            return transport;
+        });
+    std::mutex frame_rate_events_mutex;
+    std::vector<axent::MediaStreamEvent> frame_rate_events;
+    frame_rate_adapter->set_media_stream_event_callback(
+        [&](axent::MediaStreamEvent event) {
+            std::lock_guard<std::mutex> lock(frame_rate_events_mutex);
+            frame_rate_events.push_back(std::move(event));
+        });
+    require(frame_rate_adapter->open_session(
+                "hid:0581:2581:NA20-SERIAL", error),
+            "frame-rate adapter session should open");
+    require(frame_rate_scripted != nullptr &&
+                wait_for_stream_events(frame_rate_events, frame_rate_events_mutex, 2),
+            "frame-rate adapter should open initial audio and video streams");
+    {
+        std::lock_guard<std::mutex> lock(frame_rate_scripted->requests_mutex);
+        require(frame_rate_scripted->video_open_params.size() == 1 &&
+                    frame_rate_scripted->video_open_params.front().at("frameRate") == 25,
+                "startup frame rate must be forwarded to the first video.openStream");
+    }
+    const auto initial_frame_rate_descriptors =
+        frame_rate_adapter->active_media_stream_descriptors();
+    const auto initial_video = std::find_if(
+        initial_frame_rate_descriptors.begin(), initial_frame_rate_descriptors.end(),
+        [](const auto& descriptor) { return descriptor.kind == axent::MediaKind::Video; });
+    require(initial_video != initial_frame_rate_descriptors.end() &&
+                initial_video->frame_rate == 25,
+            "negotiated frame rate must be exposed on the media descriptor");
+
+    std::mutex params_updates_mutex;
+    std::vector<axent::VideoStreamParamsState> params_updates;
+    auto params_subscription = frame_rate_adapter->subscribe_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL",
+        [&](const axent::VideoStreamParamsState& update) {
+            std::lock_guard<std::mutex> lock(params_updates_mutex);
+            params_updates.push_back(update);
+        });
+    require(params_subscription != nullptr,
+            "frame-rate state subscription should be available for the active session");
+
+    axent::VideoStreamParamsRequest set_fifteen;
+    set_fifteen.frame_rate = 15;
+    const auto pending_frame_rate = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+    require(pending_frame_rate.status_code == 0 && pending_frame_rate.accepted &&
+                pending_frame_rate.state.state == axent::VideoStreamParamsStateKind::Pending &&
+                pending_frame_rate.state.phase == axent::VideoStreamParamsPhase::Closing,
+            "active frame-rate update should be accepted as pending/closing");
+    const auto concurrent_frame_rate = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+    require(concurrent_frame_rate.status_code == 0x0005 && !concurrent_frame_rate.accepted,
+            "concurrent frame-rate update should fail fast with BUSY");
+    require(wait_until([&]() {
+        return frame_rate_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL").state ==
+                axent::VideoStreamParamsStateKind::Applied;
+    }), "frame-rate close/open transaction should reach applied");
+    require(frame_rate_scripted->video_close_requests.load() == 1 &&
+                frame_rate_scripted->video_state_requests.load() >= 1 &&
+                frame_rate_scripted->video_open_requests.load() == 2 &&
+                frame_rate_scripted->audio_open_requests.load() == 1,
+            "active frame-rate update must wait for terminal close and reopen only video");
+    {
+        std::lock_guard<std::mutex> lock(frame_rate_scripted->requests_mutex);
+        require(frame_rate_scripted->video_close_params.front().at("reason") ==
+                    "encodingReconfigure" &&
+                    frame_rate_scripted->video_open_params.back().at("frameRate") == 15,
+                "reconfiguration wire parameters mismatch");
+    }
+    const auto applied_state = frame_rate_adapter->video_stream_params_state(
+        "hid:0581:2581:NA20-SERIAL");
+    require(applied_state.desired_frame_rate == 15U &&
+                applied_state.effective_frame_rate == 15U &&
+                applied_state.active_stream_id.has_value() &&
+                applied_state.previous_stream_id.has_value() &&
+                applied_state.active_stream_id != applied_state.previous_stream_id,
+            "applied state should report desired/effective fps and replacement stream ids");
+
+    const auto unchanged_frame_rate = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+    require(unchanged_frame_rate.status_code == 0 && unchanged_frame_rate.accepted &&
+                unchanged_frame_rate.state.state == axent::VideoStreamParamsStateKind::Unchanged &&
+                frame_rate_scripted->video_close_requests.load() == 1,
+            "same frame rate should return unchanged without closing the stream");
+
+    axent::VideoStreamParamsRequest reset_frame_rate;
+    reset_frame_rate.reset_frame_rate = true;
+    const auto reset_pending = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", reset_frame_rate);
+    require(reset_pending.status_code == 0 && reset_pending.accepted,
+            "frame-rate reset should be accepted");
+    require(wait_until([&]() {
+        const auto state = frame_rate_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL");
+        return state.state == axent::VideoStreamParamsStateKind::Applied &&
+            !state.desired_frame_rate.has_value();
+    }), "frame-rate reset should reopen using the source default");
+    {
+        std::lock_guard<std::mutex> lock(frame_rate_scripted->requests_mutex);
+        require(frame_rate_scripted->video_open_params.size() == 3 &&
+                    !frame_rate_scripted->video_open_params.back().contains("frameRate"),
+                "reset open must omit frameRate to restore the source/profile default");
+    }
+    require(frame_rate_scripted->audio_open_requests.load() == 1,
+            "frame-rate reset must not restart audio");
+
+    axent::VideoStreamParamsRequest invalid_frame_rate;
+    invalid_frame_rate.frame_rate = 0;
+    const auto invalid_result = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", invalid_frame_rate);
+    require(invalid_result.status_code == 0x000A && !invalid_result.accepted,
+            "zero encoder frame rate should be rejected as INVALID_ARGUMENT");
+    axent::VideoStreamParamsRequest unsupported_frame_rate;
+    unsupported_frame_rate.frame_rate = 17;
+    const auto unsupported_result = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", unsupported_frame_rate);
+    require(unsupported_result.status_code == 0x0805 && !unsupported_result.accepted,
+            "frame rate outside the advertised source profile should be rejected");
+
+    frame_rate_scripted->fail_video_open_count.store(1);
+    const auto rollback_pending = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+    require(rollback_pending.status_code == 0 && rollback_pending.accepted,
+            "rollback scenario should begin as an accepted reconfiguration");
+    require(wait_until([&]() {
+        return frame_rate_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL").state ==
+                axent::VideoStreamParamsStateKind::RolledBack;
+    }), "failed replacement open should restore the previous stream parameters");
+    const auto rolled_back_state = frame_rate_adapter->video_stream_params_state(
+        "hid:0581:2581:NA20-SERIAL");
+    require(rolled_back_state.rollback_applied &&
+                !rolled_back_state.desired_frame_rate.has_value() &&
+                rolled_back_state.active_stream_id.has_value(),
+            "rollback success should restore source-default selection and an active stream");
+    {
+        std::lock_guard<std::mutex> lock(frame_rate_scripted->requests_mutex);
+        require(frame_rate_scripted->video_open_params.size() == 5 &&
+                    frame_rate_scripted->video_open_params[3].at("frameRate") == 15 &&
+                    !frame_rate_scripted->video_open_params[4].contains("frameRate"),
+                "rollback should retry open with the previous source-default parameters");
+    }
+
+    frame_rate_scripted->fail_video_open_count.store(2);
+    const auto rollback_failure_pending = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+    require(rollback_failure_pending.status_code == 0 && rollback_failure_pending.accepted,
+            "rollback-failure scenario should begin as pending");
+    require(wait_until([&]() {
+        return frame_rate_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL").state ==
+                axent::VideoStreamParamsStateKind::Failed;
+    }), "replacement and rollback open failures should reach failed");
+    const auto rollback_failed_state = frame_rate_adapter->video_stream_params_state(
+        "hid:0581:2581:NA20-SERIAL");
+    require(!rollback_failed_state.rollback_applied &&
+                !rollback_failed_state.active_stream_id.has_value() &&
+                rollback_failed_state.last_error.has_value(),
+            "rollback failure should leave no active video stream and preserve typed error");
+    const auto after_rollback_failure = frame_rate_adapter->active_media_stream_descriptors();
+    require(after_rollback_failure.size() == 1 &&
+                after_rollback_failure.front().kind == axent::MediaKind::Audio,
+            "rollback failure must leave the unaffected audio stream active");
 
     return 0;
 }

@@ -2,13 +2,26 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://axtp.dev/schemas/conformance-case.schema.json",
   "type": "object",
-  "required": ["id", "title", "since", "level", "profiles", "given", "steps", "assertions"],
+  "required": ["id", "title", "since", "level", "profiles", "given"],
   "additionalProperties": false,
   "properties": {
     "id": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9_]+)+$" },
     "title": { "type": "string", "minLength": 1 },
     "since": { "type": "string", "pattern": "^spec/v[0-9]+\\.[0-9]+\\.[0-9]+$" },
     "level": { "type": "string", "minLength": 1 },
+    "semantic": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]+$" },
+        "requiredRows": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
     "profiles": {
       "type": "array",
       "minItems": 1,
@@ -29,16 +42,25 @@
       "minItems": 1,
       "items": { "$ref": "#/$defs/step" }
     },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    },
     "assertions": {
       "type": "array",
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
     }
   },
+  "oneOf": [
+    { "required": ["steps", "assertions"] },
+    { "required": ["scenarios"] }
+  ],
   "$defs": {
     "direction": {
       "type": "string",
-      "enum": ["client_to_server", "server_to_client", "client_observes", "runtime_local"]
+      "enum": ["client_to_server", "server_to_client", "peer_to_runtime", "client_observes", "runtime_local"]
     },
     "statusCode": {
       "oneOf": [
@@ -71,6 +93,7 @@
             "type": { "type": "string", "minLength": 1 },
             "gt": { "type": "number" },
             "gte": { "type": "number" },
+            "minLength": { "type": "integer", "minimum": 0 },
             "oneOf": {
               "type": "array",
               "minItems": 1,
@@ -113,9 +136,22 @@
       "required": ["op"],
       "additionalProperties": false,
       "properties": {
-        "sid": { "type": "string" },
+        "sid": {
+          "oneOf": [
+            { "type": "string" },
+            { "$ref": "#/$defs/valueReference" }
+          ]
+        },
         "op": { "type": "string", "minLength": 1 },
         "d": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "valueReference": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]*\\.[a-z][a-zA-Z0-9_]*$" }
       }
     },
     "expectJsonrpc": {
@@ -209,15 +245,66 @@
         },
         "methods": { "type": "object", "additionalProperties": true },
         "capability": { "type": "object", "additionalProperties": true },
-        "wire": { "type": "object", "additionalProperties": true }
+        "wire": { "type": "object", "additionalProperties": true },
+        "compatibility_input": {
+          "type": "object",
+          "required": ["kind", "outcome", "applicationDispatched", "sessionState"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "minLength": 1 },
+            "outcome": { "$ref": "#/$defs/typeExpectation" },
+            "applicationDispatched": { "type": "boolean" },
+            "sessionState": { "type": "string", "minLength": 1 }
+          }
+        },
+        "no_event": {
+          "type": "object",
+          "required": ["name", "withinMs"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "withinMs": { "type": "integer", "minimum": 1, "maximum": 10000 }
+          }
+        }
       },
       "minProperties": 1
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["name", "given", "steps", "assertions"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+        "given": {
+          "type": "object",
+          "required": ["client_axtp_version"],
+          "additionalProperties": true,
+          "properties": {
+            "client_axtp_version": { "type": "string", "minLength": 1 }
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" }
+        },
+        "assertions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
     },
     "step": {
       "type": "object",
       "required": ["direction"],
       "additionalProperties": false,
       "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "role": { "type": "string", "enum": ["precondition", "input", "trigger", "degraded", "observe", "liveness"] },
+        "captureAs": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]*$" },
+        "responseTo": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "triggeredBy": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
         "direction": { "$ref": "#/$defs/direction" },
         "rpc": { "$ref": "#/$defs/rpc" },
         "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
@@ -237,6 +324,12 @@
         { "required": ["error"] },
         { "required": ["registry_lookup"] },
         { "required": ["expect"] }
+      ],
+      "allOf": [
+        {
+          "if": { "required": ["captureAs"] },
+          "then": { "required": ["expect"] }
+        }
       ]
     }
   }

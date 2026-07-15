@@ -2,26 +2,91 @@ id: event.unsubscribe_event
 title: Reidentify can clear event subscription intent
 since: spec/v0.0.2
 level: event
+semantic:
+  kind: unsubscribed_event_sender_suppression
 profiles:
   - event
   - websocket-jsonrpc
 
 given:
   event: audio.algorithmConfigChanged
+  device_profile: audio_device
   session:
     state: identified
 
 steps:
-  - direction: client_to_server
+  - id: unsubscribe
+    role: precondition
+    direction: client_to_server
     jsonrpc:
       op: REIDENTIFY
       d:
         eventMasks: ""
 
-  - direction: server_to_client
+  - id: unsubscribe_response
+    role: precondition
+    responseTo: unsubscribe
+    direction: server_to_client
     expect:
       jsonrpc:
         op: IDENTIFIED
 
+  - id: trigger_request
+    role: trigger
+    triggeredBy: unsubscribe_response
+    direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 46
+      method: audio.setAlgorithmConfig
+      params:
+        config:
+          noiseSuppression:
+            enabled: false
+
+  - id: trigger_response
+    role: trigger
+    responseTo: trigger_request
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 46
+        statusCode: SUCCESS
+
+  - id: no_event
+    role: observe
+    triggeredBy: trigger_response
+    direction: client_observes
+    expect:
+      no_event:
+        name: audio.algorithmConfigChanged
+        withinMs: 500
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: no_event
+    direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 47
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 47
+        statusCode: SUCCESS
+
 assertions:
   - identified.op == IDENTIFIED
+  - trigger_response.statusCode == SUCCESS
+  - no audio.algorithmConfigChanged event observed within 500ms
+  - liveness_response.statusCode == SUCCESS

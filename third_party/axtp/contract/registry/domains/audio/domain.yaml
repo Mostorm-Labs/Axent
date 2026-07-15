@@ -1108,6 +1108,25 @@ types:
           item_type: string
         required: false
         description: Optional AAC transport format strings; exact supported set remains product-confirmed.
+      - id: 0x0A
+        name: supportedAudioPtsModes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional audio PTS modes such as derivedFromSeq and explicit.
+      - id: 0x0B
+        name: supportedPacketizationModes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional audio packetization modes such as fixedSamplesPerPacket.
+      - id: 0x0C
+        name: supportsSourceCaptureTimestampCursor
+        type: bool
+        required: false
+        description: Whether STREAM cursorUnit sourceCaptureTimestampUs is supported.
 
   AudioStreamSource:
     kind: object
@@ -1238,6 +1257,42 @@ types:
         type: uint32
         required: false
         description: Preferred maximum STREAM payload data size.
+      - id: 0x10
+        name: audioPtsMode
+        type: enum
+        required: false
+        default: derivedFromSeq
+        description: Audio PTS mode; NA20/NT10 MVP uses derivedFromSeq.
+      - id: 0x11
+        name: timebase
+        type: uint32
+        required: false
+        default: 48000
+        description: Audio PTS timebase in ticks per second.
+      - id: 0x12
+        name: samplesPerPacket
+        type: uint32
+        required: false
+        default: 1024
+        description: Fixed samples consumed by each STREAM packet when packetizationMode is fixedSamplesPerPacket.
+      - id: 0x13
+        name: firstMediaSeqId
+        type: uint32
+        required: false
+        default: 0
+        description: First STREAM seqId used as the base for derived audio PTS.
+      - id: 0x14
+        name: audioPtsBase
+        type: uint64
+        required: false
+        default: 0
+        description: Audio PTS value corresponding to firstMediaSeqId.
+      - id: 0x15
+        name: packetizationMode
+        type: enum
+        required: false
+        default: fixedSamplesPerPacket
+        description: Audio packetization mode; NA20/NT10 MVP uses fixedSamplesPerPacket.
 
   AudioOpenStreamResult:
     kind: object
@@ -1329,6 +1384,36 @@ types:
         type: uint32
         required: false
         description: Negotiated maximum STREAM payload data size.
+      - id: 0x11
+        name: audioPtsMode
+        type: enum
+        required: false
+        description: Negotiated audio PTS mode.
+      - id: 0x12
+        name: timebase
+        type: uint32
+        required: false
+        description: Negotiated audio PTS timebase in ticks per second.
+      - id: 0x13
+        name: samplesPerPacket
+        type: uint32
+        required: false
+        description: Fixed samples consumed by each STREAM packet when packetizationMode is fixedSamplesPerPacket.
+      - id: 0x14
+        name: firstMediaSeqId
+        type: uint32
+        required: false
+        description: First STREAM seqId used as the base for derived audio PTS.
+      - id: 0x15
+        name: audioPtsBase
+        type: uint64
+        required: false
+        description: Audio PTS value corresponding to firstMediaSeqId.
+      - id: 0x16
+        name: packetizationMode
+        type: enum
+        required: false
+        description: Negotiated audio packetization mode.
 
   AudioCloseStreamParams:
     kind: object

@@ -1,0 +1,78 @@
+id: event.unsupported_capability_not_emitted
+title: Sender does not emit an event whose capability is absent
+since: spec/v0.0.2
+level: event
+semantic:
+  kind: unsupported_event_sender_suppression
+profiles:
+  - event
+  - core
+
+given:
+  device_profile: eventless_audio_device
+  capability: audio.algorithm
+  event: audio.algorithmConfigChanged
+  event_capability_available: false
+  session:
+    state: identified
+
+steps:
+  - id: trigger_request
+    direction: client_to_server
+    role: trigger
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 51
+      method: audio.setAlgorithmConfig
+      params:
+        config:
+          noiseSuppression:
+            enabled: false
+
+  - id: trigger_response
+    responseTo: trigger_request
+    direction: server_to_client
+    role: trigger
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 51
+        statusCode: SUCCESS
+
+  - id: no_event
+    triggeredBy: trigger_response
+    direction: client_observes
+    role: observe
+    expect:
+      no_event:
+        name: audio.algorithmConfigChanged
+        withinMs: 500
+
+  - id: liveness_request
+    triggeredBy: no_event
+    direction: client_to_server
+    role: liveness
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 52
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - id: liveness_response
+    responseTo: liveness_request
+    direction: server_to_client
+    role: liveness
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 52
+        statusCode: SUCCESS
+
+assertions:
+  - capability.events does not contain "audio.algorithmConfigChanged"
+  - trigger_response.statusCode == SUCCESS
+  - no audio.algorithmConfigChanged event observed within 500ms
+  - liveness_response.statusCode == SUCCESS
+  - session.state == identified

@@ -52,7 +52,7 @@ Schema 规则：
 
 1. Required fields MUST present，即必需字段必须出现在编码数据中。
 2. Optional fields MAY omitted；接收方只在 schema 声明 default 时应用默认值。
-3. Unknown optional fields MUST 可跳过。
+3. Unknown、structurally valid optional fields MUST 可跳过；成功跳过字段 MUST NOT 使 message 或 session 失效。
 4. Object fields 引用 built-in types 或 named schemas。
 5. Array fields MUST 声明 item type，并在适用时声明 item schema。
 6. Empty request/response 使用已注册的 Empty schema。
@@ -69,6 +69,8 @@ Capability 规则：
 3. Capability references MUST 解析到已注册的 method/event/schema/profile facts。
 4. Capability discovery 如果被采纳，是 RPC business method；它不是 CONTROL。
 5. Unknown optional capability fields MUST 按 SDK policy 忽略或保留。
+
+Capability/profile compatibility 在 semantic validation 层执行，而不是用 peer 的 `axtpVersion` 选择 codec。Known field 请求当前 capability/profile 不支持的 optional feature 时，包含它的 method MUST 返回 `NOT_SUPPORTED`；decoder MUST 保持 session 可用，并继续处理后续受支持的 message。
 
 完整 capability reflection、capability trees 和复杂 profile negotiation 属于 future 或单独采纳的业务协议，除非已经出现在 generated contract 中。
 
@@ -126,6 +128,9 @@ Runtime 或 generated codec MUST 校验 numeric ranges、UTF-8 strings、enum/bi
 Unknown-field policy：
 
 - Unknown TLV fields 只要 length 有效，MUST 被 forward-compatible decoder 跳过。
+- Unknown JSON/CBOR/MSGPACK optional object fields 只要 structurally valid，也 MUST 被 forward-compatible decoder 忽略或按 SDK policy 保留。
 - Unknown enum 或 bitmap values 在可能时 MUST 为诊断保留；strict business validation MAY 在 decode 后拒绝。
 - Defaults 只在 successful decode 后应用，并且只在 schema 声明 default 时应用。
 - Deprecated fields MAY 为兼容性发出，但新发送方 SHOULD NOT 依赖它们。
+
+成功跳过 unknown optional field 后，receiver MUST 继续处理已知字段，并 MUST 保持 session 与不相关 RPC 可用。Unknown event payload 也遵循相同 liveness 原则：无法解析为已注册 event 时忽略或记录 diagnostics，不得关闭 session。

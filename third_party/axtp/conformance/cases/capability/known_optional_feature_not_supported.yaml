@@ -1,0 +1,57 @@
+id: capability.known_optional_feature_not_supported
+title: Known unsupported optional feature returns exact NOT_SUPPORTED
+since: spec/v0.0.2
+level: capability
+semantic:
+  kind: registered_feature_degradation
+profiles:
+  - capability
+  - core
+
+given:
+  device_profile: audio_device
+  capability: audio.algorithm
+  optional_feature: autoGainControl
+  registered: true
+  available: false
+
+steps:
+  - id: feature_request
+    direction: client_to_server
+    role: trigger
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 48
+      method: audio.setAlgorithmConfig
+      params:
+        config:
+          autoGainControl:
+            enabled: true
+
+  - id: degraded_response
+    responseTo: feature_request
+    direction: server_to_client
+    role: degraded
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 48
+        statusCode: NOT_SUPPORTED
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: degraded_response
+    direction: client_to_server
+    rpc: { encoding: json, op: REQUEST, requestId: 53, method: audio.getAlgorithmConfig, params: {} }
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect: { rpc: { op: REQUEST_RESPONSE, requestId: 53, statusCode: SUCCESS } }
+
+assertions:
+  - capability.feature("autoGainControl").registered == true
+  - capability.feature("autoGainControl").supported == false
+  - response.statusCode == NOT_SUPPORTED

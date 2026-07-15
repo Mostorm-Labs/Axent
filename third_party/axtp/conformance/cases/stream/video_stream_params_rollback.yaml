@@ -1,0 +1,323 @@
+id: stream.video_stream_params_rollback
+title: Failed NT10 video reconfiguration rolls back old parameters or reports no active stream
+since: spec/v0.0.2
+level: stream
+profiles:
+  - stream
+  - framed-binary
+
+given:
+  session:
+    state: identified
+    id: cast-session-17
+  source:
+    id: wireless_cast_video
+    frameRates: [1, 24, 30, 60]
+    bitratesKbps: [256, 4000, 6000, 12000]
+    supportsReconfigure: true
+  capability:
+    cast.flowControl:
+      supportsVideoStreamParams: true
+      supportsActiveVideoReconfigure: true
+
+scenarios:
+  - name: reopen_failure_rolls_back
+    given:
+      client_axtp_version: 1.0.0
+      session_state: identified
+      active_video_stream:
+        streamId: 5001
+        frameRate: 25
+        bitrateKbps: 4000
+        sessionId: cast-session-17
+        castSessionId: cast-session-17
+        syncGroupId: cast-av-17
+      reopen_failure: MEDIA_BITRATE_UNSUPPORTED
+    steps:
+      - id: set_params
+        role: trigger
+        direction: client_to_server
+        rpc:
+          op: REQUEST
+          requestId: 650
+          method: cast.setVideoStreamParams
+          params:
+            sessionId: cast-session-17
+            frameRate: 30
+            bitrateKbps: 6000
+
+      - id: set_pending
+        role: observe
+        responseTo: set_params
+        direction: server_to_client
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 650
+            result:
+              accepted: true
+              state: pending
+
+      - id: close_old
+        role: observe
+        triggeredBy: set_pending
+        direction: server_to_client
+        rpc:
+          op: REQUEST
+          requestId: 651
+          method: video.closeStream
+          params:
+            streamId: 5001
+            reason: encodingReconfigure
+
+      - id: close_old_result
+        role: observe
+        responseTo: close_old
+        direction: client_to_server
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 651
+            statusCode: SUCCESS
+            result:
+              streamId: 5001
+              state: closed
+
+      - id: open_new
+        role: observe
+        triggeredBy: close_old_result
+        direction: server_to_client
+        rpc:
+          op: REQUEST
+          requestId: 652
+          method: video.openStream
+          params:
+            source: wireless_cast_video
+            peerRole: transmitter
+            codec: h264
+            streamProfile: media.video
+            castSessionId: cast-session-17
+            syncGroupId: cast-av-17
+            frameRate: 30
+            bitrateKbps: 6000
+
+      - id: open_new_failed
+        role: observe
+        responseTo: open_new
+        direction: client_to_server
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 652
+            statusCode: MEDIA_BITRATE_UNSUPPORTED
+
+      - id: rollback_open
+        role: observe
+        triggeredBy: open_new_failed
+        direction: server_to_client
+        rpc:
+          op: REQUEST
+          requestId: 653
+          method: video.openStream
+          params:
+            source: wireless_cast_video
+            peerRole: transmitter
+            codec: h264
+            streamProfile: media.video
+            castSessionId: cast-session-17
+            syncGroupId: cast-av-17
+            frameRate: 25
+            bitrateKbps: 4000
+
+      - id: rollback_open_result
+        role: observe
+        responseTo: rollback_open
+        direction: client_to_server
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 653
+            statusCode: SUCCESS
+            result:
+              streamId: 5002
+              frameRate: 25
+              bitrateKbps: 4000
+
+      - id: state_request
+        role: liveness
+        triggeredBy: rollback_open_result
+        direction: client_to_server
+        rpc:
+          op: REQUEST
+          requestId: 654
+          method: cast.getFlowControlState
+          params: {}
+
+      - id: state_result
+        role: observe
+        responseTo: state_request
+        direction: server_to_client
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 654
+            statusCode: SUCCESS
+            result:
+              sourceVideo:
+                type: object
+
+    assertions:
+      - open_new_failed.statusCode == MEDIA_BITRATE_UNSUPPORTED
+      - rollback_open.params.frameRate == 25
+      - rollback_open.params.bitrateKbps == 4000
+      - rollback_open_result.result.streamId == 5002
+      - state_result.result.sourceVideo.state == rolledBack
+      - state_result.result.sourceVideo.rollbackApplied == true
+      - state_result.result.sourceVideo.activeStreamId == 5002
+
+  - name: rollback_failure_leaves_stream_inactive
+    given:
+      client_axtp_version: 1.0.0
+      session_state: identified
+      active_video_stream:
+        streamId: 5101
+        frameRate: 25
+        bitrateKbps: 4000
+        sessionId: cast-session-17
+        castSessionId: cast-session-17
+        syncGroupId: cast-av-17
+      reopen_failure: MEDIA_STREAM_START_FAILED
+      rollback_failure: MEDIA_STREAM_START_FAILED
+    steps:
+      - id: set_params
+        role: trigger
+        direction: client_to_server
+        rpc:
+          op: REQUEST
+          requestId: 660
+          method: cast.setVideoStreamParams
+          params:
+            sessionId: cast-session-17
+            frameRate: 30
+            bitrateKbps: 6000
+
+      - id: set_pending
+        role: observe
+        responseTo: set_params
+        direction: server_to_client
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 660
+            result:
+              accepted: true
+              state: pending
+
+      - id: close_old
+        role: observe
+        triggeredBy: set_pending
+        direction: server_to_client
+        rpc:
+          op: REQUEST
+          requestId: 661
+          method: video.closeStream
+          params:
+            streamId: 5101
+            reason: encodingReconfigure
+
+      - id: close_old_result
+        role: observe
+        responseTo: close_old
+        direction: client_to_server
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 661
+            statusCode: SUCCESS
+
+      - id: open_new
+        role: observe
+        triggeredBy: close_old_result
+        direction: server_to_client
+        rpc:
+          op: REQUEST
+          requestId: 662
+          method: video.openStream
+          params:
+            source: wireless_cast_video
+            peerRole: transmitter
+            codec: h264
+            streamProfile: media.video
+            castSessionId: cast-session-17
+            syncGroupId: cast-av-17
+            frameRate: 30
+            bitrateKbps: 6000
+
+      - id: open_new_failed
+        role: observe
+        responseTo: open_new
+        direction: client_to_server
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 662
+            statusCode: MEDIA_STREAM_START_FAILED
+
+      - id: rollback_open
+        role: observe
+        triggeredBy: open_new_failed
+        direction: server_to_client
+        rpc:
+          op: REQUEST
+          requestId: 663
+          method: video.openStream
+          params:
+            source: wireless_cast_video
+            peerRole: transmitter
+            codec: h264
+            streamProfile: media.video
+            castSessionId: cast-session-17
+            syncGroupId: cast-av-17
+            frameRate: 25
+            bitrateKbps: 4000
+
+      - id: rollback_open_failed
+        role: observe
+        responseTo: rollback_open
+        direction: client_to_server
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 663
+            statusCode: MEDIA_STREAM_START_FAILED
+
+      - id: state_request
+        role: liveness
+        triggeredBy: rollback_open_failed
+        direction: client_to_server
+        rpc:
+          op: REQUEST
+          requestId: 664
+          method: cast.getFlowControlState
+          params: {}
+
+      - id: state_result
+        role: observe
+        responseTo: state_request
+        direction: server_to_client
+        expect:
+          rpc:
+            op: REQUEST_RESPONSE
+            requestId: 664
+            statusCode: SUCCESS
+            result:
+              sourceVideo:
+                type: object
+
+    assertions:
+      - open_new_failed.statusCode == MEDIA_STREAM_START_FAILED
+      - rollback_open_failed.statusCode == MEDIA_STREAM_START_FAILED
+      - state_result.result.sourceVideo.state == failed
+      - state_result.result.sourceVideo.rollbackApplied == false
+      - state_result.result.sourceVideo.activeStreamId is absent
+      - no active video stream remains after rollback failure

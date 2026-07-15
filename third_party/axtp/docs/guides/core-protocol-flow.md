@@ -114,7 +114,7 @@ stateDiagram-v2
 | ACK/NACK 边界 | Phase 1 只保留字段和 opcode，不实现严格重传。 |
 | Hello 方向 | 永远由 Logical Server 发送。 |
 | Identify | 新会话 `sid=""`，必须携带 `randomSeed:uint32`。 |
-| Identified | 客户端保存 8 位 hex `sid`，后续 RPC 都携带它。 |
+| Identified | AXTP-native server 生成 8 位 hex `sid`；客户端保存实际返回的非空 `sid` 字符串，后续 RPC 精确携带它。 |
 | Request gating | Identified 前不得发送业务 Request。 |
 | Generated 边界 | APP_READY 后只能调用已采纳并生成的 method。 |
 | STREAM 边界 | 只有 Standard Framed runtime 处理 STREAM；WebSocket JSON 不承载 STREAM。 |

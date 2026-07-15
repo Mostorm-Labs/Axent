@@ -1,0 +1,116 @@
+id: stream.video_stream_params_precedence
+title: Explicit video.openStream parameters override session defaults without persisting
+since: spec/v0.0.2
+level: stream
+profiles:
+  - stream
+  - framed-binary
+
+given:
+  session:
+    state: identified
+    id: cast-session-18
+    video_params:
+      frameRate: 30
+      bitrateKbps: 6000
+  source:
+    id: wireless_cast_video
+    state: receiving
+    active_video_stream: false
+    frameRates: [1, 24, 30, 60]
+    bitratesKbps: [256, 4000, 6000, 12000]
+    supportsReconfigure: true
+  capability:
+    cast.flowControl:
+      supportsVideoStreamParams: true
+
+steps:
+  - id: set_session_defaults
+    role: input
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 640
+      method: cast.setVideoStreamParams
+      params:
+        sessionId: cast-session-18
+        frameRate: 30
+        bitrateKbps: 6000
+
+  - id: set_session_defaults_result
+    role: observe
+    responseTo: set_session_defaults
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 640
+        statusCode: SUCCESS
+        result:
+          accepted: true
+          state: applied
+
+  - id: explicit_open
+    role: trigger
+    triggeredBy: set_session_defaults_result
+    direction: server_to_client
+    rpc:
+      op: REQUEST
+      requestId: 641
+      method: video.openStream
+      params:
+        source: wireless_cast_video
+        peerRole: transmitter
+        codec: h264
+        streamProfile: media.video
+        castSessionId: cast-session-18
+        frameRate: 60
+        bitrateKbps: 12000
+
+  - id: explicit_open_result
+    role: observe
+    responseTo: explicit_open
+    direction: client_to_server
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 641
+        statusCode: SUCCESS
+        result:
+          streamId:
+            gt: 0
+          frameRate: 60
+          bitrateKbps: 12000
+
+  - id: get_session_state
+    role: liveness
+    triggeredBy: explicit_open_result
+    direction: client_to_server
+    rpc:
+      op: REQUEST
+      requestId: 642
+      method: cast.getFlowControlState
+      params:
+        sessionId: cast-session-18
+
+  - id: session_state_result
+    role: observe
+    responseTo: get_session_state
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 642
+        statusCode: SUCCESS
+        result:
+          sourceVideo:
+            type: object
+
+assertions:
+  - explicit_open.params.frameRate == 60
+  - explicit_open.params.bitrateKbps == 12000
+  - explicit_open_result.result.frameRate == 60
+  - explicit_open_result.result.bitrateKbps == 12000
+  - session_state_result.result.sourceVideo.desiredFrameRate == 30
+  - session_state_result.result.sourceVideo.desiredBitrateKbps == 6000
+  - explicit video.openStream values do not write back to session defaults

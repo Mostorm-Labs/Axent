@@ -1,0 +1,641 @@
+domain: stream
+description: Shared STREAM data-plane runtime control, statistics, and timing diagnostics.
+
+methods:
+  - id: 0x0501
+    name: stream.getCapabilities
+    domain: stream
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Return common STREAM runtime flow-control, statistics, and clock-report capabilities.
+    rpc_op: request_response
+    request_schema: Empty
+    response_schema: StreamFlowControlCapabilities
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    errors: [SUCCESS, NOT_SUPPORTED, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0502
+    name: stream.getState
+    domain: stream
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Return runtime state for one STREAM context, or aggregate runtime state when streamId is omitted.
+    rpc_op: request_response
+    request_schema: StreamSelector
+    response_schema: StreamState
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    errors: [SUCCESS, STREAM_NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0503
+    name: stream.getStats
+    domain: stream
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Return bounded transport-level statistics for one STREAM context, or aggregate statistics when streamId is omitted.
+    rpc_op: request_response
+    request_schema: StreamSelector
+    response_schema: StreamStats
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    errors: [SUCCESS, STREAM_NOT_FOUND, PERMISSION_DENIED, UNAVAILABLE]
+
+  - id: 0x0504
+    name: stream.ack
+    domain: stream
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Acknowledge received STREAM packet ranges so the sender can release flow-control window.
+    rpc_op: request_response
+    request_schema: StreamAckParams
+    response_schema: StreamAckResult
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    events: [stream.flowControlChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, STREAM_CLOSED, INVALID_ARGUMENT, INVALID_STATE, BUSY]
+
+  - id: 0x0505
+    name: stream.windowUpdate
+    domain: stream
+    status: draft
+    bitOffset: 4
+    since: 1.0.0
+    description: Update receive window or sender credit for an existing STREAM context.
+    rpc_op: request_response
+    request_schema: StreamWindowUpdateParams
+    response_schema: StreamWindowUpdateResult
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    events: [stream.flowControlChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, STREAM_CLOSED, INVALID_ARGUMENT, INVALID_STATE, BUSY]
+
+  - id: 0x0506
+    name: stream.pause
+    domain: stream
+    status: draft
+    bitOffset: 5
+    since: 1.0.0
+    description: Pause data-plane sending for an existing STREAM context without closing the owning media or transfer profile.
+    rpc_op: request_response
+    request_schema: StreamPauseParams
+    response_schema: StreamActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    events: [stream.flowControlChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, STREAM_CLOSED, INVALID_ARGUMENT, INVALID_STATE, BUSY]
+
+  - id: 0x0507
+    name: stream.resume
+    domain: stream
+    status: draft
+    bitOffset: 6
+    since: 1.0.0
+    description: Resume data-plane sending for a paused STREAM context.
+    rpc_op: request_response
+    request_schema: StreamResumeParams
+    response_schema: StreamActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    events: [stream.flowControlChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, STREAM_CLOSED, INVALID_ARGUMENT, INVALID_STATE, BUSY]
+
+  - id: 0x0508
+    name: stream.abort
+    domain: stream
+    status: draft
+    bitOffset: 7
+    since: 1.0.0
+    description: Abort an existing STREAM runtime context on an exceptional path; normal business close remains profile-specific.
+    rpc_op: request_response
+    request_schema: StreamAbortParams
+    response_schema: StreamActionResult
+    recommended_encoding: [json, tlv]
+    capabilities: [stream.flowControl]
+    events: [stream.stateChanged]
+    errors: [SUCCESS, STREAM_NOT_FOUND, STREAM_CLOSED, INVALID_ARGUMENT, INVALID_STATE, BUSY]
+
+events:
+  - id: 0x0501
+    name: stream.stateChanged
+    domain: stream
+    status: draft
+    bitOffset: 0
+    since: 1.0.0
+    description: Emitted when common STREAM runtime state changes or an abort converges.
+    event_schema: StreamStateChangedEvent
+    severity: info
+    trigger: [stream.abort, runtime state change]
+    capabilities: [stream.flowControl]
+
+  - id: 0x0502
+    name: stream.statsReported
+    domain: stream
+    status: draft
+    bitOffset: 1
+    since: 1.0.0
+    description: Emitted with bounded STREAM runtime statistics for diagnostics.
+    event_schema: StreamStatsReportedEvent
+    severity: info
+    trigger: [stream statistics interval, diagnostic sampling]
+    capabilities: [stream.flowControl]
+
+  - id: 0x0503
+    name: stream.flowControlChanged
+    domain: stream
+    status: draft
+    bitOffset: 2
+    since: 1.0.0
+    description: Emitted when ACK, window, pause, or resume changes STREAM sending conditions.
+    event_schema: StreamFlowControlChangedEvent
+    severity: info
+    trigger: [stream.ack, stream.windowUpdate, stream.pause, stream.resume]
+    capabilities: [stream.flowControl]
+
+  - id: 0x0504
+    name: stream.clockReport
+    domain: stream
+    status: draft
+    bitOffset: 3
+    since: 1.0.0
+    description: Emitted as a latest-wins timing sample that anchors source media PTS to source and relay monotonic clocks.
+    event_schema: StreamClockReportEvent
+    severity: info
+    trigger: [source clock report, relay diagnostic sampling]
+    capabilities: [stream.flowControl]
+
+types:
+  StreamFlowControlCapabilities:
+    kind: object
+    description: Common STREAM runtime flow-control and diagnostics capability summary.
+    fields:
+      - id: 0x01
+        name: capability
+        type: string
+        required: true
+        max_length: 32
+        description: Fixed capability name stream.flowControl.
+      - id: 0x02
+        name: supportsAck
+        type: bool
+        required: true
+        description: Whether stream.ack is supported.
+      - id: 0x03
+        name: supportsWindowUpdate
+        type: bool
+        required: true
+        description: Whether stream.windowUpdate is supported.
+      - id: 0x04
+        name: supportsPauseResume
+        type: bool
+        required: true
+        description: Whether stream.pause and stream.resume are supported.
+      - id: 0x05
+        name: supportsAbort
+        type: bool
+        required: true
+        description: Whether stream.abort is supported.
+      - id: 0x06
+        name: supportsStats
+        type: bool
+        required: true
+        description: Whether stream.getState, stream.getStats, and stats events are supported.
+      - id: 0x07
+        name: supportsClockReport
+        type: bool
+        required: true
+        description: Whether stream.clockReport timing samples are supported.
+      - id: 0x08
+        name: defaultWindowBytes
+        type: uint32
+        required: false
+        description: Default receive window in bytes, if advertised.
+      - id: 0x09
+        name: clockReportIntervalMs
+        type: uint32
+        required: false
+        description: Suggested clock-report interval in milliseconds.
+
+  StreamSelector:
+    kind: object
+    description: Selector for a STREAM runtime context; omit streamId for aggregate state when the method allows it.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: false
+        description: STREAM data-plane stream identifier.
+
+  StreamState:
+    kind: object
+    description: Common runtime state for a STREAM context or aggregate stream runtime.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: false
+        description: STREAM data-plane stream identifier, omitted for aggregate state.
+      - id: 0x02
+        name: state
+        type: enum
+        required: true
+        enum: [opening, streaming, paused, draining, closing, closed, aborted, failed, aggregate]
+        description: Common STREAM runtime state.
+      - id: 0x03
+        name: paused
+        type: bool
+        required: false
+        description: Whether data-plane sending is currently paused.
+      - id: 0x04
+        name: windowBytes
+        type: uint32
+        required: false
+        description: Current advertised receive window or sender credit in bytes.
+      - id: 0x05
+        name: ackedSeqId
+        type: uint32
+        required: false
+        description: Highest contiguous STREAM seqId acknowledged by the receiver.
+      - id: 0x06
+        name: lastSeqId
+        type: uint32
+        required: false
+        description: Last observed or sent STREAM seqId.
+      - id: 0x07
+        name: lastCursor
+        type: uint64
+        required: false
+        description: Last observed STREAM cursor value.
+      - id: 0x08
+        name: reason
+        type: enum
+        required: false
+        enum: [ack, windowUpdate, pause, resume, abort, timeout, peerClosed, transportLost, diagnosticSample, unknown]
+        description: Reason associated with the current state or last state change.
+
+  StreamStats:
+    kind: object
+    description: Bounded STREAM transport-level runtime statistics.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: false
+        description: STREAM data-plane stream identifier, omitted for aggregate stats.
+      - id: 0x02
+        name: packets
+        type: uint64
+        required: false
+        description: Number of STREAM packets observed.
+      - id: 0x03
+        name: bytes
+        type: uint64
+        required: false
+        description: Number of STREAM payload bytes observed.
+      - id: 0x04
+        name: droppedPackets
+        type: uint64
+        required: false
+        description: Number of dropped STREAM packets.
+      - id: 0x05
+        name: seqGaps
+        type: uint64
+        required: false
+        description: Number of detected seqId gaps.
+      - id: 0x06
+        name: jitterMs
+        type: uint32
+        required: false
+        description: Estimated transport jitter in milliseconds.
+      - id: 0x07
+        name: lastSeqId
+        type: uint32
+        required: false
+        description: Last observed STREAM seqId.
+      - id: 0x08
+        name: lastCursor
+        type: uint64
+        required: false
+        description: Last observed STREAM cursor value.
+      - id: 0x09
+        name: latestClockReportAgeMs
+        type: uint32
+        required: false
+        description: Age of the latest clock report sample known to the receiver.
+
+  StreamAckParams:
+    kind: object
+    description: Request payload for acknowledging received STREAM packet ranges.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data-plane stream identifier.
+      - id: 0x02
+        name: ackedSeqId
+        type: uint32
+        required: true
+        description: Highest contiguous STREAM seqId received.
+      - id: 0x03
+        name: ackedCursor
+        type: uint64
+        required: false
+        description: Optional cursor value associated with ackedSeqId.
+      - id: 0x04
+        name: missingSeqIds
+        type: array
+        array:
+          item_type: uint32
+        required: false
+        description: Optional sparse list of missing seqId values for diagnostics.
+
+  StreamAckResult:
+    kind: object
+    description: Result of a STREAM ACK update.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the ACK update was accepted.
+      - id: 0x02
+        name: state
+        type: StreamState
+        required: false
+        description: Updated STREAM runtime state, when returned.
+
+  StreamWindowUpdateParams:
+    kind: object
+    description: Request payload for updating receive window or sender credit.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data-plane stream identifier.
+      - id: 0x02
+        name: windowBytes
+        type: uint32
+        required: true
+        description: Advertised receive window or sender credit in bytes.
+      - id: 0x03
+        name: reason
+        type: enum
+        required: false
+        enum: [bufferAvailable, bufferPressure, manualFlowControl, diagnosticSample, unknown]
+        description: Reason for the window update.
+
+  StreamWindowUpdateResult:
+    kind: object
+    description: Result of a STREAM window update.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the window update was accepted.
+      - id: 0x02
+        name: state
+        type: StreamState
+        required: false
+        description: Updated STREAM runtime state, when returned.
+
+  StreamPauseParams:
+    kind: object
+    description: Request payload for pausing a STREAM runtime context.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data-plane stream identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        enum: [bufferPressure, userRequest, diagnostic, unknown]
+        description: Pause reason.
+
+  StreamResumeParams:
+    kind: object
+    description: Request payload for resuming a STREAM runtime context.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data-plane stream identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        enum: [bufferAvailable, userRequest, diagnostic, unknown]
+        description: Resume reason.
+
+  StreamAbortParams:
+    kind: object
+    description: Request payload for aborting a STREAM runtime context.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data-plane stream identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        enum: [timeout, peerClosed, transportLost, userRequest, profileFailure, unknown]
+        description: Abort reason.
+      - id: 0x03
+        name: message
+        type: string
+        required: false
+        max_length: 256
+        description: Optional diagnostic message.
+
+  StreamActionResult:
+    kind: object
+    description: Result of a pause, resume, or abort action.
+    fields:
+      - id: 0x01
+        name: accepted
+        type: bool
+        required: true
+        description: Whether the action was accepted.
+      - id: 0x02
+        name: state
+        type: StreamState
+        required: false
+        description: Updated STREAM runtime state, when returned.
+
+  StreamStateChangedEvent:
+    kind: object
+    description: Event payload for common STREAM runtime state changes.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: false
+        description: STREAM data-plane stream identifier, omitted for aggregate state changes.
+      - id: 0x02
+        name: state
+        type: StreamState
+        required: true
+        description: New STREAM runtime state.
+
+  StreamStatsReportedEvent:
+    kind: object
+    description: Event payload for common STREAM statistics reports.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: false
+        description: STREAM data-plane stream identifier, omitted for aggregate stats.
+      - id: 0x02
+        name: stats
+        type: StreamStats
+        required: true
+        description: Bounded STREAM transport-level statistics.
+
+  StreamFlowControlChangedEvent:
+    kind: object
+    description: Event payload for ACK, window, pause, or resume changes.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: true
+        description: STREAM data-plane stream identifier.
+      - id: 0x02
+        name: reason
+        type: enum
+        required: false
+        enum: [ack, windowUpdate, pause, resume, bufferPressure, bufferAvailable, diagnosticSample, unknown]
+        description: Flow-control change reason.
+      - id: 0x03
+        name: state
+        type: StreamState
+        required: false
+        description: Updated STREAM runtime state, when returned.
+
+  StreamClockMediaAnchor:
+    kind: object
+    description: One media timeline anchor carried by stream.clockReport.
+    fields:
+      - id: 0x01
+        name: streamId
+        type: uint32
+        required: false
+        description: STREAM data-plane stream identifier for this media timeline.
+      - id: 0x02
+        name: mediaPts
+        type: uint64
+        required: true
+        description: Media PTS at the anchor point; audio derivedFromSeq uses sample-count PTS, video sameAsCursor uses capture timestamp PTS.
+      - id: 0x03
+        name: timebase
+        type: uint32
+        required: true
+        description: Media PTS timebase in ticks per second, such as 48000 for audio or 1000000 for video.
+      - id: 0x04
+        name: anchorNt10MonotonicUs
+        type: uint64
+        required: true
+        description: NT10 source monotonic timestamp corresponding to mediaPts.
+      - id: 0x05
+        name: seqId
+        type: uint32
+        required: false
+        description: Optional STREAM seqId associated with the media anchor.
+      - id: 0x06
+        name: cursor
+        type: uint64
+        required: false
+        description: Optional STREAM cursor associated with the media anchor.
+
+  StreamClockReportEvent:
+    kind: object
+    description: Latest-wins timing sample linking NT10 media anchors, NT10 source clock, NA20 relay clock, and receiver arrival time.
+    fields:
+      - id: 0x01
+        name: reportSeq
+        type: uint32
+        required: true
+        description: Source or relay report sequence number.
+      - id: 0x02
+        name: syncGroupId
+        type: string
+        required: false
+        max_length: 128
+        description: Synchronization group that links related audio and video streams.
+      - id: 0x03
+        name: sourceDeviceId
+        type: string
+        required: false
+        max_length: 128
+        description: Source device identifier, such as NT10.
+      - id: 0x04
+        name: sourceClockDomain
+        type: string
+        required: false
+        max_length: 128
+        description: Source monotonic clock domain for this report.
+      - id: 0x05
+        name: nt10ReportMonotonicUs
+        type: uint64
+        required: true
+        description: NT10 source monotonic timestamp sampled when the report was produced.
+      - id: 0x06
+        name: sentAtNt10MonotonicUs
+        type: uint64
+        required: false
+        description: NT10 source monotonic timestamp sampled when the report was sent to NA20.
+      - id: 0x07
+        name: na20ReceivedAtUs
+        type: uint64
+        required: false
+        description: NA20 monotonic timestamp sampled when the source report or associated media anchor was received.
+      - id: 0x08
+        name: na20SentAtUs
+        type: uint64
+        required: false
+        description: NA20 monotonic timestamp sampled when the AXTP event was sent to MediaHost.
+      - id: 0x09
+        name: audio
+        type: StreamClockMediaAnchor
+        required: false
+        description: Optional audio media timeline anchor.
+      - id: 0x0A
+        name: video
+        type: StreamClockMediaAnchor
+        required: false
+        description: Optional video media timeline anchor.
+      - id: 0x0B
+        name: discontinuity
+        type: bool
+        required: false
+        default: false
+        description: Whether this report follows a media or source clock discontinuity.
+      - id: 0x0C
+        name: reason
+        type: enum
+        required: false
+        enum: [periodic, streamOpened, streamResumed, discontinuity, sourceReset, diagnosticSample, unknown]
+        description: Report reason.
+
+capabilities:
+  - id: 0x0501
+    name: stream.flowControl
+    domain: stream
+    status: draft
+    since: 1.0.0
+    description: Device supports common STREAM runtime flow control, statistics, abort, and clock-report diagnostics.
+    type: object
+    schema: StreamFlowControlCapabilities

@@ -1,0 +1,23 @@
+id: eventless_audio_device
+name: AXTP Audio Device Without Algorithm Events
+capabilities:
+  - id: audio.algorithm
+    methods:
+      - audio.getAlgorithmConfig
+      - audio.setAlgorithmConfig
+    events: []
+
+methods:
+  audio.getAlgorithmConfig:
+    result:
+      noiseSuppression:
+        enabled: true
+        level: 1
+  audio.setAlgorithmConfig:
+    result:
+      applyState: applied
+      requiresAudioRestart: false
+      config:
+        noiseSuppression:
+          enabled: false
+          level: 1

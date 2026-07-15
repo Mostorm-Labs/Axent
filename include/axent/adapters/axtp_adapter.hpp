@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <thread>
 #include <utility>
@@ -14,6 +15,7 @@
 #include "axent/core/adapter.hpp"
 #include "axent/media/media_frame.hpp"
 #include "axent/media/media_stream.hpp"
+#include "axent/media/video_stream_params.hpp"
 #include "axent/transport/types.hpp"
 
 namespace axent {
@@ -33,6 +35,7 @@ struct AxtpAdapterConfig {
     bool enable_audio = true;
     std::uint32_t audio_sample_rate = 48000;
     std::uint32_t audio_channels = 2;
+    std::optional<std::uint32_t> video_frame_rate;
     std::string video_source = "wireless_cast";
     std::string audio_source = "wireless_cast_audio";
 };
@@ -63,6 +66,13 @@ public:
     std::vector<MediaStreamDescriptor> active_media_stream_descriptors() const;
     ControlStatus open_session_status(const std::string& device_id, std::string& error);
     bool open_session(const std::string& device_id, std::string& error);
+    VideoStreamParamsResult set_video_stream_params(
+        const std::string& device_id,
+        const VideoStreamParamsRequest& request);
+    VideoStreamParamsState video_stream_params_state(const std::string& device_id) const;
+    VideoStreamParamsSubscriptionPtr subscribe_video_stream_params(
+        const std::string& device_id,
+        VideoStreamParamsObserver observer);
 
 private:
     friend class AxentHost;
@@ -95,6 +105,9 @@ private:
     bool configure_media_stream_kind(const std::string& device_id,
                                      MediaKind kind,
                                      bool update_retry_state);
+    void advance_video_reconfigure(const std::string& device_id);
+    void clear_video_stream_params_session();
+    void notify_video_stream_params_state(VideoStreamParamsState state);
     void retry_pending_media_source_recoveries(
         const std::string& device_id,
         std::chrono::steady_clock::time_point now);

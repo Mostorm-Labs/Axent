@@ -22,14 +22,14 @@ methods:
     status: draft
     bitOffset: 1
     since: 1.0.0
-    description: Open a real-time video STREAM and return the negotiated streamId and media metadata.
+    description: Open a real-time video STREAM and return the negotiated streamId and media metadata; an active stream must be closed before opening a replacement, while a source without an active stream may be opened directly.
     rpc_op: request_response
     request_schema: VideoOpenStreamParams
     response_schema: VideoOpenStreamResult
     recommended_encoding: [json, tlv]
     capabilities: [video.stream]
     events: [video.streamStateChanged, video.streamSourceStateChanged]
-    errors: [SUCCESS, INVALID_ARGUMENT, BUSY, RESOURCE_EXHAUSTED, MEDIA_SOURCE_NOT_FOUND, MEDIA_SOURCE_UNAVAILABLE, MEDIA_CODEC_UNSUPPORTED, MEDIA_RESOLUTION_UNSUPPORTED, MEDIA_FRAMERATE_UNSUPPORTED, MEDIA_STREAM_START_FAILED]
+    errors: [SUCCESS, INVALID_ARGUMENT, BUSY, RESOURCE_EXHAUSTED, MEDIA_SOURCE_NOT_FOUND, MEDIA_SOURCE_UNAVAILABLE, MEDIA_CODEC_UNSUPPORTED, MEDIA_RESOLUTION_UNSUPPORTED, MEDIA_FRAMERATE_UNSUPPORTED, MEDIA_BITRATE_UNSUPPORTED, MEDIA_STREAM_START_FAILED]
 
   - id: 0x080C
     name: video.closeStream
@@ -196,6 +196,25 @@ types:
         type: bool
         required: true
         description: Whether normal applications can rely on runtime-managed STREAM flow control.
+      - id: 0x09
+        name: supportedVideoPtsModes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional video PTS modes such as sameAsCursor and explicit.
+      - id: 0x0A
+        name: supportedPacketizationModes
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Optional video packetization modes such as completeFrame.
+      - id: 0x0B
+        name: supportsSourceCaptureTimestampCursor
+        type: bool
+        required: false
+        description: Whether STREAM cursorUnit sourceCaptureTimestampUs is supported.
 
   VideoStreamSource:
     kind: object
@@ -239,6 +258,32 @@ types:
         type: enum
         required: false
         description: Runtime source state, such as available, receiving, stopped, or unavailable.
+      - id: 0x07
+        name: bitratesKbps
+        type: array
+        array:
+          item_type: uint32
+        required: false
+        description: Supported encoded video bitrates in kbps.
+      - id: 0x08
+        name: encoder
+        type: string
+        required: false
+        max_length: 128
+        description: Encoder or encoder profile identifier used by this source.
+      - id: 0x09
+        name: supportsReconfigure
+        type: bool
+        required: false
+        default: false
+        description: Whether active downstream video encoding parameters can be reconfigured via close then open without restarting the upstream source.
+      - id: 0x0A
+        name: reconfigureFields
+        type: array
+        array:
+          item_type: string
+        required: false
+        description: Video stream fields that can be changed by an encoding reconfiguration.
 
   VideoOpenStreamParams:
     kind: object
@@ -274,12 +319,14 @@ types:
         name: frameRate
         type: uint32
         required: false
-        description: Requested frame rate.
+        min: 1
+        description: Requested frame rate for the selected video encoder target; zero is invalid and omission uses the source/session default.
       - id: 0x07
         name: bitrateKbps
         type: uint32
         required: false
-        description: Requested bitrate in kbps.
+        min: 1
+        description: Requested bitrate in kbps for the selected video encoder target; zero is invalid and omission uses the source/session default.
       - id: 0x08
         name: streamProfile
         type: string
@@ -315,6 +362,24 @@ types:
         type: uint32
         required: false
         description: Preferred maximum STREAM payload data size.
+      - id: 0x0E
+        name: videoPtsMode
+        type: enum
+        required: false
+        default: sameAsCursor
+        description: Video PTS mode; NA20/NT10 MVP uses sameAsCursor.
+      - id: 0x0F
+        name: timebase
+        type: uint32
+        required: false
+        default: 1000000
+        description: Video PTS timebase in ticks per second.
+      - id: 0x10
+        name: packetizationMode
+        type: enum
+        required: false
+        default: completeFrame
+        description: Video packetization mode; NA20/NT10 MVP uses completeFrame.
 
   VideoOpenStreamResult:
     kind: object
@@ -360,12 +425,14 @@ types:
         name: frameRate
         type: uint32
         required: false
-        description: Negotiated frame rate.
+        min: 1
+        description: Negotiated frame rate; zero is invalid and omission means the source/session default was used.
       - id: 0x09
         name: bitrateKbps
         type: uint32
         required: false
-        description: Negotiated bitrate in kbps.
+        min: 1
+        description: Negotiated bitrate in kbps; zero is invalid and omission means the source/session default was used.
       - id: 0x0A
         name: streamProfile
         type: string
@@ -388,6 +455,21 @@ types:
         type: uint32
         required: false
         description: Negotiated maximum STREAM payload data size.
+      - id: 0x0E
+        name: videoPtsMode
+        type: enum
+        required: false
+        description: Negotiated video PTS mode.
+      - id: 0x0F
+        name: timebase
+        type: uint32
+        required: false
+        description: Negotiated video PTS timebase in ticks per second.
+      - id: 0x10
+        name: packetizationMode
+        type: enum
+        required: false
+        description: Negotiated video packetization mode.
 
   VideoCloseStreamParams:
     kind: object
@@ -407,6 +489,7 @@ types:
         name: reason
         type: enum
         required: false
+        enum: [receiver_closed, user_stop, not_needed, source_disconnected, producer_stopped, session_lost, receiver_timeout, encodingReconfigure, error]
         description: Close reason.
       - id: 0x04
         name: finalCursor
@@ -432,6 +515,7 @@ types:
         name: reason
         type: enum
         required: false
+        enum: [receiver_closed, user_stop, not_needed, source_disconnected, producer_stopped, session_lost, receiver_timeout, encodingReconfigure, error]
         description: Final close reason.
       - id: 0x04
         name: alreadyClosed
@@ -512,6 +596,18 @@ types:
         type: enum
         required: false
         description: Failure reason when state is failed.
+      - id: 0x0C
+        name: frameRate
+        type: uint32
+        required: false
+        min: 1
+        description: Effective negotiated video frame rate; zero is invalid and omission means the source/session default was used.
+      - id: 0x0D
+        name: bitrateKbps
+        type: uint32
+        required: false
+        min: 1
+        description: Effective negotiated video bitrate in kbps; zero is invalid and omission means the source/session default was used.
 
   VideoGetStreamSourceStateParams:
     kind: object
@@ -615,6 +711,18 @@ types:
         type: VideoStreamStats
         required: false
         description: Optional bounded stream statistics.
+      - id: 0x06
+        name: frameRate
+        type: uint32
+        required: false
+        min: 1
+        description: Effective video frame rate at the time of this event; zero is invalid and omission means the source/session default was used.
+      - id: 0x07
+        name: bitrateKbps
+        type: uint32
+        required: false
+        min: 1
+        description: Effective video bitrate in kbps at the time of this event; zero is invalid and omission means the source/session default was used.
 
   VideoStreamSourceStateChangedEvent:
     kind: object

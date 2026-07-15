@@ -175,20 +175,24 @@ JSON/CBOR/MSGPACK RPC envelope：
 
 | 字段 | 规则 |
 |---|---|
-| `sid` | 分配前为空字符串；Identified 后固定为 8 位 hex 字符。 |
+| `sid` | 分配前为空字符串；Identified 后携带 Logical Server 分配的 session 字符串。AXTP-native 生成端使用 8 位 hex；接收端按 opaque string 兼容。 |
 | `op` | uint8 操作码。 |
 | `d` | op-specific object；允许 empty object。 |
+
+AXTP-native `sid` 生成使用非零 `uint32`，在 JSON / CBOR / MSGPACK envelope 中渲染为固定 8 位十六进制字符串，例如 `"00000003"` 或 `"12345678"`。对象编码接收端 MUST NOT 要求收到的 `sid` 一定是 8 位 hex；Identified 后应把 Logical Server 分配的非空字符串按 opaque value 保存，并在后续 Request / Response / Event 中精确携带。JSON_BINARY fixed header 中仍使用 4B Big-Endian / network byte order `uint32`，未分配前为 `0`。
 
 必需 RPC op：
 
 | op | 名称 | 必需行为 |
 |---:|---|---|
-| `0` | `Hello` | Logical Server 公告 AXTP version/auth requirements。 |
+| `0` | `Hello` | Logical Server 公告可选 AXTP version diagnostics 和 auth requirements。 |
 | `2` | `Identify` | Logical Client 发送 identity、`randomSeed`、auth 和 event subscription intent。 |
 | `3` | `Identified` | Logical Server 分配 `sid`；session 进入 app-ready。 |
 | `6` | `Event` | 低频 event 投递。 |
 | `7` | `Request` | Identified 后的业务 method request。 |
 | `8` | `RequestResponse` | 业务 result 或 error。 |
+
+RequestResponse 的 `d.status` 在 JSON / CBOR / MSGPACK envelope 中 MUST 是 object，且 MUST 携带 `status.ok` 和 `status.code`。成功响应 MUST 使用 `status.ok=true`、`status.code=0`；失败响应 MUST 使用 `status.ok=false` 和非零 `status.code`，且 MUST NOT 携带业务 `result`。JSON_BINARY fixed header 中的 `statusCode:uint16` 与 `status.code` 语义一致，但 JSON envelope MUST NOT 使用数字形式的 `status` 简写。
 
 最小 RPC JSON 序列：
 
@@ -197,18 +201,27 @@ JSON/CBOR/MSGPACK RPC envelope：
 { "sid": "", "op": 2, "d": { "randomSeed": 305419896, "eventMasks": "090101" } }
 { "sid": "12345678", "op": 3, "d": { "accepted": true } }
 { "sid": "12345678", "op": 7, "d": { "id": 1, "method": "audio.getAlgorithmConfig", "params": {} } }
-{ "sid": "12345678", "op": 8, "d": { "id": 1, "status": 0, "result": {} } }
+{ "sid": "12345678", "op": 8, "d": { "id": 1, "status": { "ok": true, "code": 0 }, "result": {} } }
+{ "sid": "12345678", "op": 6, "d": { "event": "audio.algorithmConfigChanged", "data": { "reason": "user_request", "applyState": "applied" } } }
 ```
+
+Event 的业务 payload 不重复携带 `sid`。发送方 MUST 在 RPC envelope 或 JSON_BINARY fixed header 中携带当前 RPC session 的 `sid`；接收方按 envelope/header 校验、路由和鉴权后，再把 `d.data` 作为 event payload 交给业务处理。
 
 在 Standard Framed JSON RPC 中，RPC payload 是 `rpcEncoding(1B) + JSON bytes`；当 `selectedRpcEncoding=JSON` 时，`rpcEncoding=0x01`。在 WebSocket Unframed JSON 中，WebSocket message payload 正好就是 JSON object。
 
-Hello 中的 `axtpVersion` 是 AXTP spec compatibility authority。`rpcVersion` 和 `negotiatedRpcVersion` 只是过渡字段；新发送方 SHOULD 省略它们，接收方 MAY 接受值 `1`，且接收方 MUST 拒绝其它值，除非未来发布的 spec 另有规定。
+Hello 中的 `axtpVersion` 是 optional advisory diagnostics metadata。它不协商 feature，也不是 AXTP compatibility authority。无论该字段缺失、不是合法 SemVer，还是 major、minor 或 patch 不同，接收方 MUST NOT 因此拒绝或延迟 `Hello -> Identify -> Identified`、改变 retry/reconnect 策略，或影响不相关 RPC 的可用性。实现 MAY 把观测值分类并记录到日志、telemetry 或 diagnostics，但分类结果 MUST NOT 成为 session admission gate。
+
+`protocolVersion`、`rpcVersion` 和 `negotiatedRpcVersion` 是 deprecated compatibility inputs；新发送方 SHOULD 省略它们。接收方 MAY 为兼容性读取它们，但 MUST NOT 把它们变成 session admission gate。
+
+RPC `Hello.axtpVersion` 与 Standard Frame Header 的 `Version` 是不同层次的字段。Frame Header `Version` 是 hard wire parsing boundary；如果接收方无法安全解析该 frame layout，MUST 使用 `FRAME_VERSION_UNSUPPORTED` 拒绝该 frame。这个 frame parsing rule 不得被推导为对 RPC `axtpVersion` 的拒绝规则。
 
 Identify MUST 包含 `randomSeed:uint32`。Logical Server MUST 在生成 `sid` 时把 `randomSeed` 与本地状态混合；它 MUST NOT 直接把 `randomSeed` 当作 `sid`。`randomSeed` 不是认证 secret。
 
+生成新 `sid` 时，AXTP-native Logical Server MUST 避免 `0` 和当前仍有效 RPC Session 的 `sid` 冲突，并 SHOULD 使用大写 8 位 hex 作为 JSON canonical sender form。对象编码 receiver MUST 接受非空字符串形式的已分配 `sid`，包括非 8 位 hex 的 legacy / external 值；它 MUST 按精确字符串匹配 session，不得把 `sid` 当作认证 secret 或用户 token。
+
 Identified 之后，如果 method 的 domain.feature、capability 或 role policy 允许，双方 MAY 发起 RPC Request。这不改变 Hello / Identify / Identified 的逻辑角色，也不改变 CONTROL 的物理角色。
 
-APP_READY 后，malformed、empty、non-hex、zero 或缺失的 `sid` MUST 被拒绝。
+APP_READY 后，JSON / CBOR / MSGPACK envelope 中缺失、非字符串、空字符串或未知 session 的 `sid` MUST 被拒绝；JSON_BINARY 中 zero 或未知 session 的 `sid` MUST 被拒绝。
 
 Standard Framed RPC MUST 在 payload 前添加 `rpcEncoding`。JSON (`0x01`) 是 Phase 1 互操作必需编码。高吞吐或嵌入式 Standard Framed profile SHOULD 实现 JSON_BINARY (`0x04`)。
 

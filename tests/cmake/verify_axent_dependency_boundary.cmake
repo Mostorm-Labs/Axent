@@ -295,6 +295,7 @@ set(axent_media_contract_headers
     "${AXENT_REPO_ROOT}/include/axent/media/media_frame.hpp"
     "${AXENT_REPO_ROOT}/include/axent/media/media_stream.hpp"
     "${AXENT_REPO_ROOT}/include/axent/media/media_subscription.hpp"
+    "${AXENT_REPO_ROOT}/include/axent/media/video_stream_params.hpp"
 )
 
 file(GLOB_RECURSE axent_cli_boundary_files LIST_DIRECTORIES false

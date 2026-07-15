@@ -79,6 +79,14 @@ methods:
 
 Runtime MUST 使用生成的 registry 或 Protocol IR 做 method lookup，MUST NOT 维护第二套手写 method table。
 
+Session 建立只保证 common RPC baseline，不表示当前 runtime、device、profile、mode 或 capability set 提供全部 registered methods。Caller SHOULD 在调用 optional method 前查询相关 generated capability；capability 缺失表示该 optional feature 不可用。Receiver 即使面对未先 discovery 的 caller，也 MUST 执行自己的 capability/profile policy：
+
+- method name 或 methodId 不在 registry 中，MUST 返回 `RPC_METHOD_NOT_FOUND`；
+- method 已注册但在当前 runtime、device、profile、mode 或 capability set 中不可用，新的发送方 MUST 返回 common `NOT_SUPPORTED`；
+- method 可用但参数 malformed、越界或违反 schema，MUST 返回 `INVALID_ARGUMENT`、`RPC_PARAM_INVALID` 或该 method 注册的 validation error。
+
+上述失败只降级当前 operation，MUST NOT 使 session 失效，也 MUST NOT 阻止后续无关且受支持的 request。接收方 MAY 继续接受 legacy `RPC_METHOD_NOT_SUPPORTED`、`CAPABILITY_METHOD_UNSUPPORTED` 等细粒度 unsupported errors，但新发送方 MUST 使用 canonical `NOT_SUPPORTED` 表示 registered-but-unavailable。
+
 ## 事件 Events
 
 Event 是 RPC 异步通知，用于状态、进度、结果或上报语义。
@@ -96,6 +104,8 @@ Event 规则：
 Domain-scoped event mask 格式由核心 RPC 行为定义。bit 0 映射到该 domain 中 registry `bitOffset=0` 的 event。
 
 接收方 MUST 按 profile policy 容忍未知或未订阅事件；未知事件处理本身 MUST NOT 使 session 失效。
+
+发送方 MUST NOT 向未声明相应 capability 或未订阅该 event 的 peer 主动发送 optional event。接收方收到未知 event 时 MUST 忽略或只记录 diagnostics，并 MUST 保持 session 及不相关 RPC 可用。
 
 ## 错误 Errors
 
@@ -134,6 +144,8 @@ Profile 规则：
 4. WebSocket Unframed JSON profiles MUST NOT 要求 CONTROL 或 STREAM。
 5. 支持某个 profile 意味着满足 required facts，并通过对应 conformance scope。
 6. 向 stable profile 添加 required facts 可能是 breaking change；添加 optional capability 通常兼容。
+
+Profile 或 capability 不匹配 MUST 只降级受影响的 operation。已注册但因 profile/capability 不可用的 operation MUST 返回 `NOT_SUPPORTED`；它不能触发 session rejection、retry/reconnect，或关闭不相关功能。
 
 Runtime 仓库 MUST 声明自己支持的 profile，并绑定精确 spec tag、commit 或 release artifact metadata。
 

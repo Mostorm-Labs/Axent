@@ -1,0 +1,53 @@
+id: capability.registered_method_not_supported
+title: Registered but unavailable method returns exact NOT_SUPPORTED
+since: spec/v0.0.2
+level: capability
+semantic:
+  kind: registered_method_unavailable
+profiles:
+  - capability
+  - core
+
+given:
+  device_profile: minimal_device
+  method: audio.setAlgorithmConfig
+  registered: true
+  available: false
+
+steps:
+  - id: method_request
+    role: trigger
+    direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 40
+      method: audio.setAlgorithmConfig
+      params: {}
+
+  - id: degraded_response
+    role: degraded
+    responseTo: method_request
+    direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 40
+        statusCode: NOT_SUPPORTED
+
+  - id: liveness_request
+    role: liveness
+    triggeredBy: degraded_response
+    direction: client_to_server
+    rpc: { encoding: json, op: REQUEST, requestId: 41, method: audio.getAlgorithmConfig, params: {} }
+
+  - id: liveness_response
+    role: liveness
+    responseTo: liveness_request
+    direction: server_to_client
+    expect: { rpc: { op: REQUEST_RESPONSE, requestId: 41, statusCode: SUCCESS } }
+
+assertions:
+  - registry.method("audio.setAlgorithmConfig") != null
+  - device_profile.method("audio.setAlgorithmConfig").available == false
+  - response.statusCode == NOT_SUPPORTED

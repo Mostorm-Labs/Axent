@@ -1,0 +1,52 @@
+id: capability.session_survives_not_supported
+title: Session remains usable after NOT_SUPPORTED
+since: spec/v0.0.2
+level: capability
+profiles:
+  - capability
+  - core
+
+given:
+  device_profile: minimal_device
+  session:
+    state: identified
+
+steps:
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 41
+      method: audio.setAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 41
+        statusCode: NOT_SUPPORTED
+
+  - direction: client_to_server
+    rpc:
+      encoding: json
+      op: REQUEST
+      requestId: 42
+      method: audio.getAlgorithmConfig
+      params: {}
+
+  - direction: server_to_client
+    expect:
+      rpc:
+        op: REQUEST_RESPONSE
+        requestId: 42
+        statusCode: SUCCESS
+        result:
+          noiseSuppression:
+            type: object
+
+assertions:
+  - first_response.statusCode == NOT_SUPPORTED
+  - second_response.statusCode == SUCCESS
+  - second_response.requestId == 42
+  - session.state == identified

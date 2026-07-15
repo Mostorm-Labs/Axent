@@ -118,7 +118,7 @@
 | `0x0803` | `MEDIA_CODEC_UNSUPPORTED` | video | mvp | false |
 | `0x0804` | `MEDIA_RESOLUTION_UNSUPPORTED` | video | mvp | false |
 | `0x0805` | `MEDIA_FRAMERATE_UNSUPPORTED` | video | mvp | false |
-| `0x0806` | `MEDIA_BITRATE_UNSUPPORTED` | video | draft | false |
+| `0x0806` | `MEDIA_BITRATE_UNSUPPORTED` | video | mvp | false |
 | `0x0807` | `MEDIA_STREAM_START_FAILED` | video | mvp | true |
 | `0x0808` | `MEDIA_STREAM_STOP_FAILED` | video | draft | true |
 | `0x0809` | `MEDIA_FRAME_DROPPED` | video | draft | true |

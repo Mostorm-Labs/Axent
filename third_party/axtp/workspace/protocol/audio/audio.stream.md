@@ -193,12 +193,18 @@ success:
 | `sampleFormat` | enum | no | `aac`, `pcm_s16le`, `pcm_f32le` | codec default | `codec=aac` 时通常为 `aac`。 |
 | `chunkDurationMs` | uint32 | no | capability range | omitted | 建议音频 chunk 时长。 |
 | `streamProfile` | string | no | `media.audio` | `media.audio` | STREAM profile。 |
-| `cursorUnit` | enum | no | `timestampUs`, `sampleIndex` | `timestampUs` | STREAM 16B header 中 `cursor` 的业务单位；投屏使用 `timestampUs`。 |
+| `cursorUnit` | enum | no | `timestampUs`, `sampleIndex`, `sourceCaptureTimestampUs` | `sourceCaptureTimestampUs` for wireless cast | STREAM 16B header 中 `cursor` 的业务单位；NA20/NT10 投屏使用 NT10 源端采集时间戳。 |
 | `syncGroupId` | string | no | product/session scoped | omitted | 与 video stream 绑定的同步组，可由 requester 指定或 responder 返回。 |
 | `castSessionId` | string | no | product/session scoped | omitted | 投屏会话关联 ID，不单独创建 cast domain。 |
 | `clockDomain` | string | no | `nt10_media_clock`, source-defined | `nt10_media_clock` for wireless cast | 媒体时间戳来源。 |
 | `receiverClockDomain` | string | no | `na20_receive_clock`, receiver-defined | omitted | NA20 接收时钟域，用于 jitter/诊断。 |
 | `maxDataSize` | uint32 | no | transport/profile limit | omitted | 单个 STREAM payload data 最大大小建议。 |
+| `audioPtsMode` | enum | no | `derivedFromSeq`, `explicit` | `derivedFromSeq` for wireless cast | 音频 PTS 来源；固定包模式由 STREAM `seqId` 推导。 |
+| `timebase` | uint32 | no | ticks/sec | `48000` for wireless cast | audio PTS 的 timebase。 |
+| `samplesPerPacket` | uint32 | no | samples | `1024` for wireless cast | 固定包模式下每个 STREAM packet 消耗的样本数。 |
+| `firstMediaSeqId` | uint32 | no | uint32 | `0` | 推导音频 PTS 的首个媒体 seq。 |
+| `audioPtsBase` | uint64 | no | ticks | `0` | `firstMediaSeqId` 对应的音频 PTS。 |
+| `packetizationMode` | enum | no | `fixedSamplesPerPacket`, `explicit` | `fixedSamplesPerPacket` for wireless cast | 音频 packetization 模式；固定模式不得在 NA20 重打包。 |
 
 #### 3.2.2 返回结果 Result：`AudioOpenStreamResult`
 
@@ -214,12 +220,18 @@ success:
 | `channels` | uint8 | yes | count | none | 实际声道数。 |
 | `sampleFormat` | enum | no | format enum | omitted | 实际采样格式。 |
 | `streamProfile` | string | yes | `media.audio` | none | 归一化后的 profile。 |
-| `cursorUnit` | enum | yes | `timestampUs`, `sampleIndex` | none | STREAM `cursor` 单位。 |
+| `cursorUnit` | enum | yes | `timestampUs`, `sampleIndex`, `sourceCaptureTimestampUs` | none | STREAM `cursor` 单位。 |
 | `syncGroupId` | string | no | product/session scoped | omitted | 与视频同步组。 |
 | `castSessionId` | string | no | product/session scoped | omitted | 投屏会话关联 ID。 |
 | `clockDomain` | string | no | source-defined | omitted | 源媒体时钟域。 |
 | `receiverClockDomain` | string | no | receiver-defined | omitted | 接收时钟域。 |
 | `maxDataSize` | uint32 | no | negotiated limit | omitted | 每个 STREAM chunk data 最大长度。 |
+| `audioPtsMode` | enum | no | `derivedFromSeq`, `explicit` | omitted | 协商后的音频 PTS 来源。 |
+| `timebase` | uint32 | no | ticks/sec | omitted | 协商后的 audio PTS timebase。 |
+| `samplesPerPacket` | uint32 | no | samples | omitted | 固定包模式下每包样本数。 |
+| `firstMediaSeqId` | uint32 | no | uint32 | omitted | PTS 推导起始 seq。 |
+| `audioPtsBase` | uint64 | no | ticks | omitted | PTS 推导起始值。 |
+| `packetizationMode` | enum | no | `fixedSamplesPerPacket`, `explicit` | omitted | 协商后的 packetization 模式。 |
 
 #### 3.2.3 d block 示例
 
@@ -255,7 +267,13 @@ success:
     "sampleRate": 48000,
     "channels": 2,
     "streamProfile": "media.audio",
-    "cursorUnit": "timestampUs"
+    "cursorUnit": "sourceCaptureTimestampUs",
+    "audioPtsMode": "derivedFromSeq",
+    "timebase": 48000,
+    "samplesPerPacket": 1024,
+    "firstMediaSeqId": 0,
+    "audioPtsBase": 0,
+    "packetizationMode": "fixedSamplesPerPacket"
   }
 }
 ```
@@ -714,14 +732,13 @@ AudioChunkHeaderV1 + AAC bytes
 
 `AudioChunkHeaderV1` 是 STREAM data 内的音频业务 envelope，位于 STREAM 16B header 之后。二进制字段编号和布局以 contract/registry/generated schema 为准；不得把这些字段加入 STREAM 16B header。
 
+NA20/NT10 MVP 使用 `packetizationMode=fixedSamplesPerPacket` 和 `audioPtsMode=derivedFromSeq`。该模式下每个 STREAM packet 固定消耗 `samplesPerPacket=1024`，MediaHost 使用 `audioPtsBase + (extendedSeqId - firstMediaSeqId) * samplesPerPacket` 推导 audio PTS；音频 chunk header 不需要每包重复 `mediaPts`、`durationUs` 或 `sampleCount`。如果未来允许变长包、静音抑制、合包/拆包或 NA20 重打包，必须切换到显式 audio media PTS 模式。
+
 | 字段名 | 类型 | 必填 | 取值范围 / 枚举 | 默认值 | 说明 |
 |---|---|---:|---|---|---|
 | `headerLength` | uint16 | yes | bytes | none | envelope 长度。 |
 | `flags` | bitmap | yes | `accessUnitStart`, `accessUnitEnd`, `config`, `discontinuity` | none | chunk 标记。 |
-| `timestampUs` | uint64 | yes | microseconds | none | NT10 源媒体时间戳。 |
-| `receiverTimestampUs` | uint64 | no | microseconds | omitted | NA20 接收时钟时间戳。 |
-| `sampleCount` | uint32 | no | count | omitted | 当前 chunk 对应样本数；AAC 可省略。 |
-| `durationUs` | uint32 | no | microseconds | omitted | chunk 时长。 |
+| `sourceCaptureTimestampUs` | uint64 | no | microseconds | STREAM `cursor` | 可省略；默认使用 STREAM `cursor` 表达 NT10 源端采集时间戳。 |
 | `payloadBytes` | bytes | yes | AAC access unit / ADTS frame / LATM / raw AAC bytes | none | 实际音频数据。 |
 
 ### 6.4 State / lifecycle 约束
