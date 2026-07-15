@@ -140,7 +140,6 @@ else()
     set(AXTP_CPP_RUNTIME_BUILD_CONFORMANCE OFF CACHE BOOL "" FORCE)
     set(AXTP_CPP_RUNTIME_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     set(AXTP_BUILD_JSON_RPC ON CACHE BOOL "" FORCE)
-    set(AXTP_BUILD_OPTIONAL_TRANSPORTS OFF CACHE BOOL "" FORCE)
 
     if(EXISTS "${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime/CMakeLists.txt")
         add_subdirectory("${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime" "${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime")
