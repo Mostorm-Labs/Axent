@@ -1328,7 +1328,9 @@ int main()
     auto frame_rate_adapter = axent::testing::AxtpAdapterTestSeam::make(
         frame_rate_config, [&](const axent::transport::HidTransportOptions&) {
             auto transport = std::make_unique<ScriptedAxtpTransport>();
-            transport->unique_video_stream_ids = true;
+            // NA20 may reuse the numeric video stream id after terminal close;
+            // generation, not the id alone, separates the replacement.
+            transport->unique_video_stream_ids = false;
             transport->close_returns_closing.store(true);
             frame_rate_scripted = transport.get();
             return transport;
@@ -1407,8 +1409,8 @@ int main()
                 applied_state.effective_frame_rate == 15U &&
                 applied_state.active_stream_id.has_value() &&
                 applied_state.previous_stream_id.has_value() &&
-                applied_state.active_stream_id != applied_state.previous_stream_id,
-            "applied state should report desired/effective fps and replacement stream ids");
+                applied_state.active_stream_id == applied_state.previous_stream_id,
+            "same-id replacement should preserve the numeric id while advancing generation");
 
     const auto unchanged_frame_rate = frame_rate_adapter->set_video_stream_params(
         "hid:0581:2581:NA20-SERIAL", set_fifteen);

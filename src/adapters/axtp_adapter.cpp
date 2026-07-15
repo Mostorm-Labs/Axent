@@ -1732,29 +1732,11 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
         state = runtime_->video_params_state;
     }
 
+    // A device may legally reuse the numeric stream id after close. The
+    // generation assigned by configure_media_stream_kind() is the lifecycle
+    // boundary, so stale frames/events remain isolated without rejecting the
+    // replacement or making rollback impossible on NA20.
     bool opened = configure_media_stream_kind(device_id, MediaKind::Video, false);
-    if (opened && operation.previous_descriptor.has_value()) {
-        std::optional<MediaStreamDescriptor> invalid_replacement;
-        {
-            std::lock_guard<std::mutex> lock(media_stream_mutex_);
-            const auto same_id = active_media_streams_.find(
-                operation.previous_descriptor->key.stream_id);
-            if (same_id != active_media_streams_.end() &&
-                same_id->second.descriptor.kind == MediaKind::Video) {
-                invalid_replacement = same_id->second.descriptor;
-                active_media_streams_.erase(same_id);
-            }
-        }
-        if (invalid_replacement.has_value()) {
-            enqueue_media_stream_events({
-                {MediaStreamEventKind::Closed, std::move(*invalid_replacement)},
-            });
-            opened = false;
-            std::lock_guard<std::mutex> lock(mutex_);
-            diagnostics_.active_video_stream_id = 0;
-            diagnostics_.last_event = "video-open-reused-terminal-stream-id";
-        }
-    }
     if (opened) {
         VideoStreamParamsState completed;
         {
