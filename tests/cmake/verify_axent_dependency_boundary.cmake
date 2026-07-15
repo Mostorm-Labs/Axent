@@ -525,10 +525,10 @@ assert_text_appears_before(
     "add_subdirectory(\"\${AXENT_THIRD_PARTY_DIR}/axtp-cpp-runtime\" \"\${CMAKE_CURRENT_BINARY_DIR}/third_party/axtp-cpp-runtime\")"
     "Axent must validate its hidapi provider before adding axtp-cpp-runtime"
 )
-assert_text_contains(
+assert_text_does_not_contain(
     "${axent_effective_deps}"
     "set\\(AXTP_BUILD_OPTIONAL_TRANSPORTS OFF CACHE BOOL \"\" FORCE\\)"
-    "Axent must keep cpp-runtime concrete transports disabled"
+    "Axent must not pass the removed cpp-runtime concrete transport option"
 )
 assert_text_contains(
     "${axent_gitmodules}"
