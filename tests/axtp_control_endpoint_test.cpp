@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -53,9 +54,18 @@ public:
 
     nlohmann::json next()
     {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (!ready_.wait_for(lock, 5s, [this]() { return !messages_.empty(); })) {
+        auto message = next_for(5s);
+        if (!message.has_value()) {
             throw std::runtime_error("timed out waiting for AXTP WebSocket message");
+        }
+        return std::move(*message);
+    }
+
+    std::optional<nlohmann::json> next_for(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!ready_.wait_for(lock, timeout, [this]() { return !messages_.empty(); })) {
+            return std::nullopt;
         }
         auto message = std::move(messages_.front());
         messages_.pop();
@@ -248,6 +258,22 @@ int main()
     std::string sid = identified.at("sid").get<std::string>();
     require(sid == "legacy-session", "resumeSid behavior must stay compatible");
 
+    first->send({{"sid", sid}, {"op", 4}, {"d", {{"eventMasks", "cast.*"}}}});
+    auto reidentified = first->next();
+    require(reidentified.at("op") == 3 && reidentified.at("sid") == sid,
+            "Reidentify must acknowledge the existing SID exactly once");
+    require(!first->next_for(100ms).has_value(),
+            "Reidentify must not enqueue a duplicate Identified frame");
+
+    first->send({{"sid", ""},
+                 {"op", 2},
+                 {"d", {{"randomSeed", 7}, {"resumeSid", "replacement-session"}}}});
+    auto duplicate_identified = first->next();
+    require(duplicate_identified.at("op") == 3 && duplicate_identified.at("sid") == sid,
+            "duplicate Identify must keep the active SID");
+    require(!first->next_for(100ms).has_value(),
+            "duplicate Identify must produce only one acknowledgement");
+
     first->send(request_message("wrong-session", 2, "cast.getStatus"));
     response = first->next();
     require(response_code(response) == 0x0033, "wrong SID must preserve RpcPayloadInvalid");
@@ -341,16 +367,32 @@ int main()
 
     auto second = std::make_unique<WebSocketProbe>(endpoint.local_port());
     const auto second_hello = second->next();
-    const auto first_broadcast_hello = first->next();
-    require(second_hello.at("op") == 0 && first_broadcast_hello.at("op") == 0,
-            "new connection Hello must preserve current broadcast behavior");
+    require(second_hello.at("op") == 0,
+            "new connection must receive a targeted Hello");
+    require(!first->next_for(250ms).has_value(),
+            "existing clients must not receive a new client's Hello");
     second->send({{"sid", ""}, {"op", 2}, {"d", {{"resumeSid", "shared-session"}}}});
     const auto second_identified = second->next();
-    const auto first_broadcast_identified = first->next();
-    require(second_identified.at("sid") == "shared-session" &&
-                first_broadcast_identified.at("sid") == "shared-session",
-            "multi-client Identify must preserve the current shared SID behavior");
-    sid = "shared-session";
+    require(second_identified.at("sid") == sid,
+            "additional clients must join the active shared SID without replacing it");
+    require(!first->next_for(250ms).has_value(),
+            "existing clients must not receive another client's Identified response");
+
+    second->send(request_message(sid, 350, "cast.getStatus"));
+    const auto second_response = second->next();
+    require(second_response.at("d").at("id") == 350 &&
+                response_code(second_response) == 0,
+            "second client request must receive its own response");
+    require(!first->next_for(250ms).has_value(),
+            "request responses must not leak to other clients");
+
+    first->send(request_message(sid, 351, "cast.getStatus"));
+    const auto first_response = first->next();
+    require(first_response.at("d").at("id") == 351 &&
+                response_code(first_response) == 0,
+            "first client must remain usable after another client identifies");
+    require(!second->next_for(250ms).has_value(),
+            "first client responses must not leak to the second client");
 
     require(endpoint.publish_event(
                 generated(0x1601, "cast.sessionIncoming"), {{"broadcast", true}}) ==
