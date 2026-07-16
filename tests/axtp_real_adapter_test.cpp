@@ -654,6 +654,16 @@ int main()
     require(media_diagnostics.active_media_streams == 2, "active media stream count mismatch");
     require(wait_for_stream_events(stream_events, stream_events_mutex, 2),
             "openStream should publish video and audio Opened events");
+    std::mutex media_video_params_mutex;
+    std::vector<axent::VideoStreamParamsState> media_video_params_updates;
+    auto media_video_params_subscription = media_adapter->subscribe_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL",
+        [&](const axent::VideoStreamParamsState& update) {
+            std::lock_guard<std::mutex> lock(media_video_params_mutex);
+            media_video_params_updates.push_back(update);
+        });
+    require(media_video_params_subscription != nullptr,
+            "active media session should expose video parameter state updates");
 
     const auto descriptors = media_adapter->active_media_stream_descriptors();
     require(descriptors.size() == 2, "active descriptor snapshot should contain video and audio");
@@ -791,6 +801,17 @@ int main()
                     after_video_stop.front().key.generation == 1,
                 "video terminal event must leave audio descriptor active");
     }
+    require(wait_until([&]() {
+        const auto state = media_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL");
+        std::lock_guard<std::mutex> lock(media_video_params_mutex);
+        return state.state == axent::VideoStreamParamsStateKind::Idle &&
+            state.phase == axent::VideoStreamParamsPhase::Idle &&
+            !state.active_stream_id.has_value() &&
+            !state.effective_frame_rate.has_value() &&
+            !media_video_params_updates.empty() &&
+            media_video_params_updates.back().phase == axent::VideoStreamParamsPhase::Idle;
+    }), "video terminal event should publish an idle source-video state");
     require(media_adapter->diagnostics().last_event ==
                 "media-source-event name=video.streamSourceStateChanged id=0x0807 "
                 "source=wireless_cast state=stopped reason=sender_stopped activeStreamId=1",
@@ -846,6 +867,16 @@ int main()
                     media_scripted->audio_open_requests.load() == 1,
                 "video recovery must not reopen audio or alter both-kind retry behavior");
     }
+    require(wait_until([&]() {
+        const auto state = media_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL");
+        std::lock_guard<std::mutex> lock(media_video_params_mutex);
+        return state.phase == axent::VideoStreamParamsPhase::Streaming &&
+            state.active_stream_id == 1U &&
+            !media_video_params_updates.empty() &&
+            media_video_params_updates.back().phase ==
+                axent::VideoStreamParamsPhase::Streaming;
+    }), "same-ID video recovery should publish a streaming source-video state");
     media_scripted->injectStream(1, 6, 1000000, {0x00, 0x00, 0x01, 0x65});
     require(wait_for_frames(frames, frames_mutex, 3),
             "reopened video generation should deliver new frames");
