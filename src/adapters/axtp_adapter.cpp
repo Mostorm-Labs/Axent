@@ -430,10 +430,16 @@ private:
 struct VideoReconfigureOperation {
     std::optional<std::uint32_t> previous_frame_rate;
     std::optional<std::uint32_t> requested_frame_rate;
-    std::optional<MediaStreamDescriptor> previous_descriptor;
-    nlohmann::json previous_open_params = nlohmann::json::object();
-    bool close_sent = false;
-    bool close_terminal = false;
+    std::optional<MediaStreamDescriptor> previous_video_descriptor;
+    std::optional<MediaStreamDescriptor> previous_audio_descriptor;
+    nlohmann::json previous_video_open_params = nlohmann::json::object();
+    nlohmann::json previous_audio_open_params = nlohmann::json::object();
+    bool video_close_sent = false;
+    bool audio_close_sent = false;
+    bool video_close_terminal = false;
+    bool audio_close_terminal = false;
+    bool video_opened = false;
+    bool audio_opened = false;
     bool rollback = false;
     std::chrono::steady_clock::time_point close_deadline;
 };
@@ -464,6 +470,7 @@ struct AxtpAdapter::RuntimeState {
     std::optional<std::uint32_t> session_video_frame_rate;
     std::optional<VideoReconfigureOperation> video_reconfigure;
     nlohmann::json active_video_open_params = nlohmann::json::object();
+    nlohmann::json active_audio_open_params = nlohmann::json::object();
     std::vector<std::weak_ptr<VideoStreamParamsObserverSlot>> video_params_observers;
     std::uint64_t next_video_reconfigure_id = 1;
     bool suppress_video_auto_open = false;
@@ -764,6 +771,7 @@ VideoStreamParamsResult AxtpAdapter::set_video_stream_params(
     }
 
     std::optional<MediaStreamDescriptor> active_video;
+    std::optional<MediaStreamDescriptor> active_audio;
     {
         std::lock_guard<std::mutex> lock(media_stream_mutex_);
         const auto active = std::find_if(
@@ -773,6 +781,14 @@ VideoStreamParamsResult AxtpAdapter::set_video_stream_params(
             });
         if (active != active_media_streams_.end()) {
             active_video = active->second.descriptor;
+        }
+        const auto audio = std::find_if(
+            active_media_streams_.begin(), active_media_streams_.end(),
+            [](const auto& entry) {
+                return entry.second.descriptor.kind == MediaKind::Audio;
+            });
+        if (audio != active_media_streams_.end()) {
+            active_audio = audio->second.descriptor;
         }
     }
     bool session_active = false;
@@ -829,8 +845,10 @@ VideoStreamParamsResult AxtpAdapter::set_video_stream_params(
         VideoReconfigureOperation operation;
         operation.previous_frame_rate = runtime_->session_video_frame_rate;
         operation.requested_frame_rate = requested;
-        operation.previous_descriptor = active_video;
-        operation.previous_open_params = runtime_->active_video_open_params;
+        operation.previous_video_descriptor = active_video;
+        operation.previous_audio_descriptor = active_audio;
+        operation.previous_video_open_params = runtime_->active_video_open_params;
+        operation.previous_audio_open_params = runtime_->active_audio_open_params;
         runtime_->video_reconfigure = std::move(operation);
         runtime_->session_video_frame_rate = requested;
         runtime_->suppress_video_auto_open = true;
@@ -843,7 +861,7 @@ VideoStreamParamsResult AxtpAdapter::set_video_stream_params(
             : current.effective_frame_rate;
         current.reconfigure_id = "vr-" + std::to_string(runtime_->next_video_reconfigure_id++);
         current.state = VideoStreamParamsStateKind::Pending;
-        current.phase = active_video.has_value()
+        current.phase = active_video.has_value() || active_audio.has_value()
             ? VideoStreamParamsPhase::Closing
             : VideoStreamParamsPhase::Opening;
         current.previous_stream_id = active_video.has_value()
@@ -970,6 +988,7 @@ void AxtpAdapter::clear_video_stream_params_session()
     runtime_->session_video_frame_rate.reset();
     runtime_->video_reconfigure.reset();
     runtime_->active_video_open_params = nlohmann::json::object();
+    runtime_->active_audio_open_params = nlohmann::json::object();
     runtime_->suppress_video_auto_open = false;
     runtime_->video_frame_rates.clear();
     runtime_->video_supports_active_reconfigure = true;
@@ -1069,7 +1088,7 @@ void AxtpAdapter::process_media_source_state_event(
     if (!event.valid || event.kind == MediaKind::Unknown) {
         return;
     }
-    if (event.kind == MediaKind::Video) {
+    if (event.kind == MediaKind::Video || event.kind == MediaKind::Audio) {
         std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
         if (runtime_->video_reconfigure.has_value()) {
             return;
@@ -1219,7 +1238,7 @@ void AxtpAdapter::process_media_source_state_event(
             return;
         }
     }
-    if (configure_media_stream_kind(device_id, event.kind, false)) {
+    if (configure_media_stream_kind(device_id, event.kind, false, false)) {
         return;
     }
     const auto next_attempt = std::chrono::steady_clock::now() +
@@ -1550,10 +1569,10 @@ void AxtpAdapter::configure_media_streams(const std::string& device_id)
         configure_audio = config_.enable_audio && !audio_source_recovery_pending_;
     }
     if (configure_video) {
-        configure_media_stream_kind(device_id, MediaKind::Video, true);
+        configure_media_stream_kind(device_id, MediaKind::Video, true, false);
     }
     if (configure_audio) {
-        configure_media_stream_kind(device_id, MediaKind::Audio, true);
+        configure_media_stream_kind(device_id, MediaKind::Audio, true, false);
     }
 }
 
@@ -1585,7 +1604,7 @@ void AxtpAdapter::retry_pending_media_source_recoveries(
         if (!retry) {
             return;
         }
-        configure_media_stream_kind(device_id, kind, false);
+        configure_media_stream_kind(device_id, kind, false, false);
         // configure_media_stream_kind() uses public runtime callJson and may
         // itself dispatch source events. Preserve the same lifecycle fence as
         // AxtpAdapter::call() before any callbacks are drained or another kind
@@ -1641,20 +1660,15 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
         notify_video_stream_params_state(std::move(failed));
     };
 
-    auto mark_previous_closed = [&]() {
-        if (!operation.previous_descriptor.has_value()) {
-            return;
-        }
+    auto mark_previous_closed = [&](const MediaStreamDescriptor& descriptor) {
         bool removed = false;
         std::uint32_t active_count = 0;
         {
             std::lock_guard<std::mutex> lock(media_stream_mutex_);
-            const auto it = active_media_streams_.find(
-                operation.previous_descriptor->key.stream_id);
+            const auto it = active_media_streams_.find(descriptor.key.stream_id);
             if (it != active_media_streams_.end() &&
-                it->second.descriptor.kind == MediaKind::Video &&
-                it->second.descriptor.key.generation ==
-                    operation.previous_descriptor->key.generation) {
+                it->second.descriptor.kind == descriptor.kind &&
+                it->second.descriptor.key.generation == descriptor.key.generation) {
                 active_media_streams_.erase(it);
                 removed = true;
             }
@@ -1662,53 +1676,65 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
         }
         if (removed) {
             enqueue_media_stream_events({
-                {MediaStreamEventKind::Closed, *operation.previous_descriptor},
+                {MediaStreamEventKind::Closed, descriptor},
             });
             std::lock_guard<std::mutex> lock(mutex_);
-            diagnostics_.active_video_stream_id = 0;
+            if (descriptor.kind == MediaKind::Video) {
+                diagnostics_.active_video_stream_id = 0;
+            } else {
+                diagnostics_.active_audio_stream_id = 0;
+            }
             diagnostics_.active_media_streams = active_count;
         }
     };
 
-    if (operation.previous_descriptor.has_value() && !operation.close_terminal) {
-        nlohmann::json close_result;
-        if (!operation.close_sent) {
+    const auto advance_close = [&](MediaKind kind,
+                                   const std::optional<MediaStreamDescriptor>& descriptor,
+                                   bool& close_sent,
+                                   bool& close_terminal,
+                                   std::uint32_t& failure_code,
+                                   std::string& failure_message) {
+        if (!descriptor.has_value() || close_terminal) {
+            close_terminal = true;
+            return true;
+        }
+
+        nlohmann::json close_result = nlohmann::json::object();
+        const auto method_prefix = std::string(media_kind_name(kind));
+        if (!close_sent) {
             axtp::sdk::CallOptions options;
             options.timeout = std::chrono::milliseconds(5000);
             const nlohmann::json params{
-                {"streamId", operation.previous_descriptor->key.stream_id},
+                {"streamId", descriptor->key.stream_id},
                 {"peerRole", "transmitter"},
                 {"reason", "encodingReconfigure"},
             };
             const auto text = runtime_->client->callJson(
-                "video.closeStream", params.dump(), options);
+                method_prefix + ".closeStream", params.dump(), options);
             const auto error = runtime_->client->lastError();
             if (!error.ok()) {
-                finish_failed(
-                    static_cast<std::uint32_t>(error.code),
-                    error.message.empty() ? "video.closeStream failed" : error.message,
-                    true);
-                return;
+                failure_code = static_cast<std::uint32_t>(error.code);
+                failure_message = error.message.empty()
+                    ? method_prefix + ".closeStream failed"
+                    : error.message;
+                return false;
             }
             close_result = parse_json_object(text).value_or(nlohmann::json::object());
-            operation.close_sent = true;
-            operation.close_deadline = std::chrono::steady_clock::now() +
-                std::chrono::seconds(5);
+            close_sent = true;
         } else {
             if (std::chrono::steady_clock::now() >= operation.close_deadline) {
-                finish_failed(
-                    kStatusMediaStreamStopFailed,
-                    "video stream did not reach a terminal state",
-                    true);
-                return;
+                failure_code = kStatusMediaStreamStopFailed;
+                failure_message = method_prefix +
+                    " stream did not reach a terminal state";
+                return false;
             }
             axtp::sdk::CallOptions options;
             options.timeout = std::chrono::milliseconds(500);
             const nlohmann::json params{
-                {"streamId", operation.previous_descriptor->key.stream_id},
+                {"streamId", descriptor->key.stream_id},
             };
             const auto text = runtime_->client->callJson(
-                "video.getStreamState", params.dump(), options);
+                method_prefix + ".getStreamState", params.dump(), options);
             if (runtime_->client->lastError().ok()) {
                 close_result = parse_json_object(text).value_or(nlohmann::json::object());
             }
@@ -1716,18 +1742,49 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
 
         const auto close_state = ascii_lower(json_string_or(close_result, "state"));
         if (close_state == "failed") {
-            finish_failed(
-                kStatusMediaStreamStopFailed,
-                "video stream close entered failed state",
-                true);
-            return;
+            failure_code = kStatusMediaStreamStopFailed;
+            failure_message = method_prefix + " stream close entered failed state";
+            return false;
         }
         if (close_state == "closed" || close_result.value("alreadyClosed", false)) {
-            operation.close_terminal = true;
-            mark_previous_closed();
-            state.active_stream_id.reset();
-            state.phase = VideoStreamParamsPhase::Opening;
-            publish_state(state);
+            close_terminal = true;
+            mark_previous_closed(*descriptor);
+        }
+        return true;
+    };
+
+    // NA20 only applies NT10 encoder changes after both receiver-pull legs
+    // stop. Send both close requests before opening either replacement, then
+    // treat each stream generation as an independent lifecycle boundary.
+    const bool has_close_targets = operation.previous_video_descriptor.has_value() ||
+        operation.previous_audio_descriptor.has_value();
+    if (has_close_targets &&
+        (!operation.video_close_terminal || !operation.audio_close_terminal)) {
+        if (!operation.video_close_sent && !operation.audio_close_sent) {
+            operation.close_deadline = std::chrono::steady_clock::now() +
+                std::chrono::seconds(5);
+        }
+        std::uint32_t close_failure_code = 0;
+        std::string close_failure_message;
+        if (!advance_close(
+                MediaKind::Video,
+                operation.previous_video_descriptor,
+                operation.video_close_sent,
+                operation.video_close_terminal,
+                close_failure_code,
+                close_failure_message)) {
+            finish_failed(close_failure_code, std::move(close_failure_message), true);
+            return;
+        }
+        if (!advance_close(
+                MediaKind::Audio,
+                operation.previous_audio_descriptor,
+                operation.audio_close_sent,
+                operation.audio_close_terminal,
+                close_failure_code,
+                close_failure_message)) {
+            finish_failed(close_failure_code, std::move(close_failure_message), false);
+            return;
         }
         {
             std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
@@ -1735,9 +1792,12 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
                 *runtime_->video_reconfigure = operation;
             }
         }
-        if (!operation.close_terminal) {
+        if (!operation.video_close_terminal || !operation.audio_close_terminal) {
             return;
         }
+        state.active_stream_id.reset();
+        state.phase = VideoStreamParamsPhase::Opening;
+        publish_state(state);
     }
 
     {
@@ -1754,8 +1814,122 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
     // generation assigned by configure_media_stream_kind() is the lifecycle
     // boundary, so stale frames/events remain isolated without rejecting the
     // replacement or making rollback impossible on NA20.
-    bool opened = configure_media_stream_kind(device_id, MediaKind::Video, false);
-    if (opened) {
+    if (!operation.video_opened) {
+        const bool opened = configure_media_stream_kind(
+            device_id, MediaKind::Video, false, true);
+        if (opened) {
+            operation.video_opened = true;
+            std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+            if (runtime_->video_reconfigure.has_value()) {
+                *runtime_->video_reconfigure = operation;
+            }
+        } else {
+            const auto open_error = runtime_->client->lastError();
+            std::string last_adapter_event;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                last_adapter_event = diagnostics_.last_event;
+            }
+            const auto error_code = open_error.ok()
+                ? (last_adapter_event.find("source-waiting") != std::string::npos ||
+                   last_adapter_event.find("capabilities-unavailable") != std::string::npos
+                       ? kStatusMediaSourceUnavailable
+                       : kStatusMediaStreamStartFailed)
+                : static_cast<std::uint32_t>(open_error.code);
+            const auto error_message = open_error.message.empty()
+                ? std::string("video.openStream failed")
+                : open_error.message;
+
+            if (!operation.rollback &&
+                (operation.previous_video_descriptor.has_value() ||
+                 !operation.previous_video_open_params.empty())) {
+                VideoStreamParamsState rollback_state;
+                {
+                    std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+                    if (!runtime_->video_reconfigure.has_value()) {
+                        return;
+                    }
+                    runtime_->session_video_frame_rate = operation.previous_frame_rate;
+                    operation.rollback = true;
+                    operation.video_opened = false;
+                    operation.audio_opened = false;
+                    *runtime_->video_reconfigure = operation;
+                    auto& current = runtime_->video_params_state;
+                    current.desired_frame_rate = operation.previous_frame_rate;
+                    current.phase = VideoStreamParamsPhase::Opening;
+                    current.last_error = VideoStreamParamsError{error_code, error_message};
+                    rollback_state = current;
+                }
+                notify_video_stream_params_state(std::move(rollback_state));
+                return;
+            }
+
+            finish_failed(error_code, error_message, false);
+            return;
+        }
+    }
+
+    const bool should_reopen_audio = operation.previous_audio_descriptor.has_value() ||
+        !operation.previous_audio_open_params.empty();
+    if (should_reopen_audio && !operation.audio_opened) {
+        if (!configure_media_stream_kind(device_id, MediaKind::Audio, false, true)) {
+            const auto open_error = runtime_->client->lastError();
+            const auto error_code = open_error.ok()
+                ? kStatusMediaStreamStartFailed
+                : static_cast<std::uint32_t>(open_error.code);
+            const auto error_message = open_error.message.empty()
+                ? std::string("audio.openStream failed")
+                : open_error.message;
+
+            if (!operation.rollback) {
+                std::optional<MediaStreamDescriptor> replacement_video;
+                {
+                    std::lock_guard<std::mutex> lock(media_stream_mutex_);
+                    const auto active = std::find_if(
+                        active_media_streams_.begin(), active_media_streams_.end(),
+                        [](const auto& entry) {
+                            return entry.second.descriptor.kind == MediaKind::Video;
+                        });
+                    if (active != active_media_streams_.end()) {
+                        replacement_video = active->second.descriptor;
+                    }
+                }
+                VideoStreamParamsState rollback_state;
+                {
+                    std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+                    if (!runtime_->video_reconfigure.has_value()) {
+                        return;
+                    }
+                    runtime_->session_video_frame_rate = operation.previous_frame_rate;
+                    operation.rollback = true;
+                    operation.previous_video_descriptor = replacement_video;
+                    operation.previous_audio_descriptor.reset();
+                    operation.video_close_sent = false;
+                    operation.audio_close_sent = false;
+                    operation.video_close_terminal = !replacement_video.has_value();
+                    operation.audio_close_terminal = true;
+                    operation.video_opened = false;
+                    operation.audio_opened = false;
+                    *runtime_->video_reconfigure = operation;
+                    auto& current = runtime_->video_params_state;
+                    current.desired_frame_rate = operation.previous_frame_rate;
+                    current.phase = replacement_video.has_value()
+                        ? VideoStreamParamsPhase::Closing
+                        : VideoStreamParamsPhase::Opening;
+                    current.last_error = VideoStreamParamsError{error_code, error_message};
+                    rollback_state = current;
+                }
+                notify_video_stream_params_state(std::move(rollback_state));
+                return;
+            }
+
+            finish_failed(error_code, error_message, false);
+            return;
+        }
+        operation.audio_opened = true;
+    }
+
+    if (operation.video_opened && (!should_reopen_audio || operation.audio_opened)) {
         VideoStreamParamsState completed;
         {
             std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
@@ -1775,62 +1949,23 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
         notify_video_stream_params_state(std::move(completed));
         return;
     }
-
-    const auto open_error = runtime_->client->lastError();
-    std::string last_adapter_event;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        last_adapter_event = diagnostics_.last_event;
-    }
-    const auto error_code = open_error.ok()
-        ? (last_adapter_event.find("source-waiting") != std::string::npos ||
-           last_adapter_event.find("capabilities-unavailable") != std::string::npos
-               ? kStatusMediaSourceUnavailable
-               : kStatusMediaStreamStartFailed)
-        : static_cast<std::uint32_t>(open_error.code);
-    const auto error_message = open_error.message.empty()
-        ? std::string("video.openStream failed")
-        : open_error.message;
-
-    if (!operation.rollback &&
-        (operation.previous_descriptor.has_value() ||
-         !operation.previous_open_params.empty())) {
-        VideoStreamParamsState rollback_state;
-        {
-            std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
-            if (!runtime_->video_reconfigure.has_value()) {
-                return;
-            }
-            runtime_->session_video_frame_rate = operation.previous_frame_rate;
-            operation.rollback = true;
-            *runtime_->video_reconfigure = operation;
-            auto& current = runtime_->video_params_state;
-            current.desired_frame_rate = operation.previous_frame_rate;
-            current.phase = VideoStreamParamsPhase::Opening;
-            current.last_error = VideoStreamParamsError{error_code, error_message};
-            rollback_state = current;
-        }
-        notify_video_stream_params_state(std::move(rollback_state));
-        return;
-    }
-
-    finish_failed(error_code, error_message, false);
 }
 
 bool AxtpAdapter::configure_media_stream_kind(
     const std::string& device_id,
     MediaKind kind,
-    bool update_retry_state)
+    bool update_retry_state,
+    bool from_video_reconfigure)
 {
     if (!config_.enable_media || runtime_->client == nullptr ||
         (kind != MediaKind::Video && kind != MediaKind::Audio)) {
         return false;
     }
     std::optional<VideoStreamParamsState> video_params_update;
-    if (kind == MediaKind::Video) {
+    if (!from_video_reconfigure) {
         std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
-        if (runtime_->suppress_video_auto_open &&
-            !runtime_->video_reconfigure.has_value()) {
+        if (runtime_->video_reconfigure.has_value() ||
+            (kind == MediaKind::Video && runtime_->suppress_video_auto_open)) {
             return false;
         }
     }
@@ -1902,9 +2037,9 @@ bool AxtpAdapter::configure_media_stream_kind(
         {
             std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
             if (runtime_->video_reconfigure.has_value() &&
-                runtime_->video_reconfigure->previous_open_params.is_object() &&
-                !runtime_->video_reconfigure->previous_open_params.empty()) {
-                open_params = runtime_->video_reconfigure->previous_open_params;
+                runtime_->video_reconfigure->previous_video_open_params.is_object() &&
+                !runtime_->video_reconfigure->previous_video_open_params.empty()) {
+                open_params = runtime_->video_reconfigure->previous_video_open_params;
                 open_params.erase("frameRate");
                 open_params.erase("streamId");
                 open_params.erase("state");
@@ -1922,16 +2057,28 @@ bool AxtpAdapter::configure_media_stream_kind(
             }
         }
     } else {
-        open_params = nlohmann::json{
-            {"source", source},
-            {"peerRole", "transmitter"},
-            {"codec", "aac"},
-            {"transportFormat", "adts"},
-            {"sampleRate", config_.audio_sample_rate == 0 ? 48000 : config_.audio_sample_rate},
-            {"channels", choose_audio_channels(*capabilities, source, config_.audio_channels)},
-            {"streamProfile", "media.audio"},
-            {"cursorUnit", "timestampUs"},
-        };
+        {
+            std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+            if (runtime_->video_reconfigure.has_value() &&
+                runtime_->video_reconfigure->previous_audio_open_params.is_object() &&
+                !runtime_->video_reconfigure->previous_audio_open_params.empty()) {
+                open_params = runtime_->video_reconfigure->previous_audio_open_params;
+                open_params.erase("streamId");
+                open_params.erase("state");
+            }
+        }
+        if (open_params.empty()) {
+            open_params = nlohmann::json{
+                {"source", source},
+                {"peerRole", "transmitter"},
+                {"codec", "aac"},
+                {"transportFormat", "adts"},
+                {"sampleRate", config_.audio_sample_rate == 0 ? 48000 : config_.audio_sample_rate},
+                {"channels", choose_audio_channels(*capabilities, source, config_.audio_channels)},
+                {"streamProfile", "media.audio"},
+                {"cursorUnit", "timestampUs"},
+            };
+        }
     }
 
     const auto response = call_json(open_stream_method_name(kind), open_params);
@@ -2043,6 +2190,16 @@ bool AxtpAdapter::configure_media_stream_kind(
             runtime_->video_params_state.rollback_applied = false;
             runtime_->video_params_state.last_error.reset();
             video_params_update = runtime_->video_params_state;
+        }
+    } else {
+        std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+        runtime_->active_audio_open_params = open_params;
+        for (const char* key : {"source", "peerRole", "codec", "transportFormat",
+                                "sampleRate", "channels", "streamProfile",
+                                "cursorUnit", "syncGroupId", "castSessionId"}) {
+            if (response->contains(key)) {
+                runtime_->active_audio_open_params[key] = (*response)[key];
+            }
         }
     }
     if (video_params_update.has_value()) {

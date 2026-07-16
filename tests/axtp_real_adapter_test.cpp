@@ -236,6 +236,7 @@ public:
                     {
                         std::lock_guard<std::mutex> lock(requests_mutex);
                         video_open_params.push_back(params);
+                        media_request_order.push_back("video.open");
                     }
                     auto failures = fail_video_open_count.load();
                     if (failures > 0 &&
@@ -257,7 +258,21 @@ public:
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::AudioOpenStream)) {
                     ++audio_open_requests;
-                    body = R"({"streamId":2,"state":"streaming","source":"wireless_cast_audio","codec":"aac","transportFormat":"adts"})";
+                    const auto params = nlohmann::json::parse(
+                        std::string(rpc.body.begin(), rpc.body.end()));
+                    {
+                        std::lock_guard<std::mutex> lock(requests_mutex);
+                        audio_open_params.push_back(params);
+                        media_request_order.push_back("audio.open");
+                    }
+                    auto failures = fail_audio_open_count.load();
+                    if (failures > 0 &&
+                        fail_audio_open_count.compare_exchange_strong(failures, failures - 1)) {
+                        response.statusCode = axtp::ErrorCode::MediaStreamStartFailed;
+                        body = R"({"error":"audio open failed"})";
+                    } else {
+                        body = R"({"streamId":2,"state":"streaming","source":"wireless_cast_audio","codec":"aac","transportFormat":"adts"})";
+                    }
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::VideoCloseStream)) {
                     ++video_close_requests;
@@ -266,6 +281,7 @@ public:
                     {
                         std::lock_guard<std::mutex> lock(requests_mutex);
                         video_close_params.push_back(params);
+                        media_request_order.push_back("video.close");
                     }
                     body = nlohmann::json{
                         {"streamId", params.at("streamId")},
@@ -282,6 +298,33 @@ public:
                         {"state", "closed"},
                         {"source", "wireless_cast"},
                         {"codec", "h264"},
+                    }.dump();
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::AudioCloseStream)) {
+                    ++audio_close_requests;
+                    const auto params = nlohmann::json::parse(
+                        std::string(rpc.body.begin(), rpc.body.end()));
+                    {
+                        std::lock_guard<std::mutex> lock(requests_mutex);
+                        audio_close_params.push_back(params);
+                        media_request_order.push_back("audio.close");
+                    }
+                    body = nlohmann::json{
+                        {"streamId", params.at("streamId")},
+                        {"state", audio_close_returns_closing.exchange(false)
+                            ? "closing" : "closed"},
+                        {"reason", "encodingReconfigure"},
+                    }.dump();
+                } else if (rpc.methodOrEventId ==
+                           static_cast<std::uint32_t>(axtp::MethodId::AudioGetStreamState)) {
+                    ++audio_state_requests;
+                    const auto params = nlohmann::json::parse(
+                        std::string(rpc.body.begin(), rpc.body.end()));
+                    body = nlohmann::json{
+                        {"streamId", params.at("streamId")},
+                        {"state", "closed"},
+                        {"source", "wireless_cast_audio"},
+                        {"codec", "aac"},
                     }.dump();
                 }
                 response.body = axtp::Bytes(body.begin(), body.end());
@@ -336,14 +379,21 @@ public:
     std::atomic<std::uint32_t> video_capability_requests{0};
     std::atomic<std::uint32_t> video_close_requests{0};
     std::atomic<std::uint32_t> video_state_requests{0};
+    std::atomic<std::uint32_t> audio_close_requests{0};
+    std::atomic<std::uint32_t> audio_state_requests{0};
     std::atomic<bool> fail_next_video_capabilities{false};
     std::atomic<bool> queue_terminal_frame_before_next_response{false};
     std::atomic<bool> close_returns_closing{false};
+    std::atomic<bool> audio_close_returns_closing{false};
     std::atomic<int> fail_video_open_count{0};
+    std::atomic<int> fail_audio_open_count{0};
     bool unique_video_stream_ids = false;
     std::mutex requests_mutex;
     std::vector<nlohmann::json> video_open_params;
     std::vector<nlohmann::json> video_close_params;
+    std::vector<nlohmann::json> audio_open_params;
+    std::vector<nlohmann::json> audio_close_params;
+    std::vector<std::string> media_request_order;
 
 private:
     void queueBytes(axtp::Bytes bytes)
@@ -1363,6 +1413,7 @@ int main()
             // generation, not the id alone, separates the replacement.
             transport->unique_video_stream_ids = false;
             transport->close_returns_closing.store(true);
+            transport->audio_close_returns_closing.store(true);
             frame_rate_scripted = transport.get();
             return transport;
         });
@@ -1390,9 +1441,18 @@ int main()
     const auto initial_video = std::find_if(
         initial_frame_rate_descriptors.begin(), initial_frame_rate_descriptors.end(),
         [](const auto& descriptor) { return descriptor.kind == axent::MediaKind::Video; });
+    const auto initial_audio = std::find_if(
+        initial_frame_rate_descriptors.begin(), initial_frame_rate_descriptors.end(),
+        [](const auto& descriptor) { return descriptor.kind == axent::MediaKind::Audio; });
     require(initial_video != initial_frame_rate_descriptors.end() &&
-                initial_video->frame_rate == 25,
-            "negotiated frame rate must be exposed on the media descriptor");
+                initial_video->frame_rate == 25 &&
+                initial_audio != initial_frame_rate_descriptors.end(),
+            "negotiated frame rate and initial audio stream must be exposed");
+    std::size_t request_order_before_reconfigure = 0;
+    {
+        std::lock_guard<std::mutex> lock(frame_rate_scripted->requests_mutex);
+        request_order_before_reconfigure = frame_rate_scripted->media_request_order.size();
+    }
 
     std::mutex params_updates_mutex;
     std::vector<axent::VideoStreamParamsState> params_updates;
@@ -1424,15 +1484,28 @@ int main()
     }), "frame-rate close/open transaction should reach applied");
     require(frame_rate_scripted->video_close_requests.load() == 1 &&
                 frame_rate_scripted->video_state_requests.load() >= 1 &&
+                frame_rate_scripted->audio_close_requests.load() == 1 &&
+                frame_rate_scripted->audio_state_requests.load() >= 1 &&
                 frame_rate_scripted->video_open_requests.load() == 2 &&
-                frame_rate_scripted->audio_open_requests.load() == 1,
-            "active frame-rate update must wait for terminal close and reopen only video");
+                frame_rate_scripted->audio_open_requests.load() == 2,
+            "active frame-rate update must close, await, and reopen audio and video");
     {
         std::lock_guard<std::mutex> lock(frame_rate_scripted->requests_mutex);
         require(frame_rate_scripted->video_close_params.front().at("reason") ==
                     "encodingReconfigure" &&
+                    frame_rate_scripted->audio_close_params.front().at("reason") ==
+                        "encodingReconfigure" &&
                     frame_rate_scripted->video_open_params.back().at("frameRate") == 15,
                 "reconfiguration wire parameters mismatch");
+        const std::vector<std::string> expected_order{
+            "video.close", "audio.close", "video.open", "audio.open"};
+        require(frame_rate_scripted->media_request_order.size() >=
+                    request_order_before_reconfigure + expected_order.size() &&
+                    std::equal(
+                        expected_order.begin(), expected_order.end(),
+                        frame_rate_scripted->media_request_order.begin() +
+                            static_cast<std::ptrdiff_t>(request_order_before_reconfigure)),
+                "both close requests must precede either replacement open request");
     }
     const auto applied_state = frame_rate_adapter->video_stream_params_state(
         "hid:0581:2581:NA20-SERIAL");
@@ -1442,6 +1515,18 @@ int main()
                 applied_state.previous_stream_id.has_value() &&
                 applied_state.active_stream_id == applied_state.previous_stream_id,
             "same-id replacement should preserve the numeric id while advancing generation");
+    const auto applied_descriptors = frame_rate_adapter->active_media_stream_descriptors();
+    const auto applied_video = std::find_if(
+        applied_descriptors.begin(), applied_descriptors.end(),
+        [](const auto& descriptor) { return descriptor.kind == axent::MediaKind::Video; });
+    const auto applied_audio = std::find_if(
+        applied_descriptors.begin(), applied_descriptors.end(),
+        [](const auto& descriptor) { return descriptor.kind == axent::MediaKind::Audio; });
+    require(applied_video != applied_descriptors.end() &&
+                applied_audio != applied_descriptors.end() &&
+                applied_video->key.generation > initial_video->key.generation &&
+                applied_audio->key.generation > initial_audio->key.generation,
+            "frame-rate reconfiguration must advance both stream generations");
 
     const auto unchanged_frame_rate = frame_rate_adapter->set_video_stream_params(
         "hid:0581:2581:NA20-SERIAL", set_fifteen);
@@ -1468,8 +1553,9 @@ int main()
                     !frame_rate_scripted->video_open_params.back().contains("frameRate"),
                 "reset open must omit frameRate to restore the source/profile default");
     }
-    require(frame_rate_scripted->audio_open_requests.load() == 1,
-            "frame-rate reset must not restart audio");
+    require(frame_rate_scripted->audio_close_requests.load() == 2 &&
+                frame_rate_scripted->audio_open_requests.load() == 3,
+            "frame-rate reset must restart audio together with video");
 
     axent::VideoStreamParamsRequest invalid_frame_rate;
     invalid_frame_rate.frame_rate = 0;
@@ -1508,6 +1594,30 @@ int main()
                 "rollback should retry open with the previous source-default parameters");
     }
 
+    frame_rate_scripted->fail_audio_open_count.store(1);
+    const auto audio_rollback_pending = frame_rate_adapter->set_video_stream_params(
+        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+    require(audio_rollback_pending.status_code == 0 && audio_rollback_pending.accepted,
+            "audio-open rollback scenario should begin as pending");
+    require(wait_until([&]() {
+        return frame_rate_adapter->video_stream_params_state(
+            "hid:0581:2581:NA20-SERIAL").state ==
+                axent::VideoStreamParamsStateKind::RolledBack;
+    }), "failed replacement audio open should close replacement video and restore both streams");
+    const auto after_audio_rollback = frame_rate_adapter->active_media_stream_descriptors();
+    require(after_audio_rollback.size() == 2 &&
+                std::count_if(
+                    after_audio_rollback.begin(), after_audio_rollback.end(),
+                    [](const auto& descriptor) {
+                        return descriptor.kind == axent::MediaKind::Video;
+                    }) == 1 &&
+                std::count_if(
+                    after_audio_rollback.begin(), after_audio_rollback.end(),
+                    [](const auto& descriptor) {
+                        return descriptor.kind == axent::MediaKind::Audio;
+                    }) == 1,
+            "audio-open rollback must restore one active audio and one active video stream");
+
     frame_rate_scripted->fail_video_open_count.store(2);
     const auto rollback_failure_pending = frame_rate_adapter->set_video_stream_params(
         "hid:0581:2581:NA20-SERIAL", set_fifteen);
@@ -1525,9 +1635,8 @@ int main()
                 rollback_failed_state.last_error.has_value(),
             "rollback failure should leave no active video stream and preserve typed error");
     const auto after_rollback_failure = frame_rate_adapter->active_media_stream_descriptors();
-    require(after_rollback_failure.size() == 1 &&
-                after_rollback_failure.front().kind == axent::MediaKind::Audio,
-            "rollback failure must leave the unaffected audio stream active");
+    require(after_rollback_failure.empty(),
+            "rollback failure after a paired close must not expose a stale audio stream");
 
     return 0;
 }
