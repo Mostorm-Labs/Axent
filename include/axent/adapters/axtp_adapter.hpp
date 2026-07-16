@@ -104,7 +104,8 @@ private:
     void configure_media_streams(const std::string& device_id);
     bool configure_media_stream_kind(const std::string& device_id,
                                      MediaKind kind,
-                                     bool update_retry_state);
+                                     bool update_retry_state,
+                                     bool from_video_reconfigure);
     void advance_video_reconfigure(const std::string& device_id);
     void clear_video_stream_params_session();
     void notify_video_stream_params_state(VideoStreamParamsState state);
