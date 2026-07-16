@@ -1990,6 +1990,23 @@ bool AxtpAdapter::configure_media_stream_kind(
 
     const bool is_video = kind == MediaKind::Video;
     const std::string source = is_video ? config_.video_source : config_.audio_source;
+    // Snapshot the frame-rate selected for this particular open before the
+    // capabilities RPC pumps any more inbound events.  A replacement open
+    // must use the reconfigure operation's immutable target (or its previous
+    // value during rollback), rather than re-reading ambient session state
+    // after close/source lifecycle events have been dispatched.
+    std::optional<std::uint32_t> video_open_frame_rate;
+    if (is_video) {
+        std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+        if (from_video_reconfigure && runtime_->video_reconfigure.has_value()) {
+            const auto& operation = *runtime_->video_reconfigure;
+            video_open_frame_rate = operation.rollback
+                ? operation.previous_frame_rate
+                : operation.requested_frame_rate;
+        } else {
+            video_open_frame_rate = runtime_->session_video_frame_rate;
+        }
+    }
     const nlohmann::json source_params{{"source", source}};
     auto capabilities = call_json(capabilities_method_name(kind), source_params);
     if (!capabilities.has_value()) {
@@ -2052,8 +2069,8 @@ bool AxtpAdapter::configure_media_stream_kind(
                     {"cursorUnit", "timestampUs"},
                 };
             }
-            if (runtime_->session_video_frame_rate.has_value()) {
-                open_params["frameRate"] = *runtime_->session_video_frame_rate;
+            if (video_open_frame_rate.has_value()) {
+                open_params["frameRate"] = *video_open_frame_rate;
             }
         }
     } else {
