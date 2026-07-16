@@ -231,10 +231,11 @@ public:
                 } else if (rpc.methodOrEventId ==
                            static_cast<std::uint32_t>(axtp::MethodId::VideoOpenStream)) {
                     const auto request_number = ++video_open_requests;
-                    const auto params = nlohmann::json::parse(
-                        std::string(rpc.body.begin(), rpc.body.end()));
+                    const std::string wire_body(rpc.body.begin(), rpc.body.end());
+                    const auto params = nlohmann::json::parse(wire_body);
                     {
                         std::lock_guard<std::mutex> lock(requests_mutex);
+                        video_open_wire_bodies.push_back(wire_body);
                         video_open_params.push_back(params);
                         media_request_order.push_back("video.open");
                     }
@@ -390,6 +391,7 @@ public:
     bool unique_video_stream_ids = false;
     std::mutex requests_mutex;
     std::vector<nlohmann::json> video_open_params;
+    std::vector<std::string> video_open_wire_bodies;
     std::vector<nlohmann::json> video_close_params;
     std::vector<nlohmann::json> audio_open_params;
     std::vector<nlohmann::json> audio_close_params;
@@ -1495,7 +1497,9 @@ int main()
                     "encodingReconfigure" &&
                     frame_rate_scripted->audio_close_params.front().at("reason") ==
                         "encodingReconfigure" &&
-                    frame_rate_scripted->video_open_params.back().at("frameRate") == 15,
+                    frame_rate_scripted->video_open_params.back().at("frameRate") == 15 &&
+                    nlohmann::json::parse(
+                        frame_rate_scripted->video_open_wire_bodies.back()).at("frameRate") == 15,
                 "reconfiguration wire parameters mismatch");
         const std::vector<std::string> expected_order{
             "video.close", "audio.close", "video.open", "audio.open"};
