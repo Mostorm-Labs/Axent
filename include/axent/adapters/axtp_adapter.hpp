@@ -156,6 +156,12 @@ private:
     mutable std::mutex media_stream_mutex_;
     std::map<std::uint32_t, ActiveMediaStream> active_media_streams_;
     std::map<std::uint32_t, std::uint64_t> media_stream_generations_;
+    // Source recovery closes both receiver-pull legs once before reopening.
+    std::optional<MediaStreamDescriptor> pending_video_source_recovery_close_;
+    std::optional<MediaStreamDescriptor> pending_audio_source_recovery_close_;
+    bool source_recovery_cycle_active_ = false;
+    bool source_recovery_close_sent_ = false;
+    std::uint8_t source_recovery_reopen_mask_ = 0;
     std::mutex pending_media_event_mutex_;
     std::queue<MediaStreamEvent> pending_media_stream_events_;
     std::mutex pending_media_source_state_mutex_;

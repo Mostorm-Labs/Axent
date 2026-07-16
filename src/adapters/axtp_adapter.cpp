@@ -1006,6 +1006,11 @@ void AxtpAdapter::clear_media_streams()
                 {MediaStreamEventKind::Closed, entry.second.descriptor});
         }
         active_media_streams_.clear();
+        pending_video_source_recovery_close_.reset();
+        pending_audio_source_recovery_close_.reset();
+        source_recovery_cycle_active_ = false;
+        source_recovery_close_sent_ = false;
+        source_recovery_reopen_mask_ = 0;
     }
     enqueue_media_stream_events(std::move(closed_events));
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1147,6 +1152,38 @@ void AxtpAdapter::process_media_source_state_event(
         if (active_stream_id_is_foreign) {
             return;
         }
+        // Start one paired recovery cycle for the first terminal source event.
+        // Capture the descriptor which just closed as well as the other active
+        // leg.  The terminal event is removed from active_media_streams_ above,
+        // so taking the snapshot only from the map would lose the video leg.
+        if (event.kind == MediaKind::Video) {
+            std::lock_guard<std::mutex> lock(media_stream_mutex_);
+            if (!source_recovery_cycle_active_ &&
+                (closed_descriptor.has_value() || !active_media_streams_.empty())) {
+                source_recovery_cycle_active_ = true;
+                source_recovery_close_sent_ = false;
+                source_recovery_reopen_mask_ = 0;
+            }
+            if (source_recovery_cycle_active_ && !source_recovery_close_sent_) {
+                const auto capture = [&](const MediaStreamDescriptor& descriptor) {
+                    if (descriptor.kind == MediaKind::Video &&
+                        !pending_video_source_recovery_close_.has_value()) {
+                        pending_video_source_recovery_close_ = descriptor;
+                        source_recovery_reopen_mask_ |= 0x01;
+                    } else if (descriptor.kind == MediaKind::Audio &&
+                               !pending_audio_source_recovery_close_.has_value()) {
+                        pending_audio_source_recovery_close_ = descriptor;
+                        source_recovery_reopen_mask_ |= 0x02;
+                    }
+                };
+                if (closed_descriptor.has_value()) {
+                    capture(*closed_descriptor);
+                }
+                for (const auto& entry : active_media_streams_) {
+                    capture(entry.second.descriptor);
+                }
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (event.kind == MediaKind::Video) {
@@ -1203,6 +1240,80 @@ void AxtpAdapter::process_media_source_state_event(
             audio_source_terminal_ = false;
         }
     }
+
+    // A source-level stop is different from a normal per-kind retry: NA20 can
+    // report the source as available again while NT10 is still carrying the
+    // old encoder state.  Reset both receiver-pull legs before the first
+    // replacement open so the encoder emits a fresh IDR.  This is deliberately
+    // one-shot per terminal/recovery cycle and does not alter the retry timer.
+    std::vector<MediaStreamDescriptor> source_recovery_closes;
+    std::vector<MediaStreamEvent> source_recovery_closed_events;
+    std::uint32_t source_recovery_active_stream_count = 0;
+    bool source_recovery_video_closed = false;
+    bool source_recovery_audio_closed = false;
+    {
+        std::lock_guard<std::mutex> lock(media_stream_mutex_);
+        if (event.kind == MediaKind::Video &&
+            source_recovery_cycle_active_ && !source_recovery_close_sent_) {
+            if (pending_video_source_recovery_close_.has_value()) {
+                source_recovery_closes.push_back(
+                    std::move(*pending_video_source_recovery_close_));
+                pending_video_source_recovery_close_.reset();
+            }
+            if (pending_audio_source_recovery_close_.has_value()) {
+                source_recovery_closes.push_back(
+                    std::move(*pending_audio_source_recovery_close_));
+                pending_audio_source_recovery_close_.reset();
+            }
+            source_recovery_close_sent_ = true;
+
+            // The explicit paired close is authoritative even when the device
+            // does not emit a terminal event for the second leg.  Remove that
+            // leg now so stale payloads cannot reach the renderer while the
+            // source is being reopened, and publish its lifecycle Closed before
+            // the replacement Opened event.
+            for (const auto& descriptor : source_recovery_closes) {
+                source_recovery_video_closed |= descriptor.kind == MediaKind::Video;
+                source_recovery_audio_closed |= descriptor.kind == MediaKind::Audio;
+                const auto active = active_media_streams_.find(descriptor.key.stream_id);
+                if (active != active_media_streams_.end() &&
+                    active->second.descriptor.key.generation == descriptor.key.generation) {
+                    source_recovery_closed_events.push_back(
+                        {MediaStreamEventKind::Closed, active->second.descriptor});
+                    active_media_streams_.erase(active);
+                }
+            }
+            source_recovery_active_stream_count =
+                static_cast<std::uint32_t>(active_media_streams_.size());
+        }
+    }
+    if (!source_recovery_closes.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        diagnostics_.active_media_streams = source_recovery_active_stream_count;
+        if (source_recovery_active_stream_count == 0) {
+            diagnostics_.active_video_stream_id = 0;
+            diagnostics_.active_audio_stream_id = 0;
+        }
+    }
+    enqueue_media_stream_events(std::move(source_recovery_closed_events));
+    if (!source_recovery_closes.empty() && runtime_->client != nullptr) {
+        axtp::sdk::CallOptions options;
+        options.timeout = std::chrono::milliseconds(500);
+        for (const auto& descriptor : source_recovery_closes) {
+            const std::string method_prefix = std::string(media_kind_name(descriptor.kind));
+            const nlohmann::json params{
+                {"streamId", descriptor.key.stream_id},
+                {"peerRole", "transmitter"},
+                {"reason", "sourceRecovery"},
+            };
+            (void)runtime_->client->callJson(
+                method_prefix + ".closeStream", params.dump(), options);
+        }
+        // A close response may have queued a terminal source event. Drain it
+        // before opening the replacement so a late old-generation event cannot
+        // close the newly opened same-ID stream.
+        process_pending_media_source_state_events(device_id);
+    }
     bool already_active = false;
     {
         std::lock_guard<std::mutex> lock(media_stream_mutex_);
@@ -1238,19 +1349,60 @@ void AxtpAdapter::process_media_source_state_event(
             return;
         }
     }
+    const auto schedule_recovery_retry = [this](MediaKind kind) {
+        const auto next_attempt = std::chrono::steady_clock::now() +
+            kMediaConfigureRetryInterval;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (kind == MediaKind::Video) {
+            video_source_recovery_pending_ = true;
+            next_video_source_recovery_attempt_ = next_attempt;
+        } else {
+            audio_source_recovery_pending_ = true;
+            next_audio_source_recovery_attempt_ = next_attempt;
+        }
+    };
+
+    // A paired source-recovery close must be followed by paired opens whenever
+    // the other source is still streamable.  This keeps NT10's encoder reset
+    // symmetric and avoids leaving an otherwise healthy audio leg pointing at
+    // a receiver-pull stream which we explicitly closed.
+    if (!source_recovery_closes.empty()) {
+        const bool current_opened = configure_media_stream_kind(
+            device_id, event.kind, false, false);
+        bool other_opened = false;
+        const auto other_kind = event.kind == MediaKind::Video
+            ? MediaKind::Audio
+            : MediaKind::Video;
+        const bool other_was_closed = other_kind == MediaKind::Video
+            ? source_recovery_video_closed
+            : source_recovery_audio_closed;
+        bool other_terminal = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            other_terminal = other_kind == MediaKind::Video
+                ? video_source_terminal_
+                : audio_source_terminal_;
+        }
+        if (other_was_closed && !other_terminal) {
+            other_opened = configure_media_stream_kind(
+                device_id, other_kind, false, false);
+        }
+        if (!current_opened) {
+            schedule_recovery_retry(event.kind);
+        }
+        if (other_was_closed && !other_terminal && !other_opened) {
+            schedule_recovery_retry(other_kind);
+        }
+        if (current_opened || other_opened) {
+            return;
+        }
+        return;
+    }
+
     if (configure_media_stream_kind(device_id, event.kind, false, false)) {
         return;
     }
-    const auto next_attempt = std::chrono::steady_clock::now() +
-        kMediaConfigureRetryInterval;
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (event.kind == MediaKind::Video) {
-        video_source_recovery_pending_ = true;
-        next_video_source_recovery_attempt_ = next_attempt;
-    } else {
-        audio_source_recovery_pending_ = true;
-        next_audio_source_recovery_attempt_ = next_attempt;
-    }
+    schedule_recovery_retry(event.kind);
 }
 
 void AxtpAdapter::reset_session_for_device(const std::string& device_id)
@@ -2153,6 +2305,17 @@ bool AxtpAdapter::configure_media_stream_kind(
         }
         active_media_streams_[stream_id] = ActiveMediaStream{descriptor};
         active_stream_count = static_cast<std::uint32_t>(active_media_streams_.size());
+        if (source_recovery_cycle_active_) {
+            const auto kind_bit = kind == MediaKind::Video ? std::uint8_t{0x01}
+                                                            : std::uint8_t{0x02};
+            source_recovery_reopen_mask_ &= static_cast<std::uint8_t>(~kind_bit);
+            if (source_recovery_reopen_mask_ == 0) {
+                source_recovery_cycle_active_ = false;
+                source_recovery_close_sent_ = false;
+                pending_video_source_recovery_close_.reset();
+                pending_audio_source_recovery_close_.reset();
+            }
+        }
     }
     std::vector<MediaStreamEvent> lifecycle_events;
     if (replaced_descriptor.has_value()) {
