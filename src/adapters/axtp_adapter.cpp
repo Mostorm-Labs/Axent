@@ -1367,9 +1367,20 @@ void AxtpAdapter::process_media_source_state_event(
     // symmetric and avoids leaving an otherwise healthy audio leg pointing at
     // a receiver-pull stream which we explicitly closed.
     if (!source_recovery_closes.empty()) {
-        const bool current_opened = configure_media_stream_kind(
-            device_id, event.kind, false, false);
-        bool other_opened = false;
+        const auto is_active_kind = [this](MediaKind kind) {
+            std::lock_guard<std::mutex> lock(media_stream_mutex_);
+            return std::find_if(
+                active_media_streams_.begin(),
+                active_media_streams_.end(),
+                [kind](const auto& entry) {
+                    return entry.second.descriptor.kind == kind;
+                }) != active_media_streams_.end();
+        };
+        bool current_opened = is_active_kind(event.kind);
+        if (!current_opened) {
+            current_opened = configure_media_stream_kind(
+                device_id, event.kind, false, false);
+        }
         const auto other_kind = event.kind == MediaKind::Video
             ? MediaKind::Audio
             : MediaKind::Video;
@@ -1383,9 +1394,12 @@ void AxtpAdapter::process_media_source_state_event(
                 ? video_source_terminal_
                 : audio_source_terminal_;
         }
+        bool other_opened = is_active_kind(other_kind);
         if (other_was_closed && !other_terminal) {
-            other_opened = configure_media_stream_kind(
-                device_id, other_kind, false, false);
+            if (!other_opened) {
+                other_opened = configure_media_stream_kind(
+                    device_id, other_kind, false, false);
+            }
         }
         if (!current_opened) {
             schedule_recovery_retry(event.kind);
