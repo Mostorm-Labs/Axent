@@ -1092,6 +1092,7 @@ void AxtpAdapter::process_media_source_state_event(
 
     if (is_terminal_source_state(event.state, event.reason)) {
         std::optional<MediaStreamDescriptor> closed_descriptor;
+        std::optional<VideoStreamParamsState> video_params_update;
         std::uint32_t active_stream_count = 0;
         bool active_stream_id_is_foreign = false;
         {
@@ -1150,6 +1151,23 @@ void AxtpAdapter::process_media_source_state_event(
             enqueue_media_stream_events({
                 {MediaStreamEventKind::Closed, std::move(*closed_descriptor)},
             });
+        }
+        if (event.kind == MediaKind::Video) {
+            {
+                std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+                auto& current = runtime_->video_params_state;
+                current.state = VideoStreamParamsStateKind::Idle;
+                current.phase = VideoStreamParamsPhase::Idle;
+                current.effective_frame_rate.reset();
+                current.active_stream_id.reset();
+                current.previous_stream_id.reset();
+                current.reconfigure_id.clear();
+                current.rollback_applied = false;
+                current.last_error.reset();
+                current.changed_fields.clear();
+                video_params_update = current;
+            }
+            notify_video_stream_params_state(std::move(*video_params_update));
         }
         return;
     }
@@ -1808,6 +1826,7 @@ bool AxtpAdapter::configure_media_stream_kind(
         (kind != MediaKind::Video && kind != MediaKind::Audio)) {
         return false;
     }
+    std::optional<VideoStreamParamsState> video_params_update;
     if (kind == MediaKind::Video) {
         std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
         if (runtime_->suppress_video_auto_open &&
@@ -2023,7 +2042,11 @@ bool AxtpAdapter::configure_media_stream_kind(
             runtime_->video_params_state.phase = VideoStreamParamsPhase::Streaming;
             runtime_->video_params_state.rollback_applied = false;
             runtime_->video_params_state.last_error.reset();
+            video_params_update = runtime_->video_params_state;
         }
+    }
+    if (video_params_update.has_value()) {
+        notify_video_stream_params_state(std::move(*video_params_update));
     }
     return true;
 }
