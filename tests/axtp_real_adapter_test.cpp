@@ -887,8 +887,8 @@ int main()
         axtp::EventId::VideoStreamSourceStateChanged,
         "video.streamSourceStateChanged",
         R"({"source":"wireless_cast","state":"receiving"})");
-    require(wait_for_stream_events(stream_events, stream_events_mutex, 4),
-            "video receiving source event should reopen video");
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 6),
+            "video receiving source event should reopen paired media streams");
     require(media_adapter->diagnostics().last_event ==
                 "media-source-event name=video.streamSourceStateChanged id=0x0807 "
                 "source=wireless_cast state=receiving reason=<absent> activeStreamId=<absent>",
@@ -913,11 +913,22 @@ int main()
                     after_video_recovery[0].key.stream_id == 1 &&
                     after_video_recovery[0].key.generation == 2 &&
                     after_video_recovery[1].kind == axent::MediaKind::Audio &&
-                    after_video_recovery[1].key.generation == 1,
-                "video recovery must increment only the same-ID video generation");
+                    after_video_recovery[1].key.generation == 2,
+                "video recovery must increment both paired same-ID generations");
         require(media_scripted->video_open_requests.load() == 2 &&
-                    media_scripted->audio_open_requests.load() == 1,
-                "video recovery must not reopen audio or alter both-kind retry behavior");
+                    media_scripted->audio_open_requests.load() == 2,
+                "video recovery must reopen both paired media legs");
+        require(media_scripted->video_close_requests.load() == 1 &&
+                    media_scripted->audio_close_requests.load() == 1,
+                "source recovery must close both receiver-pull legs before reopening video");
+        std::lock_guard<std::mutex> requests_lock(media_scripted->requests_mutex);
+        require(media_scripted->video_close_params.front().at("reason") == "sourceRecovery" &&
+                    media_scripted->audio_close_params.front().at("reason") == "sourceRecovery" &&
+                    media_scripted->media_request_order.size() >= 5 &&
+                    media_scripted->media_request_order[2] == "video.close" &&
+                    media_scripted->media_request_order[3] == "audio.close" &&
+                    media_scripted->media_request_order[4] == "video.open",
+                "source recovery close/open ordering mismatch");
     }
     require(wait_until([&]() {
         const auto state = media_adapter->video_stream_params_state(
@@ -1038,7 +1049,7 @@ int main()
         axtp::EventId::VideoStreamSourceStateChanged,
         "video.streamSourceStateChanged",
         R"({"state":"stopped","activeStreamId":0})");
-    require(wait_for_stream_events(stream_events, stream_events_mutex, 5),
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 7),
             "zero activeStreamId should use the valid missing-source fallback");
     {
         const auto after_missing_source_stop =
@@ -1082,8 +1093,8 @@ int main()
         return media_scripted->video_capability_requests.load() >= 3;
     }), "event-driven video recovery should make its first capabilities attempt");
     require(media_scripted->video_open_requests.load() == 2 &&
-                media_scripted->audio_open_requests.load() == 1,
-            "failed video recovery must not reopen either kind immediately");
+                media_scripted->audio_open_requests.load() == 3,
+            "failed video recovery must still reopen the healthy paired audio leg");
     const auto video_capabilities_after_first_failure =
         media_scripted->video_capability_requests.load();
     media_scripted->injectEvent(
@@ -1098,15 +1109,15 @@ int main()
                 video_capabilities_after_first_failure,
             "duplicate source event must not bypass the per-kind retry interval");
     require(wait_for_stream_events(
-                stream_events, stream_events_mutex, 6, std::chrono::seconds(3)),
-            "failed video recovery should retry and publish Opened");
+                stream_events, stream_events_mutex, 10, std::chrono::seconds(3)),
+            "failed video recovery should retry and publish paired Opened events");
     const auto video_recovery_elapsed =
         std::chrono::steady_clock::now() - video_recovery_started;
     require(video_recovery_elapsed >= std::chrono::milliseconds(900),
             "per-kind source recovery retry must respect the one-second interval");
     require(media_scripted->video_open_requests.load() == 3 &&
-                media_scripted->audio_open_requests.load() == 1,
-            "video recovery retry must not reopen the healthy audio kind");
+                media_scripted->audio_open_requests.load() == 3,
+            "video recovery retry must not reopen audio a second time");
     const auto video_capabilities_after_recovery =
         media_scripted->video_capability_requests.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
@@ -1120,8 +1131,8 @@ int main()
                     after_video_retry[0].kind == axent::MediaKind::Video &&
                     after_video_retry[0].key.generation == 3 &&
                     after_video_retry[1].kind == axent::MediaKind::Audio &&
-                    after_video_retry[1].key.generation == 1,
-                "per-kind retry should recover only video generation 3");
+                    after_video_retry[1].key.generation == 3,
+                "paired recovery retry should preserve the recovered audio generation");
     }
     media_scripted->injectStream(1, 8, 1200000, {0x00, 0x00, 0x01, 0x65});
     require(wait_for_frames(
@@ -1137,7 +1148,7 @@ int main()
         axtp::EventId::AudioStreamSourceStateChanged,
         "audio.streamSourceStateChanged",
         R"({"source":"wireless_cast_audio","state":"receiving","reason":"source_disconnected","activeStreamId":2})");
-    require(wait_for_stream_events(stream_events, stream_events_mutex, 7),
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 11),
             "source_disconnected reason should close audio even with receiving state");
     {
         const auto after_audio_stop = media_adapter->active_media_stream_descriptors();
@@ -1150,7 +1161,7 @@ int main()
         axtp::EventId::AudioStreamSourceStateChanged,
         "audio.streamSourceStateChanged",
         R"({"source":"wireless_cast_audio","state":"available"})");
-    require(wait_for_stream_events(stream_events, stream_events_mutex, 8),
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 12),
             "audio available source event should independently reopen audio");
     {
         const auto after_audio_recovery = media_adapter->active_media_stream_descriptors();
@@ -1158,10 +1169,10 @@ int main()
                     after_audio_recovery[0].key.generation == 3 &&
                     after_audio_recovery[1].kind == axent::MediaKind::Audio &&
                     after_audio_recovery[1].key.stream_id == 2 &&
-                    after_audio_recovery[1].key.generation == 2,
+                    after_audio_recovery[1].key.generation == 4,
                 "audio recovery must increment only the same-ID audio generation");
         require(media_scripted->video_open_requests.load() == 3 &&
-                    media_scripted->audio_open_requests.load() == 2,
+                    media_scripted->audio_open_requests.load() == 4,
                 "audio recovery must not reopen video");
     }
 
@@ -1220,12 +1231,12 @@ int main()
                 frames_before_opened_unblocked == 4,
             "concurrent media drains must not deliver a frame ahead of lifecycle events");
 
-    require(wait_for_stream_events(stream_events, stream_events_mutex, 12),
+    require(wait_for_stream_events(stream_events, stream_events_mutex, 16),
             "same-ID reopen should publish Closed/Open pairs for video and audio");
     const auto reopened_descriptors = media_adapter->active_media_stream_descriptors();
     require(reopened_descriptors.size() == 2 &&
                 reopened_descriptors[0].key.generation == 4 &&
-                reopened_descriptors[1].key.generation == 3,
+                reopened_descriptors[1].key.generation == 5,
             "same-ID reopen should increment each physical generation");
     require(!axent::testing::AxtpAdapterTestSeam::is_current_media_frame(
                 *media_adapter, received_frame),
@@ -1279,7 +1290,7 @@ int main()
         const auto after_terminal_call = media_adapter->active_media_stream_descriptors();
         require(after_terminal_call.size() == 1 &&
                     after_terminal_call.front().kind == axent::MediaKind::Audio &&
-                    after_terminal_call.front().key.generation == 3,
+                    after_terminal_call.front().key.generation == 5,
                 "public call terminal dispatch must close video without disturbing audio");
     }
 
