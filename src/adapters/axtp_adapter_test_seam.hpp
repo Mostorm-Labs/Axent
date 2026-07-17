@@ -24,6 +24,11 @@ public:
     static void record_hid_trace(AxtpAdapter& adapter,
                                  const transport::HidReportTrace& trace);
     static void disconnect_session(AxtpAdapter& adapter);
+    static void bind_media_delivery_session(AxtpAdapter& adapter,
+                                             const std::string& device_id,
+                                             const std::string& session_id);
+    static void release_session(AxtpAdapter& adapter,
+                                const std::string& device_id);
     static void stop_session_pump(AxtpAdapter& adapter);
     static void enqueue_stream_payload(AxtpAdapter& adapter,
                                        const std::string& device_id,

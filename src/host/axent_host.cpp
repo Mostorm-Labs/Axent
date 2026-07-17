@@ -530,7 +530,9 @@ public:
     void prime_opened(const std::vector<MediaStreamDescriptor>& descriptors)
     {
         for (const auto& descriptor : descriptors) {
-            core_->prime_stream_event({MediaStreamEventKind::Opened, descriptor});
+            core_->prime_stream_event({MediaStreamEventKind::Opened,
+                                       descriptor,
+                                       MediaStreamEventReason::Snapshot});
         }
     }
 
@@ -641,7 +643,9 @@ private:
                     }
                     if (active != active_streams_.end()) {
                         new_items.push_back(Item::stream_event(
-                            {MediaStreamEventKind::Closed, active->second}));
+                            {MediaStreamEventKind::Closed,
+                             active->second,
+                             event.reason}));
                     }
                     active_streams_[stream_id] = event.descriptor;
                     new_items.push_back(Item::stream_event(std::move(event)));
@@ -947,14 +951,20 @@ private:
                     const auto delivered = delivered_streams_.find(entry.first);
                     if (delivered != delivered_streams_.end()) {
                         items_.push_back(Item::stream_event(
-                            {MediaStreamEventKind::Closed, delivered->second}));
+                            {MediaStreamEventKind::Closed,
+                             delivered->second,
+                             MediaStreamEventReason::Shutdown}));
                     }
                     if (delivered == delivered_streams_.end() ||
                         delivered->second.key != entry.second.key) {
                         items_.push_back(Item::stream_event(
-                            {MediaStreamEventKind::Opened, entry.second}));
+                            {MediaStreamEventKind::Opened,
+                             entry.second,
+                             MediaStreamEventReason::Snapshot}));
                         items_.push_back(Item::stream_event(
-                            {MediaStreamEventKind::Closed, entry.second}));
+                            {MediaStreamEventKind::Closed,
+                             entry.second,
+                             MediaStreamEventReason::Shutdown}));
                     }
                 }
                 for (const auto& delivered : delivered_streams_) {
@@ -962,7 +972,9 @@ private:
                         continue;
                     }
                     items_.push_back(Item::stream_event(
-                        {MediaStreamEventKind::Closed, delivered.second}));
+                        {MediaStreamEventKind::Closed,
+                         delivered.second,
+                         MediaStreamEventReason::Shutdown}));
                 }
             }
             active_streams_.clear();
@@ -1937,7 +1949,9 @@ bool AxentHost::publish_media_stream_event_for_session(
             }
             if (current != active.end()) {
                 ordered_events.push_back(
-                    {MediaStreamEventKind::Closed, current->second});
+                    {MediaStreamEventKind::Closed,
+                     current->second,
+                     event.reason});
             }
             active[event.descriptor.key.stream_id] = event.descriptor;
             ordered_events.push_back(std::move(event));
@@ -1947,7 +1961,9 @@ bool AxentHost::publish_media_stream_event_for_session(
                 return true;
             }
             ordered_events.push_back(
-                {MediaStreamEventKind::Closed, current->second});
+                {MediaStreamEventKind::Closed,
+                 current->second,
+                 event.reason});
             active.erase(current);
         }
         subscriptions =

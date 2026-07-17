@@ -208,6 +208,25 @@ public:
             if (rpc.op == axtp::RpcOp::Request) {
                 saw_business_request = true;
                 last_business_sid = rpc.meta.jsonSid;
+                const bool capability_request =
+                    rpc.methodOrEventId == static_cast<std::uint32_t>(
+                        axtp::MethodId::VideoGetStreamCapabilities) ||
+                    rpc.methodOrEventId == static_cast<std::uint32_t>(
+                        axtp::MethodId::AudioGetStreamCapabilities);
+                auto dropped_capability_requests = drop_next_capability_responses.load();
+                if (capability_request && dropped_capability_requests > 0 &&
+                    drop_next_capability_responses.compare_exchange_strong(
+                        dropped_capability_requests, dropped_capability_requests - 1)) {
+                    continue;
+                }
+                if (capability_request && drop_capability_responses &&
+                    silent_reset != nullptr && silent_reset->load()) {
+                    // Simulate a NA20 reset which leaves the HID path open but
+                    // stops answering business requests.  Control open/hello
+                    // and identify remain available so a replacement session
+                    // can complete its normal handshake.
+                    continue;
+                }
                 axtp::RpcPayload response;
                 response.encoding = axtp::RpcEncoding::Json;
                 response.op = axtp::RpcOp::RequestResponse;
@@ -328,6 +347,10 @@ public:
                         {"codec", "aac"},
                     }.dump();
                 }
+                if (capability_request && capability_business_error.load()) {
+                    response.statusCode = axtp::ErrorCode::NotSupported;
+                    body = R"({"error":"probe business rejection"})";
+                }
                 response.body = axtp::Bytes(body.begin(), body.end());
                 if (queue_terminal_frame_before_next_response.exchange(false)) {
                     axtp::RpcPayload event;
@@ -388,6 +411,10 @@ public:
     std::atomic<bool> audio_close_returns_closing{false};
     std::atomic<int> fail_video_open_count{0};
     std::atomic<int> fail_audio_open_count{0};
+    bool drop_capability_responses = false;
+    std::atomic<bool>* silent_reset = nullptr;
+    std::atomic<int> drop_next_capability_responses{0};
+    std::atomic<bool> capability_business_error{false};
     bool unique_video_stream_ids = false;
     std::mutex requests_mutex;
     std::vector<nlohmann::json> video_open_params;
@@ -1090,7 +1117,8 @@ int main()
         "video.streamSourceStateChanged",
         R"({"source":"wireless_cast","state":"receiving"})");
     require(wait_until([&]() {
-        return media_scripted->video_capability_requests.load() >= 3;
+        return media_scripted->video_capability_requests.load() >= 3 &&
+            media_scripted->audio_open_requests.load() >= 3;
     }), "event-driven video recovery should make its first capabilities attempt");
     require(media_scripted->video_open_requests.load() == 2 &&
                 media_scripted->audio_open_requests.load() == 3,
@@ -1584,6 +1612,115 @@ int main()
         "hid:0581:2581:NA20-SERIAL", unsupported_frame_rate);
     require(unsupported_result.status_code == 0x0805 && !unsupported_result.accepted,
             "frame rate outside the advertised source profile should be rejected");
+
+    // A silent NA20 reset must be recovered without a HID hotplug event.  The
+    // scripted transport drops only the read-only capability probe on the old
+    // physical session; a replacement transport answers normally.
+    axent::AxtpAdapterConfig recovery_config = axent::AxtpAdapter::na20_defaults();
+    recovery_config.session_health_probe_interval_ms = 20;
+    recovery_config.session_health_probe_timeout_ms = 15;
+    recovery_config.session_health_failure_threshold = 2;
+    recovery_config.session_recovery_backoff_initial_ms = 20;
+    recovery_config.session_recovery_backoff_max_ms = 40;
+    std::atomic<bool> silent_reset{false};
+    std::atomic<int> recovery_factory_calls{0};
+    std::atomic<ScriptedAxtpTransport*> current_recovery_transport{nullptr};
+    auto recovery_adapter = axent::testing::AxtpAdapterTestSeam::make(
+        recovery_config, [&](const axent::transport::HidTransportOptions&) {
+            const auto call = recovery_factory_calls.fetch_add(1) + 1;
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->drop_capability_responses = call == 1;
+            transport->silent_reset = &silent_reset;
+            current_recovery_transport.store(transport.get());
+            return transport;
+        });
+    std::mutex recovery_events_mutex;
+    std::vector<axent::MediaStreamEvent> recovery_events;
+    recovery_adapter->set_media_stream_event_callback(
+        [&](axent::MediaStreamEvent event) {
+            std::lock_guard<std::mutex> lock(recovery_events_mutex);
+            recovery_events.push_back(std::move(event));
+        });
+    const std::string recovery_device_id = "hid:0581:2581:NA20-RECOVERY";
+    require(recovery_adapter->open_session(recovery_device_id, error),
+            "silent-session recovery adapter should open");
+    require(wait_for_stream_events(
+                recovery_events, recovery_events_mutex, 2),
+            "silent-session recovery adapter should open both media legs");
+    axent::testing::AxtpAdapterTestSeam::bind_media_delivery_session(
+        *recovery_adapter, recovery_device_id, "logical-media-session");
+    require(recovery_adapter->video_stream_params_state(recovery_device_id).session_id ==
+                "logical-media-session",
+            "media binding should expose the logical session id");
+
+    auto* initial_recovery_transport = current_recovery_transport.load();
+    require(initial_recovery_transport != nullptr,
+            "silent-session recovery should retain the initial transport");
+    initial_recovery_transport->drop_next_capability_responses.store(1);
+    require(wait_until([&]() {
+        return recovery_adapter->diagnostics().health_probe_failures >= 1;
+    }), "one dropped capability probe should be observable");
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    require(recovery_factory_calls.load() == 1 &&
+                recovery_adapter->diagnostics().session_recoveries == 0,
+            "a single probe timeout must not rebuild a healthy session");
+
+    initial_recovery_transport->capability_business_error.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    require(recovery_factory_calls.load() == 1 &&
+                recovery_adapter->diagnostics().health_probe_failures == 0,
+            "a typed capability error must prove the session is online");
+    initial_recovery_transport->capability_business_error.store(false);
+    silent_reset.store(true);
+    require(wait_until([&]() {
+        const auto diagnostics = recovery_adapter->diagnostics();
+        return recovery_factory_calls.load() >= 2 &&
+            diagnostics.session_recoveries >= 1 &&
+            diagnostics.session_health == axent::SessionHealthState::Healthy;
+    }), "two silent capability probe failures should rebuild the AXTP session");
+    {
+        std::lock_guard<std::mutex> lock(recovery_events_mutex);
+        require(recovery_events.size() >= 6,
+                "session recovery should publish closed and opened lifecycle events");
+        require(recovery_events[2].kind == axent::MediaStreamEventKind::Closed &&
+                    recovery_events[3].kind == axent::MediaStreamEventKind::Closed &&
+                    recovery_events[2].reason == axent::MediaStreamEventReason::SessionRecovery &&
+                    recovery_events[3].reason == axent::MediaStreamEventReason::SessionRecovery &&
+                    recovery_events[4].kind == axent::MediaStreamEventKind::Opened &&
+                    recovery_events[5].kind == axent::MediaStreamEventKind::Opened &&
+                    recovery_events[4].reason == axent::MediaStreamEventReason::SessionRecovery &&
+                    recovery_events[5].reason == axent::MediaStreamEventReason::SessionRecovery,
+                "session recovery lifecycle ordering/reason mismatch");
+    }
+    const auto recovered_descriptors = recovery_adapter->active_media_stream_descriptors();
+    require(recovered_descriptors.size() == 2 &&
+                recovered_descriptors[0].key.generation == 2 &&
+                recovered_descriptors[1].key.generation == 2,
+            "session recovery should reopen both streams with a new generation");
+    require(recovery_adapter->video_stream_params_state(recovery_device_id).session_id ==
+                "logical-media-session",
+            "session recovery must retain the logical media lease/session id");
+
+    auto* recovered_transport = current_recovery_transport.load();
+    require(recovered_transport != nullptr &&
+                recovery_factory_calls.load() == 2,
+            "session recovery should replace exactly one physical transport");
+    // Trigger another probe failure and release while recovery is pending.  A
+    // release must cancel the worker and prevent a late replacement session.
+    recovered_transport->drop_capability_responses = true;
+    silent_reset.store(true);
+    require(wait_until([&]() {
+        return recovery_adapter->diagnostics().health_probe_failures >= 1;
+    }), "second silent reset should enter probe-failure state");
+    axent::testing::AxtpAdapterTestSeam::release_session(
+        *recovery_adapter, recovery_device_id);
+    const auto factory_calls_after_release = recovery_factory_calls.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    require(recovery_factory_calls.load() == factory_calls_after_release,
+            "release must cancel pending session recovery attempts");
+    require(recovery_adapter->active_media_stream_descriptors().empty() &&
+                !recovery_adapter->diagnostics().open,
+            "released silent session must have no active streams or open transport");
 
     frame_rate_scripted->fail_video_open_count.store(1);
     const auto rollback_pending = frame_rate_adapter->set_video_stream_params(

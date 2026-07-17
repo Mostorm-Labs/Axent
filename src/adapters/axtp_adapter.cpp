@@ -472,6 +472,8 @@ struct AxtpAdapter::RuntimeState {
     nlohmann::json active_video_open_params = nlohmann::json::object();
     nlohmann::json active_audio_open_params = nlohmann::json::object();
     std::vector<std::weak_ptr<VideoStreamParamsObserverSlot>> video_params_observers;
+    std::string health_probe_method;
+    nlohmann::json health_probe_params = nlohmann::json::object();
     std::uint64_t next_video_reconfigure_id = 1;
     bool suppress_video_auto_open = false;
     std::vector<std::uint32_t> video_frame_rates;
@@ -497,6 +499,7 @@ AxtpAdapter::AxtpAdapter(
     if (!runtime_->factory) {
         runtime_->factory = detail::make_default_axtp_runtime_factory();
     }
+    recovery_worker_ = std::thread(&AxtpAdapter::run_session_recovery_worker, this);
 }
 
 AxtpAdapter::~AxtpAdapter()
@@ -508,6 +511,15 @@ AxtpAdapter::~AxtpAdapter()
     }
     if (pump.joinable()) {
         pump.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(recovery_mutex_);
+        stop_recovery_worker_ = true;
+        recovery_requested_ = false;
+    }
+    recovery_cv_.notify_all();
+    if (recovery_worker_.joinable()) {
+        recovery_worker_.join();
     }
     std::lock_guard<std::mutex> client_lock(client_mutex_);
     if (runtime_->client) {
@@ -711,6 +723,7 @@ void AxtpAdapter::record_transport_trace(const std::string& event_name,
     diagnostics_.last_event = event_name;
     if (accepted_read) {
         ++diagnostics_.read_reports;
+        last_transport_activity_ = std::chrono::steady_clock::now();
     }
     if (write_report) {
         ++diagnostics_.write_reports;
@@ -982,9 +995,12 @@ void AxtpAdapter::unbind_media_delivery_session(const std::string& device_id,
     }
 }
 
-void AxtpAdapter::clear_video_stream_params_session()
+void AxtpAdapter::clear_video_stream_params_session(bool preserve_logical_session)
 {
     std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
+    const auto logical_session_id = preserve_logical_session
+        ? runtime_->video_params_state.session_id
+        : std::string{};
     runtime_->session_video_frame_rate.reset();
     runtime_->video_reconfigure.reset();
     runtime_->active_video_open_params = nlohmann::json::object();
@@ -993,9 +1009,12 @@ void AxtpAdapter::clear_video_stream_params_session()
     runtime_->video_frame_rates.clear();
     runtime_->video_supports_active_reconfigure = true;
     runtime_->video_params_state = {};
+    runtime_->video_params_state.session_id = logical_session_id;
+    runtime_->health_probe_method.clear();
+    runtime_->health_probe_params = nlohmann::json::object();
 }
 
-void AxtpAdapter::clear_media_streams()
+void AxtpAdapter::clear_media_streams(MediaStreamEventReason reason)
 {
     std::vector<MediaStreamEvent> closed_events;
     {
@@ -1003,7 +1022,7 @@ void AxtpAdapter::clear_media_streams()
         closed_events.reserve(active_media_streams_.size());
         for (const auto& entry : active_media_streams_) {
             closed_events.push_back(
-                {MediaStreamEventKind::Closed, entry.second.descriptor});
+                {MediaStreamEventKind::Closed, entry.second.descriptor, reason});
         }
         active_media_streams_.clear();
         pending_video_source_recovery_close_.reset();
@@ -1205,7 +1224,9 @@ void AxtpAdapter::process_media_source_state_event(
         }
         if (closed_descriptor.has_value()) {
             enqueue_media_stream_events({
-                {MediaStreamEventKind::Closed, std::move(*closed_descriptor)},
+                {MediaStreamEventKind::Closed,
+                 std::move(*closed_descriptor),
+                 MediaStreamEventReason::SourceRecovery},
             });
         }
         if (event.kind == MediaKind::Video) {
@@ -1279,7 +1300,9 @@ void AxtpAdapter::process_media_source_state_event(
                 if (active != active_media_streams_.end() &&
                     active->second.descriptor.key.generation == descriptor.key.generation) {
                     source_recovery_closed_events.push_back(
-                        {MediaStreamEventKind::Closed, active->second.descriptor});
+                        {MediaStreamEventKind::Closed,
+                         active->second.descriptor,
+                         MediaStreamEventReason::SourceRecovery});
                     active_media_streams_.erase(active);
                 }
             }
@@ -1379,7 +1402,11 @@ void AxtpAdapter::process_media_source_state_event(
         bool current_opened = is_active_kind(event.kind);
         if (!current_opened) {
             current_opened = configure_media_stream_kind(
-                device_id, event.kind, false, false);
+                device_id,
+                event.kind,
+                false,
+                false,
+                MediaStreamEventReason::SourceRecovery);
         }
         const auto other_kind = event.kind == MediaKind::Video
             ? MediaKind::Audio
@@ -1398,7 +1425,11 @@ void AxtpAdapter::process_media_source_state_event(
         if (other_was_closed && !other_terminal) {
             if (!other_opened) {
                 other_opened = configure_media_stream_kind(
-                    device_id, other_kind, false, false);
+                    device_id,
+                    other_kind,
+                    false,
+                    false,
+                    MediaStreamEventReason::SourceRecovery);
             }
         }
         if (!current_opened) {
@@ -1413,7 +1444,12 @@ void AxtpAdapter::process_media_source_state_event(
         return;
     }
 
-    if (configure_media_stream_kind(device_id, event.kind, false, false)) {
+    if (configure_media_stream_kind(
+            device_id,
+            event.kind,
+            false,
+            false,
+            MediaStreamEventReason::SourceRecovery)) {
         return;
     }
     schedule_recovery_retry(event.kind);
@@ -1421,6 +1457,14 @@ void AxtpAdapter::process_media_source_state_event(
 
 void AxtpAdapter::reset_session_for_device(const std::string& device_id)
 {
+    recovery_generation_.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lock(recovery_mutex_);
+        recovery_requested_ = false;
+        recovery_device_id_.clear();
+        recovery_reason_.clear();
+    }
+    recovery_cv_.notify_all();
     {
         std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
         media_delivery_sessions_.erase(device_id);
@@ -1467,7 +1511,8 @@ ControlStatus AxtpAdapter::open_session_status(const std::string& device_id, std
 {
     std::lock_guard<std::mutex> session_lock(session_mutex_);
     ControlStatus status = ControlStatus::Unavailable;
-    (void)ensure_session_locked(device_id, error, status, true);
+    (void)ensure_session_locked(device_id, error, status, true,
+                                MediaStreamEventReason::InitialOpen);
     return status;
 }
 
@@ -1480,10 +1525,263 @@ std::thread AxtpAdapter::request_stop_session_pump_locked()
     return std::move(session_pump_);
 }
 
+bool AxtpAdapter::has_media_delivery_session(const std::string& device_id) const
+{
+    std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+    const auto it = media_delivery_sessions_.find(device_id);
+    return it != media_delivery_sessions_.end() && !it->second.empty();
+}
+
+void AxtpAdapter::set_session_health(SessionHealthState state,
+                                     std::uint32_t probe_failures,
+                                     std::string reason)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    session_health_ = state;
+    health_probe_failures_ = probe_failures;
+    if (!reason.empty()) {
+        last_session_recovery_reason_ = std::move(reason);
+    }
+    diagnostics_.session_health = session_health_;
+    diagnostics_.health_probe_failures = health_probe_failures_;
+    diagnostics_.session_recoveries = session_recoveries_;
+    diagnostics_.last_session_recovery_reason = last_session_recovery_reason_;
+}
+
+bool AxtpAdapter::session_health_probe_due(std::chrono::steady_clock::time_point now)
+{
+    if (!config_.enable_session_health_probe ||
+        runtime_->health_probe_method.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (active_device_id_.empty() || !diagnostics_.open ||
+        session_health_ == SessionHealthState::Recovering) {
+        return false;
+    }
+    const auto interval = std::chrono::milliseconds(
+        std::max<std::uint32_t>(1, config_.session_health_probe_interval_ms));
+    if (next_health_probe_.time_since_epoch().count() != 0 &&
+        now < next_health_probe_) {
+        return false;
+    }
+    if (last_transport_activity_.time_since_epoch().count() != 0 &&
+        now - last_transport_activity_ < interval) {
+        next_health_probe_ = last_transport_activity_ + interval;
+        return false;
+    }
+    next_health_probe_ = now + interval;
+    return true;
+}
+
+bool AxtpAdapter::run_session_health_probe(const std::string& device_id)
+{
+    if (runtime_->client == nullptr ||
+        runtime_->health_probe_method.empty() ||
+        !has_media_delivery_session(device_id)) {
+        return true;
+    }
+
+    axtp::sdk::CallOptions options;
+    options.timeout = std::chrono::milliseconds(
+        std::max<std::uint32_t>(1, config_.session_health_probe_timeout_ms));
+    (void)runtime_->client->callJson(
+        runtime_->health_probe_method,
+        runtime_->health_probe_params.dump(),
+        options);
+    const auto error = runtime_->client->lastError();
+    process_pending_media_source_state_events(device_id);
+    if (error.ok()) {
+        return true;
+    }
+
+    switch (error.code) {
+    case axtp::ErrorCode::Unavailable:
+    case axtp::ErrorCode::Timeout:
+    case axtp::ErrorCode::RpcResponseTimeout:
+    case axtp::ErrorCode::TransportReadFailed:
+    case axtp::ErrorCode::TransportWriteFailed:
+    case axtp::ErrorCode::TransportDisconnected:
+    case axtp::ErrorCode::ControlOpenRequired:
+    case axtp::ErrorCode::ControlSessionInvalid:
+    case axtp::ErrorCode::ControlSessionExpired:
+    case axtp::ErrorCode::ControlHeartbeatTimeout:
+        return false;
+    default:
+        // A typed response such as NotSupported or InvalidArgument proves
+        // that the device and its session are alive; do not reconnect for a
+        // business-level failure.
+        return true;
+    }
+}
+
+void AxtpAdapter::request_session_recovery(const std::string& device_id,
+                                           std::string reason)
+{
+    {
+        std::lock_guard<std::mutex> lock(recovery_mutex_);
+        if (stop_recovery_worker_ || recovery_requested_) {
+            return;
+        }
+        recovery_generation_.fetch_add(1);
+        recovery_requested_ = true;
+        recovery_device_id_ = device_id;
+        recovery_reason_ = std::move(reason);
+        recovery_attempt_ = 0;
+    }
+    set_session_health(
+        SessionHealthState::Recovering,
+        health_probe_failures_,
+        "health-probe-timeout");
+    recovery_cv_.notify_one();
+}
+
+bool AxtpAdapter::recover_session_once(const std::string& device_id,
+                                       std::string& error,
+                                       std::uint64_t recovery_generation)
+{
+    if (!has_media_delivery_session(device_id) ||
+        recovery_generation_.load() != recovery_generation) {
+        error = "media session was released during recovery";
+        return false;
+    }
+
+    std::thread stopped_pump;
+    {
+        std::lock_guard<std::mutex> session_lock(session_mutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!active_device_id_.empty() && active_device_id_ != device_id) {
+                error = "AXTP session device changed during recovery";
+                return false;
+            }
+            stopped_pump = request_stop_session_pump_locked();
+        }
+        if (stopped_pump.joinable()) {
+            stopped_pump.join();
+        }
+        {
+            std::lock_guard<std::mutex> client_lock(client_mutex_);
+            if (runtime_->client != nullptr) {
+                runtime_->client->close();
+                runtime_->client.reset();
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            runtime_->active_transport = nullptr;
+            active_device_id_.clear();
+            diagnostics_.open = false;
+        }
+    }
+
+    // The old physical session is gone; publish its terminal lifecycle before
+    // the replacement open and never send closeStream to the dead device.
+    clear_media_streams(MediaStreamEventReason::SessionRecovery);
+    drain_pending_media_callbacks();
+    clear_video_stream_params_session(true);
+
+    if (!has_media_delivery_session(device_id) ||
+        recovery_generation_.load() != recovery_generation) {
+        error = "media session was released during recovery";
+        return false;
+    }
+
+    std::lock_guard<std::mutex> session_lock(session_mutex_);
+    ControlStatus status = ControlStatus::Unavailable;
+    if (!ensure_session_locked(
+            device_id,
+            error,
+            status,
+            true,
+            MediaStreamEventReason::SessionRecovery)) {
+        if (error.empty()) {
+            error = "AXTP session recovery failed: " + error_name(
+                runtime_->client != nullptr
+                    ? runtime_->client->lastError().code
+                    : axtp::ErrorCode::Unavailable);
+        }
+        return false;
+    }
+    drain_pending_media_callbacks();
+    return true;
+}
+
+void AxtpAdapter::run_session_recovery_worker()
+{
+    for (;;) {
+        std::string device_id;
+        std::string reason;
+        std::uint64_t generation = 0;
+        {
+            std::unique_lock<std::mutex> lock(recovery_mutex_);
+            recovery_cv_.wait(lock, [this]() {
+                return stop_recovery_worker_ || recovery_requested_;
+            });
+            if (stop_recovery_worker_) {
+                return;
+            }
+            recovery_requested_ = false;
+            device_id = recovery_device_id_;
+            reason = recovery_reason_;
+            generation = recovery_generation_.load();
+            recovery_attempt_ = 0;
+        }
+
+        for (;;) {
+            if (!has_media_delivery_session(device_id) ||
+                recovery_generation_.load() != generation) {
+                break;
+            }
+            std::string error;
+            if (recover_session_once(device_id, error, generation)) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    ++session_recoveries_;
+                    last_session_recovery_reason_ = reason;
+                    session_health_ = SessionHealthState::Healthy;
+                    health_probe_failures_ = 0;
+                    diagnostics_.session_health = session_health_;
+                    diagnostics_.health_probe_failures = 0;
+                    diagnostics_.session_recoveries = session_recoveries_;
+                    diagnostics_.last_session_recovery_reason =
+                        last_session_recovery_reason_;
+                    diagnostics_.last_event = "session-recovered";
+                }
+                break;
+            }
+
+            const auto attempt = ++recovery_attempt_;
+            const auto initial = std::max<std::uint32_t>(
+                1, config_.session_recovery_backoff_initial_ms);
+            const auto maximum = std::max(
+                initial,
+                config_.session_recovery_backoff_max_ms);
+            const auto backoff = std::min<std::uint32_t>(
+                maximum,
+                initial << std::min<std::uint32_t>(attempt - 1, 8));
+            set_session_health(SessionHealthState::Failed, health_probe_failures_, error);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                diagnostics_.last_event = "session-recovery-retry-" +
+                    std::to_string(attempt);
+            }
+            std::unique_lock<std::mutex> lock(recovery_mutex_);
+            if (recovery_cv_.wait_for(lock, std::chrono::milliseconds(backoff), [this, generation]() {
+                    return stop_recovery_worker_ ||
+                        recovery_generation_.load() != generation;
+                })) {
+                break;
+            }
+        }
+    }
+}
+
 bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                                         std::string& error,
                                         ControlStatus& status,
-                                        bool configure_media)
+                                        bool configure_media,
+                                        MediaStreamEventReason open_reason)
 {
     status = ControlStatus::Unavailable;
     std::thread stopped_pump;
@@ -1506,7 +1804,7 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         }
         if (session_ready) {
             if (configure_media && !media_ready && runtime_->client != nullptr) {
-                configure_media_streams(device_id);
+                configure_media_streams(device_id, open_reason);
             }
             status = ControlStatus::Ok;
             return true;
@@ -1634,10 +1932,19 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         return false;
     }
 
+    std::string logical_session_id;
+    {
+        std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+        const auto binding = media_delivery_sessions_.find(device_id);
+        if (binding != media_delivery_sessions_.end()) {
+            logical_session_id = binding->second;
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
         runtime_->session_video_frame_rate = config_.video_frame_rate;
         runtime_->video_params_state = {};
+        runtime_->video_params_state.session_id = std::move(logical_session_id);
         runtime_->video_params_state.source = config_.video_source;
         runtime_->video_params_state.desired_frame_rate = config_.video_frame_rate;
         runtime_->video_params_state.state = VideoStreamParamsStateKind::Idle;
@@ -1651,7 +1958,7 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         media_configure_attempts_ = 0;
     }
     if (configure_media) {
-        configure_media_streams(device_id);
+        configure_media_streams(device_id, open_reason);
     }
 
     {
@@ -1662,9 +1969,17 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
             (diagnostics_.last_event.empty() || diagnostics_.last_event.rfind("app-ready", 0) == 0)) {
             diagnostics_.last_event = "app-ready";
         }
+        session_health_ = SessionHealthState::Healthy;
+        health_probe_failures_ = 0;
+        last_transport_activity_ = std::chrono::steady_clock::now();
+        next_health_probe_ = last_transport_activity_ +
+            std::chrono::milliseconds(config_.session_health_probe_interval_ms);
+        refresh_diagnostics_locked();
         stop_session_pump_.store(false);
         session_pump_ = std::thread([this, device_id]() {
             while (!stop_session_pump_.load()) {
+                bool request_recovery = false;
+                std::string recovery_reason;
                 {
                     std::lock_guard<std::mutex> client_lock(client_mutex_);
                     if (runtime_->client == nullptr) {
@@ -1697,6 +2012,34 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                     process_pending_media_source_state_events(device_id);
                     advance_video_reconfigure(device_id);
                     retry_pending_media_source_recoveries(device_id, now);
+                    if (session_health_probe_due(now)) {
+                        if (run_session_health_probe(device_id)) {
+                            set_session_health(SessionHealthState::Healthy, 0);
+                        } else {
+                            std::uint32_t failures = 0;
+                            {
+                                std::lock_guard<std::mutex> lock(mutex_);
+                                failures = ++health_probe_failures_;
+                                session_health_ = failures >=
+                                        std::max<std::uint32_t>(
+                                            1, config_.session_health_failure_threshold)
+                                    ? SessionHealthState::Recovering
+                                    : SessionHealthState::Suspect;
+                                diagnostics_.session_health = session_health_;
+                                diagnostics_.health_probe_failures = failures;
+                                diagnostics_.last_event =
+                                    "session-health-probe-failed-" + std::to_string(failures);
+                            }
+                            if (failures >= std::max<std::uint32_t>(
+                                    1, config_.session_health_failure_threshold)) {
+                                request_recovery = true;
+                                recovery_reason = "health-probe-timeout";
+                            }
+                        }
+                    }
+                }
+                if (request_recovery) {
+                    request_session_recovery(device_id, std::move(recovery_reason));
                 }
                 drain_pending_media_callbacks();
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -1725,7 +2068,9 @@ bool AxtpAdapter::media_configure_retry_due_locked(std::chrono::steady_clock::ti
         now >= next_media_configure_attempt_;
 }
 
-void AxtpAdapter::configure_media_streams(const std::string& device_id)
+void AxtpAdapter::configure_media_streams(
+    const std::string& device_id,
+    MediaStreamEventReason open_reason)
 {
     bool configure_video = false;
     bool configure_audio = false;
@@ -1735,10 +2080,12 @@ void AxtpAdapter::configure_media_streams(const std::string& device_id)
         configure_audio = config_.enable_audio && !audio_source_recovery_pending_;
     }
     if (configure_video) {
-        configure_media_stream_kind(device_id, MediaKind::Video, true, false);
+        configure_media_stream_kind(
+            device_id, MediaKind::Video, true, false, open_reason);
     }
     if (configure_audio) {
-        configure_media_stream_kind(device_id, MediaKind::Audio, true, false);
+        configure_media_stream_kind(
+            device_id, MediaKind::Audio, true, false, open_reason);
     }
 }
 
@@ -1770,7 +2117,8 @@ void AxtpAdapter::retry_pending_media_source_recoveries(
         if (!retry) {
             return;
         }
-        configure_media_stream_kind(device_id, kind, false, false);
+        configure_media_stream_kind(
+            device_id, kind, false, false, MediaStreamEventReason::SourceRecovery);
         // configure_media_stream_kind() uses public runtime callJson and may
         // itself dispatch source events. Preserve the same lifecycle fence as
         // AxtpAdapter::call() before any callbacks are drained or another kind
@@ -1982,7 +2330,11 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
     // replacement or making rollback impossible on NA20.
     if (!operation.video_opened) {
         const bool opened = configure_media_stream_kind(
-            device_id, MediaKind::Video, false, true);
+            device_id,
+            MediaKind::Video,
+            false,
+            true,
+            MediaStreamEventReason::ParameterReconfigure);
         if (opened) {
             operation.video_opened = true;
             std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
@@ -2038,7 +2390,12 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
     const bool should_reopen_audio = operation.previous_audio_descriptor.has_value() ||
         !operation.previous_audio_open_params.empty();
     if (should_reopen_audio && !operation.audio_opened) {
-        if (!configure_media_stream_kind(device_id, MediaKind::Audio, false, true)) {
+        if (!configure_media_stream_kind(
+                device_id,
+                MediaKind::Audio,
+                false,
+                true,
+                MediaStreamEventReason::ParameterReconfigure)) {
             const auto open_error = runtime_->client->lastError();
             const auto error_code = open_error.ok()
                 ? kStatusMediaStreamStartFailed
@@ -2121,7 +2478,8 @@ bool AxtpAdapter::configure_media_stream_kind(
     const std::string& device_id,
     MediaKind kind,
     bool update_retry_state,
-    bool from_video_reconfigure)
+    bool from_video_reconfigure,
+    MediaStreamEventReason open_reason)
 {
     if (!config_.enable_media || runtime_->client == nullptr ||
         (kind != MediaKind::Video && kind != MediaKind::Audio)) {
@@ -2181,6 +2539,11 @@ bool AxtpAdapter::configure_media_stream_kind(
             std::string(media_kind_name(kind)) + "-capabilities-unavailable";
         return false;
     }
+    // A successful capabilities response is a safe, read-only liveness probe
+    // for this device/session.  Keep the method that actually worked instead
+    // of inventing a transport-specific heartbeat request.
+    runtime_->health_probe_method = capabilities_method_name(kind);
+    runtime_->health_probe_params = source_params;
     if (!capabilities_are_streamable(*capabilities, source)) {
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
@@ -2334,9 +2697,12 @@ bool AxtpAdapter::configure_media_stream_kind(
     std::vector<MediaStreamEvent> lifecycle_events;
     if (replaced_descriptor.has_value()) {
         lifecycle_events.push_back(
-            {MediaStreamEventKind::Closed, std::move(*replaced_descriptor)});
+            {MediaStreamEventKind::Closed,
+             std::move(*replaced_descriptor),
+             open_reason});
     }
-    lifecycle_events.push_back({MediaStreamEventKind::Opened, descriptor});
+    lifecycle_events.push_back(
+        {MediaStreamEventKind::Opened, descriptor, open_reason});
     enqueue_media_stream_events(std::move(lifecycle_events));
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2544,6 +2910,10 @@ void AxtpAdapter::drain_pending_media_callbacks()
 
 void AxtpAdapter::refresh_diagnostics_locked()
 {
+    diagnostics_.session_health = session_health_;
+    diagnostics_.health_probe_failures = health_probe_failures_;
+    diagnostics_.session_recoveries = session_recoveries_;
+    diagnostics_.last_session_recovery_reason = last_session_recovery_reason_;
 #if AXENT_HAS_AXTP_HID_TRANSPORT
     if (runtime_->client == nullptr || !runtime_->client->isConnected()) {
         diagnostics_.open = false;
@@ -2578,6 +2948,21 @@ void testing::AxtpAdapterTestSeam::disconnect_session(AxtpAdapter& adapter)
     if (adapter.runtime_->client != nullptr) {
         adapter.runtime_->client->close();
     }
+}
+
+void testing::AxtpAdapterTestSeam::bind_media_delivery_session(
+    AxtpAdapter& adapter,
+    const std::string& device_id,
+    const std::string& session_id)
+{
+    adapter.bind_media_delivery_session(device_id, session_id);
+}
+
+void testing::AxtpAdapterTestSeam::release_session(
+    AxtpAdapter& adapter,
+    const std::string& device_id)
+{
+    adapter.reset_session_for_device(device_id);
 }
 
 void testing::AxtpAdapterTestSeam::stop_session_pump(AxtpAdapter& adapter)
