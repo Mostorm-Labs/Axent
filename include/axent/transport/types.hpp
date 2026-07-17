@@ -16,6 +16,30 @@ enum class TransportKind {
     Mock,
 };
 
+// Health of a live protocol session.  This is deliberately transport-agnostic
+// so product hosts can expose diagnostics without depending on runtime types.
+enum class SessionHealthState {
+    Healthy,
+    Suspect,
+    Recovering,
+    Failed,
+};
+
+inline const char* session_health_state_name(SessionHealthState state)
+{
+    switch (state) {
+    case SessionHealthState::Healthy:
+        return "healthy";
+    case SessionHealthState::Suspect:
+        return "suspect";
+    case SessionHealthState::Recovering:
+        return "recovering";
+    case SessionHealthState::Failed:
+        return "failed";
+    }
+    return "unknown";
+}
+
 struct TransportSelector {
     TransportKind kind = TransportKind::Unknown;
     std::uint16_t vendor_id = 0;
@@ -71,6 +95,10 @@ struct TransportDiagnostics {
     std::string last_media_source_event_reason;
     std::uint32_t last_media_source_event_active_stream_id = 0;
     bool last_media_source_event_has_active_stream_id = false;
+    SessionHealthState session_health = SessionHealthState::Healthy;
+    std::uint32_t health_probe_failures = 0;
+    std::uint64_t session_recoveries = 0;
+    std::string last_session_recovery_reason;
 };
 
 } // namespace axent

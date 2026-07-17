@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
@@ -38,6 +39,12 @@ struct AxtpAdapterConfig {
     std::optional<std::uint32_t> video_frame_rate;
     std::string video_source = "wireless_cast";
     std::string audio_source = "wireless_cast_audio";
+    bool enable_session_health_probe = true;
+    std::uint32_t session_health_probe_interval_ms = 1000;
+    std::uint32_t session_health_probe_timeout_ms = 250;
+    std::uint32_t session_health_failure_threshold = 2;
+    std::uint32_t session_recovery_backoff_initial_ms = 1000;
+    std::uint32_t session_recovery_backoff_max_ms = 5000;
 };
 
 class AxentHost;
@@ -85,7 +92,9 @@ private:
     bool ensure_session_locked(const std::string& device_id,
                                std::string& error,
                                ControlStatus& status,
-                               bool configure_media);
+                               bool configure_media,
+                               MediaStreamEventReason open_reason =
+                                   MediaStreamEventReason::InitialOpen);
     void refresh_diagnostics_locked();
     void record_transport_trace(const std::string& event_name,
                                 bool accepted_read,
@@ -101,18 +110,22 @@ private:
                                        const std::string& session_id);
     void reset_session_for_device(const std::string& device_id);
     bool media_configure_retry_due_locked(std::chrono::steady_clock::time_point now) const;
-    void configure_media_streams(const std::string& device_id);
+    void configure_media_streams(
+        const std::string& device_id,
+        MediaStreamEventReason open_reason = MediaStreamEventReason::InitialOpen);
     bool configure_media_stream_kind(const std::string& device_id,
                                      MediaKind kind,
                                      bool update_retry_state,
-                                     bool from_video_reconfigure);
+                                     bool from_video_reconfigure,
+                                     MediaStreamEventReason open_reason =
+                                         MediaStreamEventReason::InitialOpen);
     void advance_video_reconfigure(const std::string& device_id);
-    void clear_video_stream_params_session();
+    void clear_video_stream_params_session(bool preserve_logical_session = false);
     void notify_video_stream_params_state(VideoStreamParamsState state);
     void retry_pending_media_source_recoveries(
         const std::string& device_id,
         std::chrono::steady_clock::time_point now);
-    void clear_media_streams();
+    void clear_media_streams(MediaStreamEventReason reason = MediaStreamEventReason::Shutdown);
     void enqueue_media_stream_events(std::vector<MediaStreamEvent> events);
     struct MediaSourceStateEvent {
         std::uint32_t event_id = 0;
@@ -141,6 +154,17 @@ private:
                                  std::vector<std::uint8_t> data) const;
     bool is_current_media_frame(const MediaFrame& frame) const;
     void drain_pending_media_callbacks();
+    void request_session_recovery(const std::string& device_id, std::string reason);
+    void run_session_recovery_worker();
+    bool recover_session_once(const std::string& device_id,
+                              std::string& error,
+                              std::uint64_t recovery_generation);
+    bool session_health_probe_due(std::chrono::steady_clock::time_point now);
+    bool run_session_health_probe(const std::string& device_id);
+    void set_session_health(SessionHealthState state,
+                            std::uint32_t probe_failures,
+                            std::string reason = {});
+    bool has_media_delivery_session(const std::string& device_id) const;
 
     AxtpAdapterConfig config_;
     struct RuntimeState;
@@ -185,6 +209,21 @@ private:
     std::string active_device_id_;
     std::atomic<bool> stop_session_pump_{false};
     std::thread session_pump_;
+    std::mutex recovery_mutex_;
+    std::condition_variable recovery_cv_;
+    std::thread recovery_worker_;
+    bool stop_recovery_worker_ = false;
+    bool recovery_requested_ = false;
+    std::string recovery_device_id_;
+    std::string recovery_reason_;
+    std::uint32_t recovery_attempt_ = 0;
+    std::chrono::steady_clock::time_point next_health_probe_;
+    std::chrono::steady_clock::time_point last_transport_activity_;
+    SessionHealthState session_health_ = SessionHealthState::Healthy;
+    std::uint32_t health_probe_failures_ = 0;
+    std::uint64_t session_recoveries_ = 0;
+    std::string last_session_recovery_reason_;
+    std::atomic<std::uint64_t> recovery_generation_{0};
 };
 
 } // namespace axent

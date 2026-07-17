@@ -31,9 +31,20 @@ enum class MediaStreamEventKind {
     Closed,
 };
 
+enum class MediaStreamEventReason {
+    Unspecified,
+    Snapshot,
+    InitialOpen,
+    SourceRecovery,
+    SessionRecovery,
+    ParameterReconfigure,
+    Shutdown,
+};
+
 struct MediaStreamEvent {
     MediaStreamEventKind kind = MediaStreamEventKind::Opened;
     MediaStreamDescriptor descriptor;
+    MediaStreamEventReason reason = MediaStreamEventReason::Unspecified;
 };
 
 enum class MediaDeliveryEventKind {
