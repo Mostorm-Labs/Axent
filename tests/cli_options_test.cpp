@@ -147,7 +147,7 @@ void test_axentd_real_adapter_defaults_and_precedence()
     require(!result.options.enable_axtp_adapter, "--no-axtp-real should override earlier --axtp-real");
     require(result.options.axtp.selector.kind == axent::TransportKind::Hid, "default AXTP selector should be HID");
     require(result.options.axtp.selector.vendor_id == 0x0581, "default AXTP VID mismatch");
-    require(result.options.axtp.selector.product_id == 0x2581, "default AXTP PID mismatch");
+    require(result.options.axtp.selector.product_id == 0x2582, "default AXTP PID mismatch");
     require(result.options.axtp.selector.usage_page == 0x0081, "default AXTP usage page mismatch");
     require(result.options.axtp.selector.report_id == 0x05, "default AXTP report id mismatch");
     require(result.options.axtp.selector.input_report_size == 0, "default input report size should be auto");

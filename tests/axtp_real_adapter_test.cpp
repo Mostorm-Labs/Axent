@@ -449,7 +449,7 @@ axent::TransportSelector na20_selector()
     axent::TransportSelector selector;
     selector.kind = axent::TransportKind::Hid;
     selector.vendor_id = 0x0581;
-    selector.product_id = 0x2581;
+    selector.product_id = 0x2582;
     selector.usage_page = 0x0081;
     selector.report_id = 0x05;
     selector.input_report_size = 0;
@@ -511,7 +511,7 @@ int main()
     const auto defaults = axent::AxtpAdapter::na20_defaults();
     require(defaults.selector.kind == axent::TransportKind::Hid, "NA20 should default to HID transport");
     require(defaults.selector.vendor_id == 0x0581, "NA20 VID mismatch");
-    require(defaults.selector.product_id == 0x2581, "NA20 PID mismatch");
+    require(defaults.selector.product_id == 0x2582, "NA20 PID mismatch");
     require(defaults.selector.usage_page == 0x0081, "NA20 usage page mismatch");
     require(defaults.selector.report_id == 0x05, "NA20 report id mismatch");
     require(defaults.selector.input_report_size == 0, "NA20 input report size should be auto");
@@ -520,7 +520,7 @@ int main()
     axent::transport::HidDeviceInfo hid_device;
     hid_device.path = "hid-path-001";
     hid_device.vendorId = 0x0581;
-    hid_device.productId = 0x2581;
+    hid_device.productId = 0x2582;
     hid_device.serialNumber = "NA20-SERIAL";
     hid_device.manufacturer = "Mostorm";
     hid_device.product = "NA20";
@@ -530,7 +530,7 @@ int main()
     hid_device.busType = "usb";
 
     const auto descriptor = axent::testing::AxtpAdapterTestSeam::descriptor_from_hid_device(hid_device);
-    require(descriptor.id == "hid:0581:2581:NA20-SERIAL", "descriptor id should include VID/PID/serial");
+    require(descriptor.id == "hid:0581:2582:NA20-SERIAL", "descriptor id should include VID/PID/serial");
     require(descriptor.online, "descriptor should be online");
     require(descriptor.kind == axent::TransportKind::Hid, "descriptor kind mismatch");
     require(descriptor.path == "hid-path-001", "descriptor path mismatch");
@@ -572,7 +572,7 @@ int main()
     auto mapped_options =
         axent::testing::AxtpAdapterTestSeam::hid_options_from_selector(na20_selector());
     require(mapped_options.vendorId == 0x0581, "mapped VID mismatch");
-    require(mapped_options.productId == 0x2581, "mapped PID mismatch");
+    require(mapped_options.productId == 0x2582, "mapped PID mismatch");
     require(mapped_options.usagePage == 0x0081, "mapped usage page mismatch");
     require(mapped_options.reportId == 0x05, "mapped report id mismatch");
     require(mapped_options.inputReportSize == 0, "mapped input report size should remain auto");
