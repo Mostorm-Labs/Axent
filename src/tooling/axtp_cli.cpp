@@ -72,7 +72,7 @@ namespace axent {
 namespace {
 
 constexpr std::uint32_t k_default_hid_vendor_id = 0x0581;
-constexpr std::uint32_t k_default_hid_product_id = 0x2581;
+constexpr std::uint32_t k_default_hid_product_id = 0x2582;
 constexpr std::uint32_t k_default_hid_usage_page = 0x81;
 constexpr std::uint32_t k_default_hid_usage = 0x82;
 
@@ -167,7 +167,7 @@ void print_usage(const std::string& display_name, std::ostream& out)
         << "      --host <host>            TCP or WebSocket bind host\n"
         << "      --port <port>            TCP or WebSocket port\n"
         << "      --vid, --hid-vid <hex>   HID vendor id, default 0x0581\n"
-        << "      --pid, --hid-pid <hex>   HID product id, default 0x2581\n"
+        << "      --pid, --hid-pid <hex>   HID product id, default 0x2582\n"
         << "      --usage-page <hex|dec>   HID usage page filter, default 0x81\n"
         << "      --usage <hex|dec>        HID usage filter, default 0x82\n"
         << "      --path, --hid-path <path> HID path from list-hid\n"

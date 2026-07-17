@@ -532,7 +532,7 @@ AxtpAdapterConfig AxtpAdapter::na20_defaults()
     AxtpAdapterConfig config;
     config.selector.kind = TransportKind::Hid;
     config.selector.vendor_id = 0x0581;
-    config.selector.product_id = 0x2581;
+    config.selector.product_id = 0x2582;
     config.selector.usage_page = 0x0081;
     config.selector.usage = 0;
     config.selector.report_id = 0x05;

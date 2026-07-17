@@ -96,7 +96,7 @@ The shared tooling defaults target the current NA20 development device:
 
 ```text
 transport: hid
-VID/PID: 0x0581:0x2581
+VID/PID: 0x0581:0x2582
 usage page/usage: 0x81:0x82
 timeout: 5000 ms
 output: json
@@ -159,7 +159,7 @@ rotating file segments without adding a third-party logging dependency.
 build/axentd --foreground --axtp-real --bind 127.0.0.1 --port 6060
 ```
 
-Default NA20 HID selector values are VID `0x0581`, PID `0x2581`, usage page
+Default NA20 HID selector values are VID `0x0581`, PID `0x2582`, usage page
 `0x0081`, report id `0x05`, and automatic input/output report sizes. Override
 them with `--hid-vid`, `--hid-pid`, `--hid-usage-page`, `--hid-usage`,
 `--hid-report-id`, `--hid-input-report-size`, `--hid-output-report-size`,
