@@ -24,6 +24,7 @@ enum class ControlStatus {
     Ok,
     Accepted,
     NotFound,
+    NotSupported,
     Forbidden,
     InvalidArgument,
     Unavailable,

@@ -1,6 +1,7 @@
 #include "axent/host/axent_host.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -1269,6 +1270,8 @@ struct AxentHost::Impl {
         const std::string& session_id);
     std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions_for_session_locked(
         const std::string& session_id);
+    std::vector<ControlOperationPtr> take_control_operations_locked(
+        const std::optional<std::string>& session_id = std::nullopt);
     bool is_axtp_device_locked(const std::string& device_id) const;
     std::optional<std::string> other_axtp_lease_device_locked(const std::string& device_id) const;
     bool has_lease_for_device_locked(const std::string& device_id) const;
@@ -1289,6 +1292,7 @@ struct AxentHost::Impl {
     std::map<std::string, std::shared_ptr<MediaStreamRelay>> relays;
     std::map<std::string, std::vector<std::weak_ptr<MediaSubscriptionState>>> subscriptions;
     std::map<std::string, std::vector<std::weak_ptr<MediaStreamSubscriptionState>>> stream_subscriptions;
+    std::map<std::string, std::vector<std::weak_ptr<ControlOperation>>> control_operations;
     std::map<std::string, std::map<std::uint32_t, MediaStreamDescriptor>> active_media_streams;
     std::map<std::string, std::string> media_owner_session_by_device;
     std::shared_ptr<HostLeaseRegistry> lease_registry = std::make_shared<HostLeaseRegistry>();
@@ -1315,6 +1319,7 @@ AxentHost::Impl::ResetSubscriptions AxentHost::Impl::reset()
         }
     }
     stream_subscriptions.clear();
+    control_operations.clear();
     active_media_streams.clear();
     for (auto& entry : relays) {
         if (entry.second) {
@@ -1338,6 +1343,32 @@ AxentHost::Impl::ResetSubscriptions AxentHost::Impl::reset()
     sessions = SessionManager{};
     running = false;
     return subscriptions_to_close;
+}
+
+std::vector<ControlOperationPtr> AxentHost::Impl::take_control_operations_locked(
+    const std::optional<std::string>& session_id)
+{
+    std::vector<ControlOperationPtr> operations;
+    const auto take = [&operations](auto& weak_operations) {
+        for (auto& weak_operation : weak_operations) {
+            if (auto operation = weak_operation.lock()) {
+                operations.push_back(std::move(operation));
+            }
+        }
+    };
+    if (session_id.has_value()) {
+        const auto entry = control_operations.find(*session_id);
+        if (entry != control_operations.end()) {
+            take(entry->second);
+            control_operations.erase(entry);
+        }
+        return operations;
+    }
+    for (auto& entry : control_operations) {
+        take(entry.second);
+    }
+    control_operations.clear();
+    return operations;
 }
 
 AxentHostOptions::AxentHostOptions()
@@ -1502,6 +1533,14 @@ bool AxentHost::start(AxentHostOptions options)
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
     std::unique_ptr<Adapter> previous_axtp_adapter;
     Impl::ResetSubscriptions subscriptions_to_close;
+    std::vector<ControlOperationPtr> operations_to_cancel;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        operations_to_cancel = impl_->take_control_operations_locked();
+    }
+    for (auto& operation : operations_to_cancel) {
+        operation->cancel();
+    }
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         previous_axtp_adapter = std::move(impl_->axtp_adapter);
@@ -1570,11 +1609,19 @@ void AxentHost::stop()
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
     std::unique_ptr<Adapter> axtp_adapter;
     Impl::ResetSubscriptions subscriptions_to_close;
+    std::vector<ControlOperationPtr> operations_to_cancel;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->running && !impl_->broker) {
             return;
         }
+        operations_to_cancel = impl_->take_control_operations_locked();
+    }
+    for (auto& operation : operations_to_cancel) {
+        operation->cancel();
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
         axtp_adapter = std::move(impl_->axtp_adapter);
         subscriptions_to_close = impl_->reset();
     }
@@ -1631,6 +1678,7 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
                 ControlStatus::Busy};
     }
     std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    AxtpAdapter* session_adapter = nullptr;
     AxtpAdapter* media_adapter = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1650,6 +1698,7 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
                     ControlStatus::Busy};
         }
         if (device->adapter == "axtp") {
+            session_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
             const auto other_device =
                 impl_->other_axtp_lease_device_locked(request.device_id);
             if (other_device.has_value()) {
@@ -1663,7 +1712,7 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
             }
         }
         if (request.media && device->adapter == "axtp") {
-            media_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
+            media_adapter = session_adapter;
         }
     }
 
@@ -1680,9 +1729,10 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
     }
     ActivityReservation activity(impl_->lease_registry, request.device_id, request.media);
 
-    if (media_adapter != nullptr) {
+    if (session_adapter != nullptr) {
         std::string error;
-        const auto status = media_adapter->open_session_status(request.device_id, error);
+        const auto status = session_adapter->open_session_status(
+            request.device_id, error, request.media);
         if (status != ControlStatus::Ok) {
             return {false, "", request.device_id, request.client_id, true, error, status};
         }
@@ -1742,6 +1792,7 @@ void AxentHost::release_session(const std::string& session_id, const std::string
     std::string media_device_id;
     std::vector<std::shared_ptr<MediaSubscriptionState>> subscriptions_to_close;
     std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions_to_close;
+    std::vector<ControlOperationPtr> operations_to_cancel;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         const auto lease = impl_->lease_for_session_locked(session_id);
@@ -1765,6 +1816,8 @@ void AxentHost::release_session(const std::string& session_id, const std::string
         stream_subscriptions_to_close =
             impl_->take_session_stream_subscriptions_locked(session_id);
         impl_->active_media_streams.erase(session_id);
+        operations_to_cancel =
+            impl_->take_control_operations_locked(session_id);
         if (lease.has_value()) {
             impl_->sessions.close_device_session(session_id);
         }
@@ -1778,6 +1831,9 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             reset_device_id = lease->device_id;
             reset_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
         }
+    }
+    for (auto& operation : operations_to_cancel) {
+        operation->cancel();
     }
     if (media_adapter_to_unbind != nullptr) {
         media_adapter_to_unbind->unbind_media_delivery_session(
@@ -2162,25 +2218,52 @@ ControlResult AxentHost::call(const std::string& session_id,
                               const std::string& method,
                               const nlohmann::json& params)
 {
+    auto operation = call_async(session_id, method, params);
+    return operation
+        ? operation->wait()
+        : ControlResult{
+              ControlStatus::InternalError,
+              {{"error", "host returned no control operation"}}};
+}
+
+ControlOperationPtr AxentHost::call_async(
+    const std::string& session_id,
+    const std::string& method,
+    const nlohmann::json& params,
+    ControlCallOptions options)
+{
+    if (!options.deadline.has_value()) {
+        const auto accepted_at = std::chrono::steady_clock::now();
+        options.deadline = options.timeout <= std::chrono::milliseconds::zero()
+            ? accepted_at
+            : accepted_at + options.timeout;
+    }
     ControlCommand command;
     Broker* broker = nullptr;
+    // Async control submission is also used by the media loop.  It must not
+    // wait behind a lifecycle operation (start/stop/release) holding the
+    // host dispatch gate: blocking here would turn a bounded key-frame
+    // request into another media-path stall.  The operation can be retried
+    // by the caller when the gate is busy; all actual adapter/session work
+    // remains serialized by the dispatch owner after acceptance.
     std::unique_lock<std::mutex> dispatch_lock(impl_->dispatch_mutex, std::defer_lock);
-    if (g_in_media_stream_sink_callback) {
-        if (!dispatch_lock.try_lock()) {
-            return {ControlStatus::Busy,
-                    {{"error", "host dispatch busy during media stream callback"}}};
-        }
-    } else {
-        dispatch_lock.lock();
+    if (!dispatch_lock.try_lock()) {
+        return make_completed_control_operation(
+            {ControlStatus::Busy,
+             {{"error", g_in_media_stream_sink_callback
+                            ? "host dispatch busy during media stream callback"
+                            : "host dispatch busy"}}});
     }
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->broker) {
-            return {ControlStatus::Unavailable, {{"error", "host not running"}}};
+            return make_completed_control_operation(
+                {ControlStatus::Unavailable, {{"error", "host not running"}}});
         }
         const auto lease = impl_->lease_for_session_locked(session_id);
         if (!lease.has_value()) {
-            return {ControlStatus::NotFound, {{"error", "session not found"}}};
+            return make_completed_control_operation(
+                {ControlStatus::NotFound, {{"error", "session not found"}}});
         }
 
         broker = impl_->broker.get();
@@ -2190,7 +2273,30 @@ ControlResult AxentHost::call(const std::string& session_id,
         command.method = method;
         command.params = params;
     }
-    return broker->dispatch(command);
+    auto operation = broker->dispatch_async(command, options);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto lease = impl_->lease_for_session_locked(session_id);
+        if (!lease.has_value()) {
+            if (operation) {
+                operation->cancel();
+            }
+            return make_completed_control_operation(
+                {ControlStatus::NotFound, {{"error", "session released"}}});
+        }
+        auto& operations = impl_->control_operations[session_id];
+        operations.erase(
+            std::remove_if(
+                operations.begin(),
+                operations.end(),
+                [](const auto& weak_operation) {
+                    const auto operation = weak_operation.lock();
+                    return !operation || operation->ready();
+                }),
+            operations.end());
+        operations.push_back(operation);
+    }
+    return operation;
 }
 
 Broker& AxentHost::broker()

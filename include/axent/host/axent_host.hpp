@@ -110,6 +110,11 @@ public:
     ControlResult call(const std::string& session_id,
                        const std::string& method,
                        const nlohmann::json& params);
+    ControlOperationPtr call_async(
+        const std::string& session_id,
+        const std::string& method,
+        const nlohmann::json& params,
+        ControlCallOptions options = {});
 
     // AxentHost serializes its own lifecycle/session/media state. The returned
     // reference is valid only until stop() or the next start(), and those calls

@@ -26,7 +26,18 @@ std::vector<DeviceSnapshot> AxdpAdapter::discover()
 
 ControlResult AxdpAdapter::call(const std::string&, const std::string&, const nlohmann::json&)
 {
-    return {ControlStatus::Unavailable, {{"error", "AXDP adapter skeleton only"}}};
+    return call_async({}, {}, {})->wait();
+}
+
+ControlOperationPtr AxdpAdapter::call_async(
+    const std::string&,
+    const std::string&,
+    const nlohmann::json&,
+    ControlCallOptions)
+{
+    return make_completed_control_operation(
+        {ControlStatus::Unavailable,
+         {{"error", "AXDP adapter skeleton only"}}});
 }
 
 ControlResult AxdpAdapter::start_firmware_update(const std::string&, const std::string&)

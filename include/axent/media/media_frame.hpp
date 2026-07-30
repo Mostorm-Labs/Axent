@@ -85,6 +85,10 @@ struct MediaFrame {
     // Appended for source compatibility with positional aggregate users of
     // the legacy frame façade. Zero means no lifecycle generation is bound.
     std::uint64_t generation = 0;
+    // Internal delivery provenance. A non-zero value is stamped at raw AXTP
+    // payload ingress and fences deferred callbacks across logical media
+    // lease handoff. It is not part of the AXTP wire payload.
+    std::uint64_t binding_epoch = 0;
 };
 
 inline StreamKey stream_key(const MediaFrame& frame)
