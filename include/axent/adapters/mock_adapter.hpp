@@ -10,6 +10,11 @@ public:
     std::vector<Capability> capabilities() const override;
     std::vector<DeviceSnapshot> discover() override;
     ControlResult call(const std::string& device_id, const std::string& method, const nlohmann::json& params) override;
+    ControlOperationPtr call_async(
+        const std::string& device_id,
+        const std::string& method,
+        const nlohmann::json& params,
+        ControlCallOptions options = {}) override;
     ControlResult start_firmware_update(const std::string& device_id, const std::string& file_path) override;
 
 private:

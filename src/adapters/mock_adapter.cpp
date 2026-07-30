@@ -45,22 +45,38 @@ std::vector<DeviceSnapshot> MockAdapter::discover()
 
 ControlResult MockAdapter::call(const std::string& device_id, const std::string& method, const nlohmann::json&)
 {
+    return call_async(device_id, method, {})->wait();
+}
+
+ControlOperationPtr MockAdapter::call_async(
+    const std::string& device_id,
+    const std::string& method,
+    const nlohmann::json&,
+    ControlCallOptions)
+{
     if (device_id != "mock-device-001") {
-        return {ControlStatus::NotFound, {{"error", "device not found"}}};
+        return make_completed_control_operation(
+            {ControlStatus::NotFound, {{"error", "device not found"}}});
     }
     if (method == "status.get") {
-        return {ControlStatus::Ok, {{"health", "ok"}}};
+        return make_completed_control_operation(
+            {ControlStatus::Ok, {{"health", "ok"}}});
     }
     if (method == "identity.get") {
-        return {ControlStatus::Ok, {{"serialNumber", "MOCK001"}, {"model", "MockCam"}}};
+        return make_completed_control_operation(
+            {ControlStatus::Ok,
+             {{"serialNumber", "MOCK001"}, {"model", "MockCam"}}});
     }
     if (method == "device.info") {
-        return {ControlStatus::Ok, to_json(discover().front())};
+        return make_completed_control_operation(
+            {ControlStatus::Ok, to_json(discover().front())});
     }
     if (method == "stream.flowControl.get") {
-        return {ControlStatus::Ok, {{"paused", false}, {"dropped", 0}}};
+        return make_completed_control_operation(
+            {ControlStatus::Ok, {{"paused", false}, {"dropped", 0}}});
     }
-    return {ControlStatus::NotFound, {{"error", "method not found"}}};
+    return make_completed_control_operation(
+        {ControlStatus::NotFound, {{"error", "method not found"}}});
 }
 
 ControlResult MockAdapter::start_firmware_update(const std::string& device_id, const std::string& file_path)

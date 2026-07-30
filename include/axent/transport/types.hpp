@@ -25,6 +25,28 @@ enum class SessionHealthState {
     Failed,
 };
 
+// Product-neutral liveness policy.  The adapter selects the effective mode
+// for each physical session; callers never need to know the underlying AXTP
+// runtime type or wire opcode.
+enum class SessionProbeMode {
+    Auto,
+    ControlHeartbeat,
+    LegacyRpc,
+};
+
+inline const char* session_probe_mode_name(SessionProbeMode mode)
+{
+    switch (mode) {
+    case SessionProbeMode::ControlHeartbeat:
+        return "control-heartbeat";
+    case SessionProbeMode::LegacyRpc:
+        return "legacy-rpc";
+    case SessionProbeMode::Auto:
+    default:
+        return "auto";
+    }
+}
+
 inline const char* session_health_state_name(SessionHealthState state)
 {
     switch (state) {
@@ -83,6 +105,14 @@ struct TransportDiagnostics {
     std::uint64_t write_errors = 0;
     std::uint64_t dropped_reports = 0;
     std::uint64_t queued_reports = 0;
+    std::uint64_t read_bytes = 0;
+    std::uint64_t write_bytes = 0;
+    std::uint64_t control_queue_depth = 0;
+    std::uint64_t control_in_flight = 0;
+    std::uint64_t control_outstanding_high_water = 0;
+    std::uint64_t media_dispatch_queue_depth = 0;
+    std::uint64_t media_dispatch_queue_high_water = 0;
+    std::uint64_t media_frames_dispatched_during_control_call = 0;
     std::string last_event;
     std::string last_error;
     std::uint32_t active_video_stream_id = 0;
@@ -99,6 +129,23 @@ struct TransportDiagnostics {
     std::uint32_t health_probe_failures = 0;
     std::uint64_t session_recoveries = 0;
     std::string last_session_recovery_reason;
+    SessionProbeMode requested_probe_mode = SessionProbeMode::Auto;
+    SessionProbeMode effective_probe_mode = SessionProbeMode::Auto;
+    std::uint32_t negotiated_heartbeat_interval_ms = 0;
+    std::uint64_t inbound_activity_generation = 0;
+    std::uint64_t heartbeat_attempts = 0;
+    std::uint64_t heartbeat_acks = 0;
+    std::uint64_t heartbeat_timeouts = 0;
+    std::uint64_t legacy_probe_attempts = 0;
+    std::uint64_t legacy_probe_successes = 0;
+    std::uint64_t legacy_fallbacks = 0;
+    std::string legacy_fallback_reason;
+    struct MediaRetryDiagnostics {
+        std::uint64_t configure_attempts = 0;
+        std::string last_error;
+        std::uint64_t next_retry_in_ms = 0;
+        bool terminal = false;
+    } video_retry, audio_retry;
 };
 
 } // namespace axent

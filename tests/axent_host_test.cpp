@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,8 @@ namespace {
 void require(bool condition, const char* message)
 {
     if (!condition) {
+        std::fprintf(stderr, "axent_host_test assertion failed: %s\n", message);
+        std::fflush(stderr);
         throw std::runtime_error(message);
     }
 }

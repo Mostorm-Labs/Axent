@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -40,9 +41,13 @@ struct AxtpAdapterConfig {
     std::string video_source = "wireless_cast";
     std::string audio_source = "wireless_cast_audio";
     bool enable_session_health_probe = true;
+    SessionProbeMode session_probe_mode = SessionProbeMode::Auto;
+    // Advisory OPEN value.  A valid peer ACCEPT value is exposed through
+    // TransportDiagnostics and controls the active heartbeat schedule.
+    std::uint32_t requested_heartbeat_interval_ms = 1000;
     std::uint32_t session_health_probe_interval_ms = 1000;
     std::uint32_t session_health_probe_timeout_ms = 250;
-    std::uint32_t session_health_failure_threshold = 2;
+    std::uint32_t session_health_failure_threshold = 3;
     std::uint32_t session_recovery_backoff_initial_ms = 1000;
     std::uint32_t session_recovery_backoff_max_ms = 5000;
 };
@@ -65,13 +70,20 @@ public:
     std::vector<Capability> capabilities() const override;
     std::vector<DeviceSnapshot> discover() override;
     ControlResult call(const std::string& device_id, const std::string& method, const nlohmann::json& params) override;
+    ControlOperationPtr call_async(
+        const std::string& device_id,
+        const std::string& method,
+        const nlohmann::json& params,
+        ControlCallOptions options = {}) override;
     ControlResult start_firmware_update(const std::string& device_id, const std::string& file_path) override;
 
     TransportDiagnostics diagnostics() const;
     void set_media_frame_callback(MediaFrameCallback callback);
     void set_media_stream_event_callback(MediaStreamEventCallback callback);
     std::vector<MediaStreamDescriptor> active_media_stream_descriptors() const;
-    ControlStatus open_session_status(const std::string& device_id, std::string& error);
+    ControlStatus open_session_status(const std::string& device_id,
+                                      std::string& error,
+                                      bool configure_media = true);
     bool open_session(const std::string& device_id, std::string& error);
     VideoStreamParamsResult set_video_stream_params(
         const std::string& device_id,
@@ -89,6 +101,12 @@ private:
                 std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory);
 
     std::thread request_stop_session_pump_locked();
+    void process_next_control_call(const std::string& device_id);
+    void expire_pending_control_calls(std::chrono::steady_clock::time_point now);
+    void cancel_control_calls(
+        const std::optional<std::string>& device_id,
+        const std::optional<std::uint64_t>& physical_generation,
+        std::string reason);
     bool ensure_session_locked(const std::string& device_id,
                                std::string& error,
                                ControlStatus& status,
@@ -137,23 +155,34 @@ private:
         std::uint32_t active_stream_id = 0;
         bool has_active_stream_id = false;
         bool valid = false;
+        std::uint64_t order = 0;
+        bool deferred_client_action = false;
     };
     void enqueue_media_source_state_event(MediaSourceStateEvent event);
-    void process_pending_media_source_state_events(const std::string& device_id);
+    bool has_pending_media_source_state_events() const;
+    void process_pending_media_source_state_events(
+        const std::string& device_id,
+        bool allow_client_calls = true);
     void process_media_source_state_event(const std::string& device_id,
                                           const MediaSourceStateEvent& event);
+    void run_pending_orphan_stream_closes(const std::string& device_id);
     void handle_stream_payload(const std::string& device_id,
                                std::uint32_t stream_id,
                                std::uint32_t sequence_id,
                                std::uint64_t cursor,
-                               std::vector<std::uint8_t> data);
+                               std::vector<std::uint8_t> data,
+                               std::uint64_t ingress_token = 0);
     MediaFrame frame_from_stream(const std::string& device_id,
                                  std::uint32_t stream_id,
                                  std::uint32_t sequence_id,
                                  std::uint64_t cursor,
-                                 std::vector<std::uint8_t> data) const;
+                                 std::vector<std::uint8_t> data,
+                                 std::uint64_t ingress_token = 0) const;
     bool is_current_media_frame(const MediaFrame& frame) const;
+    void commit_pending_media_batch();
     void drain_pending_media_callbacks();
+    void notify_media_dispatch();
+    void run_media_dispatcher();
     void request_session_recovery(const std::string& device_id, std::string reason);
     void run_session_recovery_worker();
     bool recover_session_once(const std::string& device_id,
@@ -165,6 +194,14 @@ private:
                             std::uint32_t probe_failures,
                             std::string reason = {});
     bool has_media_delivery_session(const std::string& device_id) const;
+    void note_inbound_activity();
+    void sync_runtime_activity();
+    void publish_runtime_progress(const std::string& device_id);
+    void snapshot_transport_diagnostics_from_runtime(bool force = false);
+    bool run_legacy_capabilities_probe(const std::string& device_id);
+    bool run_control_heartbeat_probe(const std::string& device_id,
+                                     bool* transport_error,
+                                     bool* had_other_activity);
 
     AxtpAdapterConfig config_;
     struct RuntimeState;
@@ -186,22 +223,66 @@ private:
     bool source_recovery_cycle_active_ = false;
     bool source_recovery_close_sent_ = false;
     std::uint8_t source_recovery_reopen_mask_ = 0;
-    std::mutex pending_media_event_mutex_;
-    std::queue<MediaStreamEvent> pending_media_stream_events_;
-    std::mutex pending_media_source_state_mutex_;
+    struct PendingMediaIngressFrame {
+        // Capture the complete delivery identity at the runtime callback
+        // boundary.  A source lifecycle event from the same poll can replace
+        // a same-ID stream before the batch is committed, and a Host lease
+        // can be rebound before the dispatcher runs.  Looking either value up
+        // later would incorrectly deliver an old physical frame as new.
+        MediaFrame frame;
+    };
+    struct PendingMediaDispatchItem {
+        enum class Kind {
+            StreamEvent,
+            Frame,
+        } kind = Kind::StreamEvent;
+        MediaStreamEvent event;
+        MediaFrame frame;
+    };
+    mutable std::mutex pending_media_source_state_mutex_;
     std::queue<MediaSourceStateEvent> pending_media_source_state_events_;
-    std::mutex pending_media_mutex_;
-    std::queue<std::pair<std::string, MediaFrame>> pending_media_frames_;
+    // Streamable events may require close/open RPCs.  A callRaw progress hook
+    // reconciles pure lifecycle immediately but defers those client-owning
+    // actions until the outer RPC returns to the pump.
+    std::queue<MediaSourceStateEvent> deferred_media_source_state_events_;
+    std::uint64_t next_media_source_state_order_ = 0;
+    std::uint64_t latest_video_source_state_order_ = 0;
+    std::uint64_t latest_audio_source_state_order_ = 0;
+    // A single open transition can observe more than one foreign/future ID.
+    // Retain each candidate until the response identifies which terminal
+    // belongs to this open; a later unrelated stale ID must not overwrite it.
+    std::map<std::uint32_t, std::uint64_t> pending_video_open_terminal_orders_;
+    std::map<std::uint32_t, std::uint64_t> pending_audio_open_terminal_orders_;
+    std::queue<std::pair<MediaKind, std::uint32_t>> pending_orphan_stream_closes_;
+    std::mutex pending_media_ingress_mutex_;
+    std::queue<PendingMediaIngressFrame> pending_media_ingress_frames_;
+    std::mutex pending_media_dispatch_mutex_;
+    std::queue<PendingMediaDispatchItem> pending_media_dispatch_items_;
+    std::mutex media_dispatch_mutex_;
+    std::condition_variable media_dispatch_cv_;
+    std::uint64_t media_dispatch_generation_ = 0;
+    bool stop_media_dispatcher_ = false;
+    std::thread media_dispatcher_;
     mutable std::mutex media_delivery_session_mutex_;
     std::map<std::string, std::string> media_delivery_sessions_;
+    // Monotonic logical binding fence. It advances on every bind/unbind so a
+    // stream payload decoded before a lease handoff cannot be delivered after
+    // the replacement lease, even when Core deferred its broker callback.
+    std::atomic<std::uint64_t> media_binding_epoch_{1};
     mutable std::mutex mutex_;
     mutable std::mutex session_mutex_;
     mutable std::mutex client_mutex_;
     TransportDiagnostics diagnostics_;
     std::chrono::steady_clock::time_point next_media_configure_attempt_;
     std::uint32_t media_configure_attempts_ = 0;
+    std::chrono::steady_clock::time_point next_video_configure_attempt_;
+    std::chrono::steady_clock::time_point next_audio_configure_attempt_;
+    std::uint32_t video_configure_retry_attempt_ = 0;
+    std::uint32_t audio_configure_retry_attempt_ = 0;
     bool video_source_terminal_ = false;
     bool audio_source_terminal_ = false;
+    bool video_source_waiting_ = false;
+    bool audio_source_waiting_ = false;
     bool video_source_recovery_pending_ = false;
     bool audio_source_recovery_pending_ = false;
     std::chrono::steady_clock::time_point next_video_source_recovery_attempt_;
@@ -209,6 +290,25 @@ private:
     std::string active_device_id_;
     std::atomic<bool> stop_session_pump_{false};
     std::thread session_pump_;
+    struct PendingControlCall;
+    std::mutex control_mutex_;
+    std::condition_variable control_cv_;
+    std::deque<std::shared_ptr<PendingControlCall>> pending_control_calls_;
+    std::shared_ptr<PendingControlCall> in_flight_control_call_;
+    bool accepting_control_calls_ = true;
+    std::atomic<std::uint64_t> control_queue_depth_{0};
+    std::atomic<std::uint64_t> control_in_flight_{0};
+    std::atomic<std::uint64_t> control_outstanding_high_water_{0};
+    std::atomic<std::uint64_t> media_dispatch_queue_depth_{0};
+    std::atomic<std::uint64_t> media_dispatch_queue_high_water_{0};
+    std::atomic<std::uint64_t> media_frames_dispatched_during_control_call_{0};
+    // Keep media staged while an internal open/reopen RPC is deciding the
+    // next stream generation.  Runtime progress may otherwise publish an old
+    // generation immediately before its Closed/Opened lifecycle entries.
+    std::atomic<std::uint32_t> video_lifecycle_transition_depth_{0};
+    std::atomic<std::uint32_t> audio_lifecycle_transition_depth_{0};
+    std::chrono::steady_clock::time_point next_transport_diagnostics_snapshot_;
+    bool transport_counters_snapshot_owned_ = false;
     std::mutex recovery_mutex_;
     std::condition_variable recovery_cv_;
     std::thread recovery_worker_;
@@ -219,6 +319,18 @@ private:
     std::uint32_t recovery_attempt_ = 0;
     std::chrono::steady_clock::time_point next_health_probe_;
     std::chrono::steady_clock::time_point last_transport_activity_;
+    std::uint64_t inbound_activity_generation_ = 0;
+    std::uint64_t last_runtime_activity_generation_ = 0;
+    std::uint64_t last_probe_activity_generation_ = 0;
+    SessionProbeMode effective_probe_mode_ = SessionProbeMode::Auto;
+    std::uint32_t negotiated_heartbeat_interval_ms_ = 0;
+    std::uint64_t heartbeat_attempts_ = 0;
+    std::uint64_t heartbeat_acks_ = 0;
+    std::uint64_t heartbeat_timeouts_ = 0;
+    std::uint64_t legacy_probe_attempts_ = 0;
+    std::uint64_t legacy_probe_successes_ = 0;
+    std::uint64_t legacy_fallbacks_ = 0;
+    std::string legacy_fallback_reason_;
     SessionHealthState session_health_ = SessionHealthState::Healthy;
     std::uint32_t health_probe_failures_ = 0;
     std::uint64_t session_recoveries_ = 0;

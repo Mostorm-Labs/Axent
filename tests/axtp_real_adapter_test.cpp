@@ -114,6 +114,16 @@ public:
         {
             std::lock_guard<std::mutex> lock(rx_mutex_);
             pending.swap(rx_queue_);
+            const auto now = std::chrono::steady_clock::now();
+            auto delayed = delayed_rx_.begin();
+            while (delayed != delayed_rx_.end()) {
+                if (delayed->due > now) {
+                    ++delayed;
+                    continue;
+                }
+                pending.push(std::move(delayed->bytes));
+                delayed = delayed_rx_.erase(delayed);
+            }
         }
         while (!pending.empty()) {
             inject(pending.front());
@@ -178,6 +188,15 @@ public:
         std::lock_guard<std::mutex> lock(rx_mutex_);
         rx_queue_.push(std::move(stream_bytes));
         rx_queue_.push(std::move(event_bytes));
+    }
+
+    void releaseHeldVideoOpenResponse()
+    {
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        if (!held_video_open_response_.empty()) {
+            rx_queue_.push(std::move(held_video_open_response_));
+            held_video_open_response_.clear();
+        }
     }
 
     void sendBytes(const axtp::Byte* data, std::size_t size) override
@@ -375,7 +394,25 @@ public:
                     queueBytes(encode_stream(std::move(stream)));
                     queueBytes(encode_rpc(response));
                 } else {
-                    inject(encode_rpc(response));
+                    auto response_bytes = encode_rpc(std::move(response));
+                    const bool video_open_response = rpc.methodOrEventId ==
+                        static_cast<std::uint32_t>(axtp::MethodId::VideoOpenStream);
+                    const auto delay_ms = rpc.methodOrEventId ==
+                            static_cast<std::uint32_t>(axtp::MethodId::VideoRequestKeyFrame)
+                        ? delay_next_keyframe_response_ms.exchange(0)
+                        : 0;
+                    if (video_open_response &&
+                        hold_next_video_open_response.exchange(false)) {
+                        std::lock_guard<std::mutex> lock(rx_mutex_);
+                        held_video_open_response_ = std::move(response_bytes);
+                        video_open_response_held.store(true);
+                    } else if (delay_ms > 0) {
+                        queueDelayedBytes(
+                            std::move(response_bytes),
+                            std::chrono::milliseconds(delay_ms));
+                    } else {
+                        inject(response_bytes);
+                    }
                 }
             }
         }
@@ -415,6 +452,9 @@ public:
     std::atomic<bool>* silent_reset = nullptr;
     std::atomic<int> drop_next_capability_responses{0};
     std::atomic<bool> capability_business_error{false};
+    std::atomic<int> delay_next_keyframe_response_ms{0};
+    std::atomic<bool> hold_next_video_open_response{false};
+    std::atomic<bool> video_open_response_held{false};
     bool unique_video_stream_ids = false;
     std::mutex requests_mutex;
     std::vector<nlohmann::json> video_open_params;
@@ -425,10 +465,21 @@ public:
     std::vector<std::string> media_request_order;
 
 private:
+    struct DelayedBytes {
+        std::chrono::steady_clock::time_point due;
+        axtp::Bytes bytes;
+    };
+
     void queueBytes(axtp::Bytes bytes)
     {
         std::lock_guard<std::mutex> lock(rx_mutex_);
         rx_queue_.push(std::move(bytes));
+    }
+
+    void queueDelayedBytes(axtp::Bytes bytes, std::chrono::milliseconds delay)
+    {
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        delayed_rx_.push_back({std::chrono::steady_clock::now() + delay, std::move(bytes)});
     }
 
     void inject(const axtp::Bytes& bytes)
@@ -441,6 +492,8 @@ private:
     axtp::IByteSink* sink_ = nullptr;
     std::mutex rx_mutex_;
     std::queue<axtp::Bytes> rx_queue_;
+    std::vector<DelayedBytes> delayed_rx_;
+    axtp::Bytes held_video_open_response_;
     bool open_ = false;
 };
 
@@ -810,12 +863,116 @@ int main()
     require(axent::has_flag(received_audio_frame.flags, axent::MediaFrameFlag::EndOfFrame),
             "audio end-of-frame flag missing");
 
+    // A slow control response must not serialize media delivery behind the
+    // RPC. The session pump continues polling, callRaw invokes progress after
+    // each poll, and the independent dispatcher publishes those staged frames
+    // while the control operation remains in flight.
+    constexpr std::uint32_t kProgressFramePairs = 60;
+    media_scripted->delay_next_keyframe_response_ms.store(2000);
+    axent::ControlCallOptions slow_call_options;
+    slow_call_options.timeout = std::chrono::seconds(4);
+    auto slow_operation = media_adapter->call_async(
+        "hid:0581:2581:NA20-SERIAL",
+        "video.requestKeyFrame",
+        {{"streamId", 1}, {"reason", "progress-test"}},
+        slow_call_options);
+    require(slow_operation != nullptr && !slow_operation->ready(),
+            "delayed control request should return an in-flight operation");
+    require(wait_until([&]() {
+        return media_adapter->diagnostics().control_in_flight == 1;
+    }), "delayed control request should enter the session-pump FIFO");
+    // The submitting thread must never wait for the pump's active client RPC
+    // (or its session state lock) before it receives an operation handle.
+    const auto queued_submit_started = std::chrono::steady_clock::now();
+    auto queued_behind_slow_call = media_adapter->call_async(
+        "hid:0581:2581:NA20-SERIAL",
+        "audio.getAlgorithmConfig",
+        {},
+        slow_call_options);
+    const auto queued_submit_elapsed =
+        std::chrono::steady_clock::now() - queued_submit_started;
+    require(queued_behind_slow_call != nullptr && !queued_behind_slow_call->ready() &&
+                queued_submit_elapsed < std::chrono::milliseconds(100),
+            "call_async must enqueue promptly while a two-second RPC is in flight");
+    queued_behind_slow_call->cancel();
+    require(queued_behind_slow_call->ready(),
+            "queued control cancellation must complete immediately");
+
+    std::thread media_during_control([&]() {
+        for (std::uint32_t index = 0; index < kProgressFramePairs; ++index) {
+            const auto cursor = 1'000'000ULL + static_cast<std::uint64_t>(index) * 33'333ULL;
+            if (index == 10) {
+                // A streamable source-state event requires deferred pump work,
+                // but must not turn progress into a global media gate.
+                media_scripted->injectEvent(
+                    axtp::EventId::VideoStreamSourceStateChanged,
+                    "video.streamSourceStateChanged",
+                    R"({"source":"wireless_cast","state":"receiving","reason":"progress-test"})");
+            }
+            media_scripted->injectStream(
+                1, 1000U + index, cursor, {0x00, 0x00, 0x01, 0x41});
+            media_scripted->injectStream(
+                2, 2000U + index, cursor, {0x11, 0x22, 0x33, 0x44});
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        require(frames.size() >= 32,
+                "media callbacks must keep growing during a delayed control RPC");
+    }
+    {
+        const auto progress_diagnostics = media_adapter->diagnostics();
+        require(!slow_operation->ready() &&
+                    progress_diagnostics.last_media_source_event_state == "receiving" &&
+                    progress_diagnostics.last_media_source_event_reason == "progress-test",
+                "streamable source events must reconcile before the slow RPC completes");
+    }
+    const auto slow_result = slow_operation->wait_for(std::chrono::seconds(4));
+    media_during_control.join();
+    require(slow_result.has_value() && slow_result->status == axent::ControlStatus::Ok,
+            "delayed control request should complete successfully");
+    require(wait_for_frames(
+                frames,
+                frames_mutex,
+                2U + static_cast<std::size_t>(kProgressFramePairs) * 2U),
+            "all A/V frames should be dispatched during the delayed control RPC");
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        std::uint32_t expected_video = 1000;
+        std::uint32_t expected_audio = 2000;
+        for (std::size_t index = 2; index < frames.size(); ++index) {
+            const auto& frame = frames[index];
+            if (frame.kind == axent::MediaKind::Video) {
+                require(frame.sequence_id == expected_video++,
+                        "video media dispatch must remain FIFO during control RPC");
+            } else if (frame.kind == axent::MediaKind::Audio) {
+                require(frame.sequence_id == expected_audio++,
+                        "audio media dispatch must remain FIFO during control RPC");
+            }
+        }
+        require(expected_video == 1000U + kProgressFramePairs &&
+                    expected_audio == 2000U + kProgressFramePairs,
+                "delayed control RPC should dispatch every injected A/V frame");
+        // The remainder of this characterization test uses exact historical
+        // frame counts. Retain its two baseline samples after the isolated
+        // progress assertion.
+        frames.erase(frames.begin() + 2, frames.end());
+    }
+    require(media_adapter->diagnostics().media_frames_dispatched_during_control_call >=
+                static_cast<std::uint64_t>(kProgressFramePairs),
+            "diagnostics should record media dispatch while control is in flight");
+
     media_scripted->injectEvent(
         axtp::EventId::VideoStreamSourceStateChanged,
         "video.streamSourceStateChanged",
         R"({"source":"wireless_cast","state":"paused","reason":"diagnostic_only","activeStreamId":1})");
     require(wait_until([&]() {
-        return media_adapter->diagnostics().last_media_source_event_state == "paused";
+        const auto current = media_adapter->diagnostics();
+        return current.last_media_source_event_state == "paused" &&
+            current.last_media_source_event_reason == "diagnostic_only";
     }), "unknown video source state should be parsed for diagnostics");
     {
         const auto unknown_state_diagnostics = media_adapter->diagnostics();
@@ -1110,17 +1267,24 @@ int main()
                 "frame after stop and before recovery must be dropped");
     }
 
-    media_scripted->fail_next_video_capabilities.store(true);
+    // Capabilities are cached for the physical session.  Exercise the
+    // recovery retry at the openStream boundary instead of forcing a second
+    // capabilities RPC on every source event.
+    const auto video_capabilities_before_recovery =
+        media_scripted->video_capability_requests.load();
+    media_scripted->fail_video_open_count.store(1);
     const auto video_recovery_started = std::chrono::steady_clock::now();
     media_scripted->injectEvent(
         axtp::EventId::VideoStreamSourceStateChanged,
         "video.streamSourceStateChanged",
         R"({"source":"wireless_cast","state":"receiving"})");
     require(wait_until([&]() {
-        return media_scripted->video_capability_requests.load() >= 3 &&
+        return media_scripted->video_open_requests.load() >= 3 &&
             media_scripted->audio_open_requests.load() >= 3;
-    }), "event-driven video recovery should make its first capabilities attempt");
-    require(media_scripted->video_open_requests.load() == 2 &&
+    }), "event-driven video recovery should make its first open attempt");
+    require(media_scripted->video_capability_requests.load() ==
+                video_capabilities_before_recovery &&
+                media_scripted->video_open_requests.load() == 3 &&
                 media_scripted->audio_open_requests.load() == 3,
             "failed video recovery must still reopen the healthy paired audio leg");
     const auto video_capabilities_after_first_failure =
@@ -1143,15 +1307,15 @@ int main()
         std::chrono::steady_clock::now() - video_recovery_started;
     require(video_recovery_elapsed >= std::chrono::milliseconds(900),
             "per-kind source recovery retry must respect the one-second interval");
-    require(media_scripted->video_open_requests.load() == 3 &&
+    require(media_scripted->video_open_requests.load() == 4 &&
                 media_scripted->audio_open_requests.load() == 3,
             "video recovery retry must not reopen audio a second time");
     const auto video_capabilities_after_recovery =
         media_scripted->video_capability_requests.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     require(media_scripted->video_capability_requests.load() ==
-                video_capabilities_after_recovery &&
-                media_scripted->video_open_requests.load() == 3,
+                 video_capabilities_after_recovery &&
+                 media_scripted->video_open_requests.load() == 4,
             "successful per-kind recovery must clear its pending retry");
     {
         const auto after_video_retry = media_adapter->active_media_stream_descriptors();
@@ -1199,12 +1363,11 @@ int main()
                     after_audio_recovery[1].key.stream_id == 2 &&
                     after_audio_recovery[1].key.generation == 4,
                 "audio recovery must increment only the same-ID audio generation");
-        require(media_scripted->video_open_requests.load() == 3 &&
-                    media_scripted->audio_open_requests.load() == 4,
-                "audio recovery must not reopen video");
+        require(media_scripted->video_open_requests.load() == 4 &&
+                media_scripted->audio_open_requests.load() == 4,
+            "audio recovery must not reopen video");
     }
 
-    axent::testing::AxtpAdapterTestSeam::stop_session_pump(*media_adapter);
     axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
         *media_adapter,
         "hid:0581:2581:NA20-SERIAL",
@@ -1212,14 +1375,17 @@ int main()
         5,
         999000,
         {0x00, 0x00, 0x01, 0x41});
-    axent::testing::AxtpAdapterTestSeam::reopen_media_streams(
-        *media_adapter, "hid:0581:2581:NA20-SERIAL");
     {
         std::lock_guard<std::mutex> lock(stream_events_mutex);
         block_next_stream_event = true;
         stream_event_blocked = false;
         unblock_stream_event = false;
     }
+    // reopen_media_streams() wakes the dispatcher itself. Arm the callback
+    // gate first so the test does not race that notification and accidentally
+    // observe a frame only after the lifecycle event was already delivered.
+    axent::testing::AxtpAdapterTestSeam::reopen_media_streams(
+        *media_adapter, "hid:0581:2581:NA20-SERIAL");
     std::thread first_drain([&]() {
         axent::testing::AxtpAdapterTestSeam::drain_media_callbacks(*media_adapter);
     });
@@ -1257,7 +1423,11 @@ int main()
     second_drain.join();
     require(first_event_blocked && second_drain_waited_for_lifecycle &&
                 frames_before_opened_unblocked == 4,
-            "concurrent media drains must not deliver a frame ahead of lifecycle events");
+            "concurrent media drains must not deliver a frame ahead of lifecycle events "
+            "(firstBlocked=" + std::to_string(first_event_blocked) +
+            ", secondWaited=" + std::to_string(second_drain_waited_for_lifecycle) +
+            ", framesBeforeUnblock=" +
+            std::to_string(frames_before_opened_unblocked) + ")");
 
     require(wait_for_stream_events(stream_events, stream_events_mutex, 16),
             "same-ID reopen should publish Closed/Open pairs for video and audio");
@@ -1322,6 +1492,331 @@ int main()
                 "public call terminal dispatch must close video without disturbing audio");
     }
 
+    {
+        auto open_terminal_config = media_config;
+        open_terminal_config.enable_audio = false;
+        open_terminal_config.session_health_probe_interval_ms = 60'000;
+        ScriptedAxtpTransport* open_terminal_transport = nullptr;
+        auto open_terminal_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            open_terminal_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                transport->hold_next_video_open_response.store(true);
+                open_terminal_transport = transport.get();
+                return transport;
+            });
+        std::mutex open_terminal_events_mutex;
+        std::vector<axent::MediaStreamEvent> open_terminal_events;
+        open_terminal_adapter->set_media_stream_event_callback(
+            [&](axent::MediaStreamEvent event) {
+                std::lock_guard<std::mutex> lock(open_terminal_events_mutex);
+                open_terminal_events.push_back(std::move(event));
+            });
+
+        std::string open_terminal_error;
+        require(open_terminal_adapter->open_session_status(
+                    "hid:0581:2581:OPEN-TERMINAL",
+                    open_terminal_error,
+                    false) == axent::ControlStatus::Ok,
+                "open-terminal fixture should establish a physical session");
+        require(open_terminal_transport != nullptr && wait_until([&]() {
+                    return open_terminal_transport->video_open_response_held.load();
+                }),
+                "video open response should be held before descriptor publication");
+
+        open_terminal_transport->injectEvent(
+            axtp::EventId::VideoStreamSourceStateChanged,
+            "video.streamSourceStateChanged",
+            R"({"source":"wireless_cast","state":"receiving","reason":"older-receiving"})");
+        require(wait_until([&]() {
+                    return open_terminal_adapter->diagnostics().
+                        last_media_source_event_reason == "older-receiving";
+                }),
+                "receiving should be deferred while openStream owns the client");
+        open_terminal_transport->injectEvent(
+            axtp::EventId::VideoStreamSourceStateChanged,
+            "video.streamSourceStateChanged",
+            R"({"source":"wireless_cast","state":"receiving","reason":"source_disconnected","activeStreamId":1})");
+        require(wait_until([&]() {
+                    return open_terminal_adapter->diagnostics().
+                        last_media_source_event_reason == "source_disconnected";
+                }),
+                "reason-terminal event should be observed while openStream is pending");
+        open_terminal_transport->releaseHeldVideoOpenResponse();
+        require(wait_until([&]() {
+                    return open_terminal_transport->video_close_requests.load() == 1;
+                }),
+                "a stale successful open response should schedule one orphan close");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            std::lock_guard<std::mutex> lock(open_terminal_events_mutex);
+            require(open_terminal_events.empty(),
+                    "terminal during open must not publish a stale or deferred Opened lifecycle");
+        }
+        const auto open_terminal_diagnostics = open_terminal_adapter->diagnostics();
+        require(open_terminal_adapter->active_media_stream_descriptors().empty() &&
+                    open_terminal_diagnostics.active_video_stream_id == 0 &&
+                    open_terminal_transport->video_open_requests.load() == 1 &&
+                    open_terminal_transport->video_close_requests.load() == 1,
+                "matched terminal order must suppress older receiving and close the orphan once");
+    }
+
+    {
+        auto per_kind_fence_config = media_config;
+        per_kind_fence_config.session_health_probe_interval_ms = 60'000;
+        ScriptedAxtpTransport* per_kind_fence_transport = nullptr;
+        auto per_kind_fence_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            per_kind_fence_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                per_kind_fence_transport = transport.get();
+                return transport;
+            });
+        std::mutex per_kind_frames_mutex;
+        std::vector<axent::MediaFrame> per_kind_frames;
+        per_kind_fence_adapter->set_media_frame_callback(
+            [&](const std::string&, axent::MediaFrame frame) {
+                std::lock_guard<std::mutex> lock(per_kind_frames_mutex);
+                per_kind_frames.push_back(std::move(frame));
+            });
+        std::string per_kind_fence_error;
+        require(per_kind_fence_adapter->open_session(
+                    "hid:0581:2581:PER-KIND-FENCE", per_kind_fence_error) &&
+                    per_kind_fence_transport != nullptr &&
+                    wait_until([&]() {
+                        return per_kind_fence_adapter->
+                            active_media_stream_descriptors().size() == 2;
+                    }),
+                "per-kind fence fixture should open both media legs");
+
+        per_kind_fence_transport->hold_next_video_open_response.store(true);
+        std::atomic<bool> per_kind_reopen_finished{false};
+        std::thread per_kind_reopen([&]() {
+            axent::testing::AxtpAdapterTestSeam::reopen_media_streams(
+                *per_kind_fence_adapter,
+                "hid:0581:2581:PER-KIND-FENCE");
+            per_kind_reopen_finished.store(true);
+        });
+        const bool per_kind_video_open_held = wait_until([&]() {
+            return per_kind_fence_transport->video_open_response_held.load();
+        });
+        if (per_kind_video_open_held) {
+            for (std::uint32_t index = 0; index < 3; ++index) {
+                per_kind_fence_transport->injectStream(
+                    2,
+                    5000U + index,
+                    5'000'000ULL + static_cast<std::uint64_t>(index) * 21'333ULL,
+                    {0x11, 0x22, 0x33, 0x44});
+            }
+        }
+        const bool audio_delivered_before_video_open =
+            per_kind_video_open_held &&
+            wait_for_frames(per_kind_frames, per_kind_frames_mutex, 3) &&
+            !per_kind_reopen_finished.load();
+        per_kind_fence_transport->releaseHeldVideoOpenResponse();
+        per_kind_reopen.join();
+        require(per_kind_video_open_held,
+                "replacement video open response should be held by the fixture");
+        require(audio_delivered_before_video_open,
+                "active audio must dispatch while only video lifecycle is fenced");
+        {
+            std::lock_guard<std::mutex> lock(per_kind_frames_mutex);
+            require(per_kind_frames.size() == 3,
+                    "per-kind fence should dispatch each held-open audio frame once");
+            for (std::size_t index = 0; index < per_kind_frames.size(); ++index) {
+                require(per_kind_frames[index].kind == axent::MediaKind::Audio &&
+                            per_kind_frames[index].sequence_id == 5000U + index,
+                        "audio dispatch must remain FIFO during slow video reopen");
+            }
+        }
+    }
+
+    {
+        auto terminal_progress_config = media_config;
+        terminal_progress_config.session_health_probe_interval_ms = 60'000;
+        ScriptedAxtpTransport* terminal_progress_transport = nullptr;
+        auto terminal_progress_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            terminal_progress_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                terminal_progress_transport = transport.get();
+                return transport;
+            });
+        std::mutex terminal_progress_events_mutex;
+        std::vector<axent::MediaStreamEvent> terminal_progress_events;
+        std::mutex terminal_progress_frames_mutex;
+        std::vector<axent::MediaFrame> terminal_progress_frames;
+        terminal_progress_adapter->set_media_stream_event_callback(
+            [&](axent::MediaStreamEvent event) {
+                std::lock_guard<std::mutex> lock(terminal_progress_events_mutex);
+                terminal_progress_events.push_back(std::move(event));
+            });
+        terminal_progress_adapter->set_media_frame_callback(
+            [&](const std::string&, axent::MediaFrame frame) {
+                std::lock_guard<std::mutex> lock(terminal_progress_frames_mutex);
+                terminal_progress_frames.push_back(std::move(frame));
+            });
+        std::string terminal_progress_error;
+        require(terminal_progress_adapter->open_session(
+                    "hid:0581:2581:TERMINAL-PROGRESS", terminal_progress_error) &&
+                    terminal_progress_transport != nullptr &&
+                    wait_for_stream_events(
+                        terminal_progress_events,
+                        terminal_progress_events_mutex,
+                        2),
+                "terminal progress fixture should open both media legs");
+        {
+            std::lock_guard<std::mutex> lock(terminal_progress_events_mutex);
+            terminal_progress_events.clear();
+        }
+
+        terminal_progress_transport->delay_next_keyframe_response_ms.store(1500);
+        axent::ControlCallOptions terminal_progress_options;
+        terminal_progress_options.timeout = std::chrono::seconds(3);
+        auto terminal_progress_operation = terminal_progress_adapter->call_async(
+            "hid:0581:2581:TERMINAL-PROGRESS",
+            "video.requestKeyFrame",
+            {{"streamId", 1}, {"reason", "terminal-progress"}},
+            terminal_progress_options);
+        require(terminal_progress_operation != nullptr && wait_until([&]() {
+                    return terminal_progress_adapter->diagnostics().control_in_flight == 1;
+                }),
+                "terminal progress fixture should enter a slow RPC");
+        terminal_progress_transport->injectEvent(
+            axtp::EventId::VideoStreamSourceStateChanged,
+            "video.streamSourceStateChanged",
+            R"({"source":"wireless_cast","state":"receiving","reason":"source_disconnected","activeStreamId":1})");
+        const bool video_closed_during_rpc = wait_for_stream_events(
+            terminal_progress_events,
+            terminal_progress_events_mutex,
+            1) && !terminal_progress_operation->ready();
+        for (std::uint32_t index = 0; index < 3; ++index) {
+            terminal_progress_transport->injectStream(
+                2,
+                6000U + index,
+                6'000'000ULL + static_cast<std::uint64_t>(index) * 21'333ULL,
+                {0x55, 0x66, 0x77, 0x88});
+        }
+        const bool audio_delivered_during_rpc = wait_for_frames(
+            terminal_progress_frames,
+            terminal_progress_frames_mutex,
+            3) && !terminal_progress_operation->ready();
+        const auto terminal_progress_result =
+            terminal_progress_operation->wait_for(std::chrono::seconds(3));
+        require(video_closed_during_rpc,
+                "source_disconnected must publish video Closed before slow RPC completion");
+        require(audio_delivered_during_rpc,
+                "video source_disconnected must not stall the active audio leg");
+        require(terminal_progress_result.has_value() &&
+                    terminal_progress_result->status == axent::ControlStatus::Ok,
+                "terminal progress slow RPC should still complete");
+        {
+            std::lock_guard<std::mutex> lock(terminal_progress_events_mutex);
+            require(terminal_progress_events.size() == 1 &&
+                        terminal_progress_events.front().kind ==
+                            axent::MediaStreamEventKind::Closed &&
+                        terminal_progress_events.front().descriptor.kind ==
+                            axent::MediaKind::Video,
+                    "reason-terminal progress should close only video");
+        }
+        {
+            std::lock_guard<std::mutex> lock(terminal_progress_frames_mutex);
+            require(terminal_progress_frames.size() == 3,
+                    "terminal progress should dispatch each audio frame once");
+            for (std::size_t index = 0;
+                 index < terminal_progress_frames.size();
+                 ++index) {
+                require(terminal_progress_frames[index].kind == axent::MediaKind::Audio &&
+                            terminal_progress_frames[index].sequence_id == 6000U + index,
+                        "terminal progress audio dispatch must remain FIFO");
+            }
+        }
+        const auto terminal_progress_descriptors =
+            terminal_progress_adapter->active_media_stream_descriptors();
+        require(terminal_progress_descriptors.size() == 1 &&
+                    terminal_progress_descriptors.front().kind == axent::MediaKind::Audio,
+                "reason-terminal progress must leave the audio descriptor active");
+    }
+
+    {
+        auto ordered_source_config = media_config;
+        ordered_source_config.enable_audio = false;
+        ordered_source_config.session_health_probe_interval_ms = 60'000;
+        ScriptedAxtpTransport* ordered_source_transport = nullptr;
+        auto ordered_source_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            ordered_source_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                ordered_source_transport = transport.get();
+                return transport;
+            });
+        std::mutex ordered_source_events_mutex;
+        std::vector<axent::MediaStreamEvent> ordered_source_events;
+        ordered_source_adapter->set_media_stream_event_callback(
+            [&](axent::MediaStreamEvent event) {
+                std::lock_guard<std::mutex> lock(ordered_source_events_mutex);
+                ordered_source_events.push_back(std::move(event));
+            });
+        std::string ordered_source_error;
+        require(ordered_source_adapter->open_session(
+                    "hid:0581:2581:ORDERED-SOURCE", ordered_source_error) &&
+                    ordered_source_transport != nullptr &&
+                    wait_for_stream_events(
+                        ordered_source_events, ordered_source_events_mutex, 1),
+                "ordered source-state fixture should open video generation one");
+        ordered_source_transport->injectEvent(
+            axtp::EventId::VideoStreamSourceStateChanged,
+            "video.streamSourceStateChanged",
+            R"({"source":"wireless_cast","state":"stopped","reason":"initial-stop","activeStreamId":1})");
+        require(wait_for_stream_events(
+                    ordered_source_events, ordered_source_events_mutex, 2),
+                "ordered source-state fixture should close its initial stream");
+
+        ordered_source_transport->delay_next_keyframe_response_ms.store(1000);
+        axent::ControlCallOptions ordered_call_options;
+        ordered_call_options.timeout = std::chrono::seconds(2);
+        auto ordered_operation = ordered_source_adapter->call_async(
+            "hid:0581:2581:ORDERED-SOURCE",
+            "video.requestKeyFrame",
+            {{"streamId", 1}, {"reason", "source-order"}},
+            ordered_call_options);
+        require(ordered_operation != nullptr && wait_until([&]() {
+                    return ordered_source_adapter->diagnostics().control_in_flight == 1;
+                }),
+                "ordered source-state fixture should enter a slow RPC");
+        ordered_source_transport->injectEvent(
+            axtp::EventId::VideoStreamSourceStateChanged,
+            "video.streamSourceStateChanged",
+            R"({"source":"wireless_cast","state":"receiving","reason":"older-receiving"})");
+        require(wait_until([&]() {
+                    return ordered_source_adapter->diagnostics().
+                        last_media_source_event_reason == "older-receiving";
+                }),
+                "streamable event should be observed during the slow RPC");
+        ordered_source_transport->injectEvent(
+            axtp::EventId::VideoStreamSourceStateChanged,
+            "video.streamSourceStateChanged",
+            R"({"source":"wireless_cast","state":"stopped","reason":"newer-terminal"})");
+        require(wait_until([&]() {
+                    return ordered_source_adapter->diagnostics().
+                        last_media_source_event_reason == "newer-terminal";
+                }),
+                "newer terminal event should supersede deferred receiving");
+        const auto ordered_result = ordered_operation->wait_for(std::chrono::seconds(2));
+        require(ordered_result.has_value() &&
+                    ordered_result->status == axent::ControlStatus::Ok,
+                "ordered source-state slow RPC should complete");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        {
+            std::lock_guard<std::mutex> lock(ordered_source_events_mutex);
+            require(ordered_source_events.size() == 2,
+                    "receiving followed by terminal must not publish a delayed Opened");
+        }
+        require(ordered_source_transport->video_open_requests.load() == 1 &&
+                    ordered_source_adapter->active_media_stream_descriptors().empty(),
+                "stale deferred receiving must not reopen after the slow RPC");
+    }
+
     auto kind_fallback_config = media_config;
     kind_fallback_config.video_source.clear();
     kind_fallback_config.enable_audio = false;
@@ -1369,21 +1864,23 @@ int main()
     require(kind_fallback_adapter->diagnostics().last_media_source_event_name ==
                 "video.streamSourceStateChanged",
             "source-less event with empty name should retain the generated canonical name");
-    kind_fallback_scripted->fail_next_video_capabilities.store(true);
+    // Capabilities are cached for the physical session, so exercise the
+    // retry at the openStream boundary instead.
+    kind_fallback_scripted->fail_video_open_count.store(1);
     const auto video_only_recovery_started = std::chrono::steady_clock::now();
     kind_fallback_scripted->injectEvent(
         axtp::EventId::VideoStreamSourceStateChanged,
         "video.streamSourceStateChanged",
         R"({"state":"receiving"})");
     require(wait_until([&]() {
-        return kind_fallback_scripted->video_capability_requests.load() >= 2;
-    }), "video-only recovery should make its first capabilities attempt");
+        return kind_fallback_scripted->video_open_requests.load() >= 2;
+    }), "video-only recovery should make its first open attempt");
     const auto video_only_capabilities_after_failure =
         kind_fallback_scripted->video_capability_requests.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     require(kind_fallback_scripted->video_capability_requests.load() ==
                 video_only_capabilities_after_failure &&
-                kind_fallback_scripted->video_open_requests.load() == 1,
+                kind_fallback_scripted->video_open_requests.load() == 2,
             "global media retry must not bypass a video-only per-kind deadline");
     require(wait_for_stream_events(
                 kind_fallback_events,
@@ -1393,7 +1890,7 @@ int main()
             "video-only per-kind retry should eventually publish Opened");
     require(std::chrono::steady_clock::now() - video_only_recovery_started >=
                 std::chrono::milliseconds(900) &&
-                kind_fallback_scripted->video_open_requests.load() == 2,
+                kind_fallback_scripted->video_open_requests.load() == 3,
             "video-only per-kind retry must respect the one-second interval");
     {
         const auto video_only_recovered =
@@ -1678,10 +2175,10 @@ int main()
             diagnostics.session_recoveries >= 1 &&
             diagnostics.session_health == axent::SessionHealthState::Healthy;
     }), "two silent capability probe failures should rebuild the AXTP session");
+    require(wait_for_stream_events(recovery_events, recovery_events_mutex, 6),
+            "session recovery should publish closed and opened lifecycle events");
     {
         std::lock_guard<std::mutex> lock(recovery_events_mutex);
-        require(recovery_events.size() >= 6,
-                "session recovery should publish closed and opened lifecycle events");
         require(recovery_events[2].kind == axent::MediaStreamEventKind::Closed &&
                     recovery_events[3].kind == axent::MediaStreamEventKind::Closed &&
                     recovery_events[2].reason == axent::MediaStreamEventReason::SessionRecovery &&

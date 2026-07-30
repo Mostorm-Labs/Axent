@@ -88,6 +88,7 @@ add_library(libaxent
     src/core/session_manager.cpp
     src/core/capability_registry.cpp
     src/core/adapter_registry.cpp
+    src/core/control_operation.cpp
     src/core/route_manager.cpp
     src/core/middleware.cpp
     src/core/flow_control.cpp

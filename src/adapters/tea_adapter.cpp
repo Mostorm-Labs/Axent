@@ -28,7 +28,17 @@ std::vector<DeviceSnapshot> TeaAdapter::discover()
 
 ControlResult TeaAdapter::call(const std::string&, const std::string&, const nlohmann::json&)
 {
-    return {ControlStatus::Unavailable, {{"error", "TEA adapter skeleton only"}}};
+    return call_async({}, {}, {})->wait();
+}
+
+ControlOperationPtr TeaAdapter::call_async(
+    const std::string&,
+    const std::string&,
+    const nlohmann::json&,
+    ControlCallOptions)
+{
+    return make_completed_control_operation(
+        {ControlStatus::Unavailable, {{"error", "TEA adapter skeleton only"}}});
 }
 
 ControlResult TeaAdapter::start_firmware_update(const std::string&, const std::string&)

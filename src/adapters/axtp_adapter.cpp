@@ -2,6 +2,7 @@
 #include "axtp_adapter_test_seam.hpp"
 
 #include "axtp_adapter_internal.hpp"
+#include "../core/control_operation_internal.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +25,54 @@ namespace axent {
 namespace {
 
 constexpr auto kMediaConfigureRetryInterval = std::chrono::seconds(1);
+constexpr auto kSourceWaitingFallbackInterval = std::chrono::seconds(15);
+
+void update_high_water(std::atomic<std::uint64_t>& target,
+                       std::uint64_t candidate)
+{
+    auto current = target.load(std::memory_order_relaxed);
+    while (current < candidate &&
+           !target.compare_exchange_weak(
+               current,
+               candidate,
+               std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+}
+
+std::chrono::milliseconds media_retry_delay(std::uint32_t attempt,
+                                             bool source_waiting,
+                                             MediaKind kind)
+{
+    if (source_waiting) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            kSourceWaitingFallbackInterval);
+    }
+    constexpr std::uint32_t kSeconds[] = {1, 2, 4, 8, 15};
+    const auto index = std::min<std::size_t>(
+        (sizeof(kSeconds) / sizeof(kSeconds[0])) - 1,
+        attempt == 0 ? 0 : static_cast<std::size_t>(attempt - 1));
+    const auto baseMs = static_cast<std::uint64_t>(kSeconds[index]) * 1000ULL;
+    // Deterministic per-kind jitter keeps retries de-synchronised without
+    // introducing a process-global RNG into the adapter's pump thread.
+    const auto seed = static_cast<std::uint64_t>(attempt + 1U) * 1103515245ULL +
+        (kind == MediaKind::Audio ? 0x5EEDULL : 0xC0DEULL);
+    const auto jitterPermille = static_cast<std::int64_t>(seed % 201ULL) - 100LL;
+    const auto adjusted = baseMs * static_cast<std::uint64_t>(1000LL + jitterPermille) / 1000ULL;
+    return std::chrono::milliseconds(std::max<std::uint64_t>(100ULL, adjusted));
+}
+
+std::chrono::milliseconds heartbeat_schedule_delay(std::uint32_t intervalMs,
+                                                   std::uint64_t generation)
+{
+    // Probe no later than the negotiated deadline, with a deterministic
+    // negative jitter in the required 90..100% window.  Determinism keeps the
+    // pump reproducible while still avoiding a fleet-wide phase lock.
+    const auto bounded = std::clamp<std::uint32_t>(intervalMs, 500U, 60000U);
+    const auto percent = 900U + static_cast<std::uint32_t>((generation * 1103515245ULL) % 101ULL);
+    return std::chrono::milliseconds(
+        std::max<std::uint32_t>(1U, bounded * percent / 1000U));
+}
 
 std::string hex4(std::uint16_t value)
 {
@@ -78,10 +127,56 @@ std::string error_name(axtp::ErrorCode code)
         return "unavailable";
     case axtp::ErrorCode::RpcMethodNotFound:
         return "rpc-method-not-found";
+    case axtp::ErrorCode::RpcMethodNotSupported:
+        return "rpc-method-not-supported";
+    case axtp::ErrorCode::RpcMethodDisabled:
+        return "rpc-method-disabled";
+    case axtp::ErrorCode::CapabilityMethodUnsupported:
+        return "capability-method-unsupported";
+    case axtp::ErrorCode::CapabilityStreamUnsupported:
+        return "capability-stream-unsupported";
     case axtp::ErrorCode::RpcResponseTimeout:
         return "rpc-response-timeout";
     default:
         return "axtp-error-" + std::to_string(static_cast<std::uint32_t>(code));
+    }
+}
+
+// Keep runtime error identities inside the Axent adapter.  Product hosts see
+// only the stable public contract and can therefore stop retrying a method
+// that the peer explicitly does not implement without depending on generated
+// cpp-runtime IDs.
+ControlStatus control_status_for_runtime_error(axtp::ErrorCode code)
+{
+    switch (code) {
+    case axtp::ErrorCode::NotSupported:
+    case axtp::ErrorCode::RpcMethodNotFound:
+    case axtp::ErrorCode::RpcMethodNotSupported:
+    case axtp::ErrorCode::RpcMethodDisabled:
+    case axtp::ErrorCode::CapabilityMethodUnsupported:
+    case axtp::ErrorCode::CapabilityStreamUnsupported:
+        return ControlStatus::NotSupported;
+    case axtp::ErrorCode::InvalidArgument:
+        return ControlStatus::InvalidArgument;
+    case axtp::ErrorCode::Busy:
+        return ControlStatus::Busy;
+    default:
+        return ControlStatus::Unavailable;
+    }
+}
+
+bool runtime_error_is_terminal(axtp::ErrorCode code)
+{
+    switch (code) {
+    case axtp::ErrorCode::NotSupported:
+    case axtp::ErrorCode::RpcMethodNotFound:
+    case axtp::ErrorCode::RpcMethodNotSupported:
+    case axtp::ErrorCode::RpcMethodDisabled:
+    case axtp::ErrorCode::CapabilityMethodUnsupported:
+    case axtp::ErrorCode::CapabilityStreamUnsupported:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -478,6 +573,22 @@ struct AxtpAdapter::RuntimeState {
     bool suppress_video_auto_open = false;
     std::vector<std::uint32_t> video_frame_rates;
     bool video_supports_active_reconfigure = true;
+    // Capabilities are static for a physical session.  Source-state changes
+    // only invalidate the open operation, so an idle/waiting source does not
+    // cause a large capabilities RPC on every retry tick.
+    std::map<MediaKind, nlohmann::json> capabilities_cache;
+    std::uint64_t physical_session_generation = 0;
+};
+
+struct AxtpAdapter::PendingControlCall {
+    std::string device_id;
+    std::string method;
+    std::string params;
+    std::chrono::steady_clock::time_point deadline;
+    std::uint64_t physical_generation = 0;
+    std::uint64_t recovery_generation = 0;
+    ControlOperationSource source;
+    std::atomic<bool> aborted{false};
 };
 
 AxtpAdapter::AxtpAdapter()
@@ -499,18 +610,30 @@ AxtpAdapter::AxtpAdapter(
     if (!runtime_->factory) {
         runtime_->factory = detail::make_default_axtp_runtime_factory();
     }
+    media_dispatcher_ = std::thread(&AxtpAdapter::run_media_dispatcher, this);
     recovery_worker_ = std::thread(&AxtpAdapter::run_session_recovery_worker, this);
 }
 
 AxtpAdapter::~AxtpAdapter()
 {
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        accepting_control_calls_ = false;
+    }
+    // Stop recovery before taking the final pump handle.  A recovery already
+    // past its wake-up can otherwise replace session_pump_ after the
+    // destructor joined the old thread, leaving a joinable thread (and a live
+    // client user) behind during member destruction.
+    recovery_generation_.fetch_add(1);
+    cancel_control_calls(
+        std::nullopt, std::nullopt, "AXTP adapter is stopping");
     std::thread pump;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pump = request_stop_session_pump_locked();
-    }
-    if (pump.joinable()) {
-        pump.join();
+        std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+        if (!media_delivery_sessions_.empty()) {
+            media_binding_epoch_.fetch_add(1, std::memory_order_acq_rel);
+        }
+        media_delivery_sessions_.clear();
     }
     {
         std::lock_guard<std::mutex> lock(recovery_mutex_);
@@ -520,6 +643,22 @@ AxtpAdapter::~AxtpAdapter()
     recovery_cv_.notify_all();
     if (recovery_worker_.joinable()) {
         recovery_worker_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pump = request_stop_session_pump_locked();
+    }
+    if (pump.joinable()) {
+        pump.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(media_dispatch_mutex_);
+        stop_media_dispatcher_ = true;
+        ++media_dispatch_generation_;
+    }
+    media_dispatch_cv_.notify_all();
+    if (media_dispatcher_.joinable()) {
+        media_dispatcher_.join();
     }
     std::lock_guard<std::mutex> client_lock(client_mutex_);
     if (runtime_->client) {
@@ -636,48 +775,320 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
 
 ControlResult AxtpAdapter::call(const std::string& device_id, const std::string& method, const nlohmann::json& params)
 {
-    std::string error;
-    std::string body;
-    axtp::sdk::SdkError last_error;
+    // Keep the legacy synchronous Adapter entry point convenient for direct
+    // users: it may establish the first physical session.  call_async must
+    // not do that work, because opening a HID/AXTP session can block for a
+    // whole RPC timeout before an operation is even observable by its caller.
+    const auto accepted_at = std::chrono::steady_clock::now();
+    const auto deadline = accepted_at + std::chrono::milliseconds(5000);
+    bool session_ready = false;
     {
-        std::lock_guard<std::mutex> session_lock(session_mutex_);
-        ControlStatus session_status = ControlStatus::Unavailable;
-        if (!ensure_session_locked(device_id, error, session_status, false)) {
-            return {session_status, {{"error", error}}};
-        }
-
-        {
-            std::lock_guard<std::mutex> client_lock(client_mutex_);
-            if (runtime_->client == nullptr) {
-                return {ControlStatus::Unavailable, {{"error", "AXTP session is unavailable"}}};
-            }
-            axtp::sdk::CallOptions options;
-            options.timeout = std::chrono::milliseconds(5000);
-            const std::string params_text = params.is_null() ? std::string("{}") : params.dump();
-            body = runtime_->client->callJson(method, params_text, options);
-            last_error = runtime_->client->lastError();
-            // callJson() polls the endpoint and may dispatch source lifecycle
-            // events and STREAM payloads. Reconcile descriptors before the
-            // queued callbacks are drained below so wire ordering is retained.
-            process_pending_media_source_state_events(device_id);
+        std::lock_guard<std::mutex> lock(mutex_);
+        session_ready = diagnostics_.open && active_device_id_ == device_id;
+    }
+    if (!session_ready) {
+        std::string error;
+        const auto status = open_session_status(device_id, error, false);
+        if (status != ControlStatus::Ok) {
+            return {status, {{"error", error}}};
         }
     }
+    if (std::chrono::steady_clock::now() >= deadline) {
+        return {ControlStatus::Unavailable,
+                {{"error", "control operation timeout during session setup"}}};
+    }
+    ControlCallOptions options;
+    options.deadline = deadline;
+    auto operation = call_async(device_id, method, params, options);
+    auto result = operation
+        ? operation->wait()
+        : ControlResult{
+              ControlStatus::InternalError,
+              {{"error", "AXTP adapter returned no control operation"}}};
+    // Preserve the legacy synchronous API's callback fence without making
+    // the session pump execute product callbacks.  Async callers observe the
+    // operation independently; direct synchronous callers return only after
+    // lifecycle/frame work already queued by their response has drained.
     drain_pending_media_callbacks();
+    return result;
+}
+
+ControlOperationPtr AxtpAdapter::call_async(
+    const std::string& device_id,
+    const std::string& method,
+    const nlohmann::json& params,
+    ControlCallOptions options)
+{
+    const auto accepted_at = std::chrono::steady_clock::now();
+    const auto deadline = options.deadline.value_or(
+        options.timeout <= std::chrono::milliseconds::zero()
+            ? accepted_at
+            : accepted_at + options.timeout);
+    if (deadline <= accepted_at) {
+        return make_completed_control_operation(
+            {ControlStatus::Unavailable,
+             {{"error", "control operation timeout before submission"}}});
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        if (!accepting_control_calls_) {
+            return make_completed_control_operation(
+                {ControlStatus::Unavailable,
+                 {{"error", "AXTP adapter is stopping"}}});
+        }
+        const std::size_t outstanding = pending_control_calls_.size() +
+            (in_flight_control_call_ ? 1U : 0U);
+        if (outstanding >= 32U) {
+            return make_completed_control_operation(
+                {ControlStatus::Busy,
+                 {{"error", "AXTP control operation queue is full"}}});
+        }
+    }
+
+    auto request = std::make_shared<PendingControlCall>();
+    request->device_id = device_id;
+    request->method = method;
+    request->params = params.is_null() ? std::string("{}") : params.dump();
+    request->deadline = deadline;
+    // The submitting thread deliberately does not inspect the active AXTP
+    // session. The pump is the sole runtime owner; it validates the device
+    // and captures this value immediately before dispatch.
+    request->physical_generation = 0;
+    request->recovery_generation = recovery_generation_.load();
+    const std::weak_ptr<PendingControlCall> weak_request = request;
+    request->source.set_cancel_handler([this, weak_request]() {
+        if (const auto request = weak_request.lock()) {
+            request->aborted.store(true);
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            const auto pending = std::find(
+                pending_control_calls_.begin(),
+                pending_control_calls_.end(),
+                request);
+            if (pending != pending_control_calls_.end()) {
+                pending_control_calls_.erase(pending);
+                control_queue_depth_.store(
+                    pending_control_calls_.size(), std::memory_order_relaxed);
+            }
+        }
+        control_cv_.notify_all();
+    });
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        const std::size_t outstanding =
+            pending_control_calls_.size() +
+            (in_flight_control_call_ ? 1U : 0U);
+        if (!accepting_control_calls_) {
+            return make_completed_control_operation(
+                {ControlStatus::Unavailable,
+                 {{"error", "AXTP adapter is stopping"}}});
+        }
+        // reset/recovery invalidates a call before it can be observed by the
+        // FIFO.  Check after obtaining the queue lock as well: teardown first
+        // advances this generation and then drains the queue, so an enqueue
+        // racing that drain cannot leave an operation stranded behind a
+        // stopped pump.
+        if (request->recovery_generation != recovery_generation_.load()) {
+            return make_completed_control_operation(
+                {ControlStatus::Unavailable,
+                 {{"error", "AXTP physical session changed before control submission"}}});
+        }
+        if (outstanding >= 32U) {
+            return make_completed_control_operation(
+                {ControlStatus::Busy,
+                 {{"error", "AXTP control operation queue is full"}}});
+        }
+        pending_control_calls_.push_back(request);
+        control_queue_depth_.store(
+            pending_control_calls_.size(), std::memory_order_relaxed);
+        update_high_water(
+            control_outstanding_high_water_, outstanding + 1U);
+    }
+    control_cv_.notify_all();
+    return request->source.operation();
+}
+
+void AxtpAdapter::process_next_control_call(const std::string& device_id)
+{
+    std::shared_ptr<PendingControlCall> request;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        while (!pending_control_calls_.empty()) {
+            request = std::move(pending_control_calls_.front());
+            pending_control_calls_.pop_front();
+            if (request && !request->source.operation()->ready()) {
+                break;
+            }
+            request.reset();
+        }
+        if (!request) {
+            control_queue_depth_.store(
+                pending_control_calls_.size(), std::memory_order_relaxed);
+            return;
+        }
+        in_flight_control_call_ = request;
+        control_queue_depth_.store(
+            pending_control_calls_.size(), std::memory_order_relaxed);
+        control_in_flight_.store(1, std::memory_order_relaxed);
+    }
+
+    const auto clear_in_flight = [this, &request]() {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        if (in_flight_control_call_ == request) {
+            in_flight_control_call_.reset();
+        }
+        control_in_flight_.store(0, std::memory_order_relaxed);
+    };
+    const auto now = std::chrono::steady_clock::now();
+    std::uint64_t active_generation = 0;
+    bool session_matches_request = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        active_generation = runtime_->physical_session_generation;
+        session_matches_request = diagnostics_.open &&
+            active_device_id_ == request->device_id;
+    }
+    if (request->recovery_generation != recovery_generation_.load() ||
+        request->device_id != device_id || !session_matches_request) {
+        request->source.complete(
+            {ControlStatus::Unavailable,
+             {{"error", "AXTP physical session changed before control dispatch"}}});
+        clear_in_flight();
+        return;
+    }
+    if (now >= request->deadline) {
+        request->source.complete(
+            {ControlStatus::Unavailable,
+             {{"error", "AXTP control operation timed out in queue"}}});
+        clear_in_flight();
+        return;
+    }
+    request->physical_generation = active_generation;
+    if (runtime_->client == nullptr) {
+        request->source.complete(
+            {ControlStatus::Unavailable,
+             {{"error", "AXTP session is unavailable"}}});
+        clear_in_flight();
+        return;
+    }
+
+    axtp::sdk::CallOptions call_options;
+    call_options.timeout = std::max(
+        std::chrono::milliseconds(1),
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            request->deadline - now));
+    call_options.cancelled = [request]() {
+        return request->aborted.load() ||
+            request->source.operation()->ready();
+    };
+    call_options.progress = [this, &device_id]() {
+        publish_runtime_progress(device_id);
+    };
+    const auto body = runtime_->client->callJson(
+        request->method, request->params, call_options);
+    const auto last_error = runtime_->client->lastError();
+    // A callRaw progress callback deliberately performs no recursive client
+    // work. Source lifecycle reconciliation runs after the outer call returns.
+    process_pending_media_source_state_events(device_id);
+    sync_runtime_activity();
+    commit_pending_media_batch();
 
     if (!last_error.ok()) {
-        return {ControlStatus::Unavailable,
-                {{"error", last_error.message.empty() ? error_name(last_error.code) : last_error.message},
-                 {"axtp_code", static_cast<std::uint32_t>(last_error.code)}}};
+        request->source.complete(
+            {control_status_for_runtime_error(last_error.code),
+             {{"error",
+               last_error.message.empty()
+                   ? error_name(last_error.code)
+                   : last_error.message},
+              {"axtp_code", static_cast<std::uint32_t>(last_error.code)}}});
+        clear_in_flight();
+        return;
     }
 
+    note_inbound_activity();
     if (body.empty()) {
-        return {ControlStatus::Ok, nlohmann::json::object()};
+        request->source.complete(
+            {ControlStatus::Ok, nlohmann::json::object()});
+    } else {
+        try {
+            request->source.complete(
+                {ControlStatus::Ok, nlohmann::json::parse(body)});
+        } catch (const std::exception&) {
+            request->source.complete(
+                {ControlStatus::Ok, {{"body", body}}});
+        }
     }
-    try {
-        return {ControlStatus::Ok, nlohmann::json::parse(body)};
-    } catch (const std::exception&) {
-        return {ControlStatus::Ok, {{"body", body}}};
+    clear_in_flight();
+}
+
+void AxtpAdapter::expire_pending_control_calls(
+    std::chrono::steady_clock::time_point now)
+{
+    std::vector<std::shared_ptr<PendingControlCall>> expired;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        for (auto request = pending_control_calls_.begin();
+             request != pending_control_calls_.end();) {
+            if (!*request || (*request)->source.operation()->ready()) {
+                request = pending_control_calls_.erase(request);
+                continue;
+            }
+            if (now < (*request)->deadline) {
+                ++request;
+                continue;
+            }
+            (*request)->aborted.store(true);
+            expired.push_back(std::move(*request));
+            request = pending_control_calls_.erase(request);
+        }
+        control_queue_depth_.store(
+            pending_control_calls_.size(), std::memory_order_relaxed);
     }
+    for (auto& request : expired) {
+        request->source.complete(
+            {ControlStatus::Unavailable,
+             {{"error", "AXTP control operation timeout while queued"}}});
+    }
+    if (!expired.empty()) {
+        control_cv_.notify_all();
+    }
+}
+
+void AxtpAdapter::cancel_control_calls(
+    const std::optional<std::string>& device_id,
+    const std::optional<std::uint64_t>& physical_generation,
+    std::string reason)
+{
+    std::vector<std::shared_ptr<PendingControlCall>> cancelled;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        const auto matches = [&](const std::shared_ptr<PendingControlCall>& request) {
+            return request &&
+                (!device_id.has_value() || request->device_id == *device_id) &&
+                (!physical_generation.has_value() ||
+                 request->physical_generation == *physical_generation);
+        };
+        for (auto request = pending_control_calls_.begin();
+             request != pending_control_calls_.end();) {
+            if (matches(*request)) {
+                cancelled.push_back(std::move(*request));
+                request = pending_control_calls_.erase(request);
+            } else {
+                ++request;
+            }
+        }
+        if (matches(in_flight_control_call_)) {
+            cancelled.push_back(in_flight_control_call_);
+        }
+        control_queue_depth_.store(
+            pending_control_calls_.size(), std::memory_order_relaxed);
+    }
+    for (auto& request : cancelled) {
+        request->aborted.store(true);
+        request->source.complete(
+            {ControlStatus::Unavailable, {{"error", reason}}});
+    }
+    control_cv_.notify_all();
 }
 
 ControlResult AxtpAdapter::start_firmware_update(const std::string&, const std::string&)
@@ -721,41 +1132,143 @@ void AxtpAdapter::record_transport_trace(const std::string& event_name,
 {
     std::lock_guard<std::mutex> lock(mutex_);
     diagnostics_.last_event = event_name;
-    if (accepted_read) {
-        ++diagnostics_.read_reports;
-        last_transport_activity_ = std::chrono::steady_clock::now();
-    }
-    if (write_report) {
-        ++diagnostics_.write_reports;
-    }
-    if (read_error) {
-        ++diagnostics_.read_errors;
-    }
-    if (write_error) {
-        ++diagnostics_.write_errors;
-    }
-    if (dropped_report) {
-        ++diagnostics_.dropped_reports;
+    // Once a concrete HID transport snapshot is available its atomic
+    // counters are the single source of truth.  Mixing trace increments with
+    // later snapshot assignment can make a counter move backwards.  The
+    // increment path remains for transport-free characterization seams.
+    if (!transport_counters_snapshot_owned_) {
+        if (accepted_read) {
+            ++diagnostics_.read_reports;
+        }
+        if (write_report) {
+            ++diagnostics_.write_reports;
+        }
+        if (read_error) {
+            ++diagnostics_.read_errors;
+        }
+        if (write_error) {
+            ++diagnostics_.write_errors;
+        }
+        if (dropped_report) {
+            ++diagnostics_.dropped_reports;
+        }
     }
     if ((read_error || write_error) && !message.empty()) {
         diagnostics_.last_error = message;
     }
 }
 
+void AxtpAdapter::note_inbound_activity()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++inbound_activity_generation_;
+    last_transport_activity_ = std::chrono::steady_clock::now();
+    diagnostics_.inbound_activity_generation = inbound_activity_generation_;
+}
+
+void AxtpAdapter::sync_runtime_activity()
+{
+    if (runtime_->client == nullptr) {
+        return;
+    }
+    const auto generation = runtime_->client->inboundActivityGeneration();
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (generation != last_runtime_activity_generation_) {
+            last_runtime_activity_generation_ = generation;
+            changed = true;
+        }
+    }
+    if (changed) {
+        note_inbound_activity();
+    }
+}
+
+void AxtpAdapter::publish_runtime_progress(const std::string& device_id)
+{
+    // This hook is called only by the session owner after AxtpClient::poll().
+    // It must never issue another client operation: doing so would recurse
+    // into the currently waiting RPC.  It may, however, expire unrelated
+    // queued controls and move already-decoded media to the dispatcher.
+    expire_pending_control_calls(std::chrono::steady_clock::now());
+    // During the initial app-ready handshake runtime_->client is still null;
+    // activity and transport snapshots are conditional, but staged media and
+    // lifecycle work can still be committed on every poll.
+    if (runtime_->client != nullptr) {
+        sync_runtime_activity();
+    }
+    process_pending_media_source_state_events(device_id, false);
+    if (runtime_->client != nullptr) {
+        snapshot_transport_diagnostics_from_runtime();
+    }
+    commit_pending_media_batch();
+}
+
+void AxtpAdapter::snapshot_transport_diagnostics_from_runtime(bool force)
+{
+#if AXENT_HAS_AXTP_HID_TRANSPORT
+    // The caller is the physical-session owner and holds client_mutex_.  Copy
+    // transport state into Axent-owned diagnostics here so diagnostics() never
+    // dereferences runtime_->active_transport while another thread tears down
+    // the client and its transport.
+    if (runtime_->active_transport == nullptr) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!force &&
+        next_transport_diagnostics_snapshot_.time_since_epoch().count() != 0 &&
+        now < next_transport_diagnostics_snapshot_) {
+        return;
+    }
+    next_transport_diagnostics_snapshot_ = now + std::chrono::milliseconds(100);
+    const auto* transport =
+        dynamic_cast<const axent::transport::HidTransport*>(runtime_->active_transport);
+    if (transport == nullptr) {
+        return;
+    }
+    const auto& transport_options = transport->options();
+    const auto profile = transport->profile();
+    const auto transport_stats = transport->stats();
+    const bool transport_open = transport->isOpen();
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    transport_counters_snapshot_owned_ = true;
+    diagnostics_.open = transport_open;
+    diagnostics_.negotiated_input_report_size = transport_options.inputReportSize;
+    diagnostics_.negotiated_output_report_size = transport_options.outputReportSize;
+    diagnostics_.read_buffer_size = transport_options.readBufferSize;
+    diagnostics_.preferred_frame_size = profile.preferredFrameSize;
+    diagnostics_.read_reports = transport_stats.acceptedReports;
+    diagnostics_.read_bytes = transport_stats.readBytes;
+    diagnostics_.write_reports = transport_stats.writeReports;
+    diagnostics_.write_bytes = transport_stats.writeBytes;
+    diagnostics_.read_errors = transport_stats.readErrors;
+    diagnostics_.write_errors = transport_stats.writeErrors;
+    diagnostics_.dropped_reports = transport_stats.droppedReportId;
+    diagnostics_.queued_reports = transport_stats.queuedReports;
+#endif
+}
+
 TransportDiagnostics AxtpAdapter::diagnostics() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    const_cast<AxtpAdapter*>(this)->refresh_diagnostics_locked();
     return diagnostics_;
 }
 
 void AxtpAdapter::set_media_frame_callback(MediaFrameCallback callback)
 {
+    std::lock_guard<std::recursive_mutex> dispatch_lock(
+        media_callback_dispatch_mutex_);
     std::lock_guard<std::mutex> lock(media_callback_mutex_);
     media_frame_callback_ = std::move(callback);
 }
 
 void AxtpAdapter::set_media_stream_event_callback(MediaStreamEventCallback callback)
 {
+    std::lock_guard<std::recursive_mutex> dispatch_lock(
+        media_callback_dispatch_mutex_);
     std::lock_guard<std::mutex> lock(media_callback_mutex_);
     media_stream_event_callback_ = std::move(callback);
 }
@@ -958,23 +1471,45 @@ void AxtpAdapter::notify_video_stream_params_state(VideoStreamParamsState state)
 
 void AxtpAdapter::drop_pending_media_frames_for_device(const std::string& device_id)
 {
-    std::lock_guard<std::mutex> lock(pending_media_mutex_);
-    std::queue<std::pair<std::string, MediaFrame>> retained;
-    while (!pending_media_frames_.empty()) {
-        auto entry = std::move(pending_media_frames_.front());
-        pending_media_frames_.pop();
-        if (entry.first != device_id) {
-            retained.push(std::move(entry));
+    {
+        std::lock_guard<std::mutex> lock(pending_media_ingress_mutex_);
+        std::queue<PendingMediaIngressFrame> retained;
+        while (!pending_media_ingress_frames_.empty()) {
+            auto entry = std::move(pending_media_ingress_frames_.front());
+            pending_media_ingress_frames_.pop();
+            if (entry.frame.device_id != device_id) {
+                retained.push(std::move(entry));
+            }
         }
+        pending_media_ingress_frames_.swap(retained);
     }
-    pending_media_frames_.swap(retained);
+    {
+        std::lock_guard<std::mutex> lock(pending_media_dispatch_mutex_);
+        std::queue<PendingMediaDispatchItem> retained;
+        while (!pending_media_dispatch_items_.empty()) {
+            auto item = std::move(pending_media_dispatch_items_.front());
+            pending_media_dispatch_items_.pop();
+            if (item.kind != PendingMediaDispatchItem::Kind::Frame ||
+                item.frame.device_id != device_id) {
+                retained.push(std::move(item));
+            }
+        }
+        pending_media_dispatch_items_.swap(retained);
+        media_dispatch_queue_depth_.store(
+            pending_media_dispatch_items_.size(), std::memory_order_relaxed);
+    }
 }
 
 void AxtpAdapter::bind_media_delivery_session(const std::string& device_id,
                                               const std::string& session_id)
 {
+    // Advance the fence before publishing the replacement logical binding.
+    // A Core stream event already decoded under the previous token must not
+    // become eligible merely because its broker callback runs after this
+    // assignment.
     {
         std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+        media_binding_epoch_.fetch_add(1, std::memory_order_acq_rel);
         media_delivery_sessions_[device_id] = session_id;
     }
     std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
@@ -984,15 +1519,33 @@ void AxtpAdapter::bind_media_delivery_session(const std::string& device_id,
 void AxtpAdapter::unbind_media_delivery_session(const std::string& device_id,
                                                 const std::string& session_id)
 {
-    std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
-    const auto binding = media_delivery_sessions_.find(device_id);
-    if (binding != media_delivery_sessions_.end() && binding->second == session_id) {
-        media_delivery_sessions_.erase(binding);
+    // Invalidate staged and deferred frames before removing the logical lease.
+    // The token check also covers frames that are still queued inside the
+    // runtime Core and therefore cannot be removed by the adapter queue drain.
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+        const auto binding = media_delivery_sessions_.find(device_id);
+        if (binding != media_delivery_sessions_.end() && binding->second == session_id) {
+            media_binding_epoch_.fetch_add(1, std::memory_order_acq_rel);
+            media_delivery_sessions_.erase(binding);
+            removed = true;
+        }
     }
-    std::lock_guard<std::mutex> video_lock(runtime_->video_params_mutex);
-    if (runtime_->video_params_state.session_id == session_id) {
-        runtime_->video_params_state.session_id.clear();
+    if (!removed) {
+        return;
     }
+    {
+        std::lock_guard<std::mutex> video_lock(runtime_->video_params_mutex);
+        if (runtime_->video_params_state.session_id == session_id) {
+            runtime_->video_params_state.session_id.clear();
+        }
+    }
+    // No media lease for this device remains while the Host performs a
+    // logical handoff.  Drop frames already staged in Axent immediately;
+    // payloads still queued inside runtime Core carry the incremented epoch
+    // and are rejected when their broker callback eventually arrives.
+    drop_pending_media_frames_for_device(device_id);
 }
 
 void AxtpAdapter::clear_video_stream_params_session(bool preserve_logical_session)
@@ -1008,6 +1561,7 @@ void AxtpAdapter::clear_video_stream_params_session(bool preserve_logical_sessio
     runtime_->suppress_video_auto_open = false;
     runtime_->video_frame_rates.clear();
     runtime_->video_supports_active_reconfigure = true;
+    runtime_->capabilities_cache.clear();
     runtime_->video_params_state = {};
     runtime_->video_params_state.session_id = logical_session_id;
     runtime_->health_probe_method.clear();
@@ -1040,6 +1594,8 @@ void AxtpAdapter::clear_media_streams(MediaStreamEventReason reason)
     media_configure_attempts_ = 0;
     video_source_terminal_ = false;
     audio_source_terminal_ = false;
+    video_source_waiting_ = false;
+    audio_source_waiting_ = false;
     video_source_recovery_pending_ = false;
     audio_source_recovery_pending_ = false;
     next_video_source_recovery_attempt_ = {};
@@ -1047,6 +1603,15 @@ void AxtpAdapter::clear_media_streams(MediaStreamEventReason reason)
     std::lock_guard<std::mutex> source_event_lock(pending_media_source_state_mutex_);
     std::queue<MediaSourceStateEvent> empty_source_events;
     pending_media_source_state_events_.swap(empty_source_events);
+    std::queue<MediaSourceStateEvent> empty_deferred_source_events;
+    deferred_media_source_state_events_.swap(empty_deferred_source_events);
+    next_media_source_state_order_ = 0;
+    latest_video_source_state_order_ = 0;
+    latest_audio_source_state_order_ = 0;
+    pending_video_open_terminal_orders_.clear();
+    pending_audio_open_terminal_orders_.clear();
+    std::queue<std::pair<MediaKind, std::uint32_t>> empty_orphan_closes;
+    pending_orphan_stream_closes_.swap(empty_orphan_closes);
 }
 
 void AxtpAdapter::enqueue_media_stream_events(std::vector<MediaStreamEvent> events)
@@ -1054,15 +1619,26 @@ void AxtpAdapter::enqueue_media_stream_events(std::vector<MediaStreamEvent> even
     if (events.empty()) {
         return;
     }
-    std::lock_guard<std::mutex> lock(pending_media_event_mutex_);
-    for (auto& event : events) {
-        pending_media_stream_events_.push(std::move(event));
+    {
+        std::lock_guard<std::mutex> lock(pending_media_dispatch_mutex_);
+        for (auto& event : events) {
+            PendingMediaDispatchItem item;
+            item.kind = PendingMediaDispatchItem::Kind::StreamEvent;
+            item.event = std::move(event);
+            pending_media_dispatch_items_.push(std::move(item));
+        }
+        const auto depth = pending_media_dispatch_items_.size();
+        media_dispatch_queue_depth_.store(depth, std::memory_order_relaxed);
+        update_high_water(media_dispatch_queue_high_water_, depth);
     }
+    notify_media_dispatch();
 }
 
 void AxtpAdapter::enqueue_media_source_state_event(MediaSourceStateEvent event)
 {
+    note_inbound_activity();
     {
+        const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_media_source_event_id = event.event_id;
         diagnostics_.last_media_source_event_name = event.event_name;
@@ -1083,24 +1659,94 @@ void AxtpAdapter::enqueue_media_source_state_event(MediaSourceStateEvent event)
             diagnostics_.last_error = "invalid media source state event payload";
         }
     }
+    const auto& configured_source = event.kind == MediaKind::Video
+        ? config_.video_source
+        : config_.audio_source;
+    const auto& event_source = event.source.empty() ? configured_source : event.source;
+    bool identity_relevant = true;
+    if (event.valid && is_terminal_source_state(event.state, event.reason) &&
+        event.has_active_stream_id && event.active_stream_id != 0) {
+        std::lock_guard<std::mutex> stream_lock(media_stream_mutex_);
+        const auto active = active_media_streams_.find(event.active_stream_id);
+        identity_relevant = active != active_media_streams_.end() &&
+            active->second.descriptor.kind == event.kind &&
+            (event_source.empty() ||
+             active->second.descriptor.source == event_source);
+    }
     std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+    event.order = ++next_media_source_state_order_;
+    if (event.order == 0) {
+        event.order = ++next_media_source_state_order_;
+    }
+    const bool relevant = identity_relevant && event.valid &&
+        (event.kind == MediaKind::Video || event.kind == MediaKind::Audio) &&
+        (configured_source.empty() || event_source == configured_source);
+    if (relevant) {
+        auto& latest_order = event.kind == MediaKind::Video
+            ? latest_video_source_state_order_
+            : latest_audio_source_state_order_;
+        latest_order = event.order;
+    }
     pending_media_source_state_events_.push(std::move(event));
 }
 
-void AxtpAdapter::process_pending_media_source_state_events(const std::string& device_id)
+bool AxtpAdapter::has_pending_media_source_state_events() const
+{
+    std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+    return !pending_media_source_state_events_.empty();
+}
+
+void AxtpAdapter::process_pending_media_source_state_events(
+    const std::string& device_id,
+    bool allow_client_calls)
 {
     for (;;) {
         std::queue<MediaSourceStateEvent> events;
         {
             std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
-            events.swap(pending_media_source_state_events_);
+            if (allow_client_calls) {
+                events.swap(deferred_media_source_state_events_);
+            }
+            while (!pending_media_source_state_events_.empty()) {
+                events.push(std::move(pending_media_source_state_events_.front()));
+                pending_media_source_state_events_.pop();
+            }
         }
         if (events.empty()) {
             return;
         }
         while (!events.empty()) {
-            process_media_source_state_event(device_id, events.front());
+            auto event = std::move(events.front());
             events.pop();
+            bool deferred_action_is_current = true;
+            if (event.deferred_client_action) {
+                std::lock_guard<std::mutex> lock(
+                    pending_media_source_state_mutex_);
+                const auto latest_order = event.kind == MediaKind::Video
+                    ? latest_video_source_state_order_
+                    : latest_audio_source_state_order_;
+                deferred_action_is_current = event.order == latest_order;
+            }
+            if (!deferred_action_is_current) {
+                continue;
+            }
+            if (!allow_client_calls && event.valid &&
+                event.kind != MediaKind::Unknown &&
+                !is_terminal_source_state(event.state, event.reason) &&
+                is_streamable_source_state(event.state)) {
+                event.deferred_client_action = true;
+                std::lock_guard<std::mutex> lock(
+                    pending_media_source_state_mutex_);
+                deferred_media_source_state_events_.push(std::move(event));
+                continue;
+            }
+            process_media_source_state_event(device_id, event);
+        }
+        if (!allow_client_calls) {
+            // Pure terminal/diagnostic reconciliation cannot enqueue another
+            // runtime event.  Return promptly to callRaw so it can continue
+            // polling the outstanding response.
+            return;
         }
     }
 }
@@ -1126,6 +1772,17 @@ void AxtpAdapter::process_media_source_state_event(
     if (!configured_source.empty() && event_source != configured_source) {
         return;
     }
+    const auto event_is_current = [this, &event]() {
+        if (event.order == 0 ||
+            (event.kind != MediaKind::Video && event.kind != MediaKind::Audio)) {
+            return true;
+        }
+        std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+        const auto latest_order = event.kind == MediaKind::Video
+            ? latest_video_source_state_order_
+            : latest_audio_source_state_order_;
+        return event.order == latest_order;
+    };
     const auto source_matches = [&](const MediaStreamDescriptor& descriptor) {
         // A source-state event may omit source. Prefer the configured source
         // in that case; if neither side names one, the event is still a valid
@@ -1169,6 +1826,21 @@ void AxtpAdapter::process_media_source_state_event(
             active_stream_count = static_cast<std::uint32_t>(active_media_streams_.size());
         }
         if (active_stream_id_is_foreign) {
+            const bool open_transition_active = event.kind == MediaKind::Video
+                ? video_lifecycle_transition_depth_.load(std::memory_order_acquire) != 0
+                : audio_lifecycle_transition_depth_.load(std::memory_order_acquire) != 0;
+            if (open_transition_active) {
+                // The device may report the terminal state for the stream ID
+                // returned by an openStream response that is still in flight.
+                // Keep it as a candidate and resolve it against that response;
+                // unrelated stale IDs remain ignored as before.
+                std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+                auto& candidates = event.kind == MediaKind::Video
+                    ? pending_video_open_terminal_orders_
+                    : pending_audio_open_terminal_orders_;
+                auto& candidate_order = candidates[event.active_stream_id];
+                candidate_order = std::max(candidate_order, event.order);
+            }
             return;
         }
         // Start one paired recovery cycle for the first terminal source event.
@@ -1253,13 +1925,44 @@ void AxtpAdapter::process_media_source_state_event(
         return;
     }
 
+    const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (event.kind == MediaKind::Video) {
-            video_source_terminal_ = false;
-        } else {
-            audio_source_terminal_ = false;
+        const bool method_terminal = event.kind == MediaKind::Video
+            ? diagnostics_.video_retry.terminal
+            : diagnostics_.audio_retry.terminal;
+        if (method_terminal) {
+            // An event cannot make a method/profile that this physical peer
+            // explicitly rejected become supported.  Re-evaluate only after
+            // a new physical session resets the terminal latch.
+            return;
         }
+        auto& terminal = event.kind == MediaKind::Video
+            ? video_source_terminal_ : audio_source_terminal_;
+        auto& source_waiting = event.kind == MediaKind::Video
+            ? video_source_waiting_ : audio_source_waiting_;
+        auto& recovery_pending = event.kind == MediaKind::Video
+            ? video_source_recovery_pending_ : audio_source_recovery_pending_;
+        auto& next_recovery = event.kind == MediaKind::Video
+            ? next_video_source_recovery_attempt_ : next_audio_source_recovery_attempt_;
+        auto& next_configure = event.kind == MediaKind::Video
+            ? next_video_configure_attempt_ : next_audio_configure_attempt_;
+        const auto retry_deadline = next_recovery.time_since_epoch().count() != 0
+            ? next_recovery : next_configure;
+        if (recovery_pending && !source_waiting &&
+            retry_deadline.time_since_epoch().count() != 0 &&
+            now < retry_deadline) {
+            // A duplicate streamable event is useful diagnostics, but it must
+            // not bypass a transient open failure's backoff.  A real
+            // waiting->receiving transition is different: it wakes the
+            // event-driven retry immediately instead of waiting 15 seconds.
+            return;
+        }
+        terminal = false;
+        source_waiting = false;
+        recovery_pending = false;
+        next_recovery = {};
+        next_configure = {};
     }
 
     // A source-level stop is different from a normal per-kind retry: NA20 can
@@ -1322,6 +2025,9 @@ void AxtpAdapter::process_media_source_state_event(
     if (!source_recovery_closes.empty() && runtime_->client != nullptr) {
         axtp::sdk::CallOptions options;
         options.timeout = std::chrono::milliseconds(500);
+        options.progress = [this, &device_id]() {
+            publish_runtime_progress(device_id);
+        };
         for (const auto& descriptor : source_recovery_closes) {
             const std::string method_prefix = std::string(media_kind_name(descriptor.kind));
             const nlohmann::json params{
@@ -1336,6 +2042,9 @@ void AxtpAdapter::process_media_source_state_event(
         // before opening the replacement so a late old-generation event cannot
         // close the newly opened same-ID stream.
         process_pending_media_source_state_events(device_id);
+        if (!event_is_current()) {
+            return;
+        }
     }
     bool already_active = false;
     {
@@ -1373,15 +2082,23 @@ void AxtpAdapter::process_media_source_state_event(
         }
     }
     const auto schedule_recovery_retry = [this](MediaKind kind) {
-        const auto next_attempt = std::chrono::steady_clock::now() +
+        const auto fallback = std::chrono::steady_clock::now() +
             kMediaConfigureRetryInterval;
         std::lock_guard<std::mutex> lock(mutex_);
         if (kind == MediaKind::Video) {
             video_source_recovery_pending_ = true;
-            next_video_source_recovery_attempt_ = next_attempt;
+            if (next_video_source_recovery_attempt_.time_since_epoch().count() == 0) {
+                next_video_source_recovery_attempt_ =
+                    next_video_configure_attempt_.time_since_epoch().count() == 0
+                    ? fallback : next_video_configure_attempt_;
+            }
         } else {
             audio_source_recovery_pending_ = true;
-            next_audio_source_recovery_attempt_ = next_attempt;
+            if (next_audio_source_recovery_attempt_.time_since_epoch().count() == 0) {
+                next_audio_source_recovery_attempt_ =
+                    next_audio_configure_attempt_.time_since_epoch().count() == 0
+                    ? fallback : next_audio_configure_attempt_;
+            }
         }
     };
 
@@ -1400,7 +2117,7 @@ void AxtpAdapter::process_media_source_state_event(
                 }) != active_media_streams_.end();
         };
         bool current_opened = is_active_kind(event.kind);
-        if (!current_opened) {
+        if (!current_opened && event_is_current()) {
             current_opened = configure_media_stream_kind(
                 device_id,
                 event.kind,
@@ -1444,6 +2161,9 @@ void AxtpAdapter::process_media_source_state_event(
         return;
     }
 
+    if (!event_is_current()) {
+        return;
+    }
     if (configure_media_stream_kind(
             device_id,
             event.kind,
@@ -1455,9 +2175,42 @@ void AxtpAdapter::process_media_source_state_event(
     schedule_recovery_retry(event.kind);
 }
 
+void AxtpAdapter::run_pending_orphan_stream_closes(
+    const std::string& device_id)
+{
+    std::queue<std::pair<MediaKind, std::uint32_t>> closes;
+    {
+        std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+        closes.swap(pending_orphan_stream_closes_);
+    }
+    if (runtime_->client == nullptr) {
+        return;
+    }
+    while (!closes.empty()) {
+        const auto [kind, stream_id] = closes.front();
+        closes.pop();
+        axtp::sdk::CallOptions options;
+        options.timeout = std::chrono::milliseconds(500);
+        options.progress = [this, &device_id]() {
+            publish_runtime_progress(device_id);
+        };
+        const nlohmann::json params{
+            {"streamId", stream_id},
+            {"peerRole", "transmitter"},
+            {"reason", "sourceTerminalDuringOpen"},
+        };
+        (void)runtime_->client->callJson(
+            std::string(media_kind_name(kind)) + ".closeStream",
+            params.dump(),
+            options);
+    }
+}
+
 void AxtpAdapter::reset_session_for_device(const std::string& device_id)
 {
     recovery_generation_.fetch_add(1);
+    cancel_control_calls(
+        device_id, std::nullopt, "AXTP session was released");
     {
         std::lock_guard<std::mutex> lock(recovery_mutex_);
         recovery_requested_ = false;
@@ -1467,7 +2220,11 @@ void AxtpAdapter::reset_session_for_device(const std::string& device_id)
     recovery_cv_.notify_all();
     {
         std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
-        media_delivery_sessions_.erase(device_id);
+        const auto binding = media_delivery_sessions_.find(device_id);
+        if (binding != media_delivery_sessions_.end()) {
+            media_binding_epoch_.fetch_add(1, std::memory_order_acq_rel);
+            media_delivery_sessions_.erase(binding);
+        }
     }
     std::thread stopped_pump;
     {
@@ -1486,17 +2243,43 @@ void AxtpAdapter::reset_session_for_device(const std::string& device_id)
         {
             std::lock_guard<std::mutex> client_lock(client_mutex_);
             if (runtime_->client != nullptr) {
+                snapshot_transport_diagnostics_from_runtime(true);
+                runtime_->active_transport = nullptr;
                 runtime_->client->close();
                 runtime_->client.reset();
             }
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            runtime_->active_transport = nullptr;
+            transport_counters_snapshot_owned_ = false;
+            next_transport_diagnostics_snapshot_ = {};
             active_device_id_.clear();
             diagnostics_.open = false;
+            next_media_configure_attempt_ = {};
+            next_video_configure_attempt_ = {};
+            next_audio_configure_attempt_ = {};
+            video_configure_retry_attempt_ = 0;
+            audio_configure_retry_attempt_ = 0;
+            video_source_terminal_ = false;
+            audio_source_terminal_ = false;
+            video_source_recovery_pending_ = false;
+            audio_source_recovery_pending_ = false;
+            next_video_source_recovery_attempt_ = {};
+            next_audio_source_recovery_attempt_ = {};
+            diagnostics_.video_retry.last_error.clear();
+            diagnostics_.video_retry.next_retry_in_ms = 0;
+            diagnostics_.video_retry.terminal = false;
+            diagnostics_.audio_retry.last_error.clear();
+            diagnostics_.audio_retry.next_retry_in_ms = 0;
+            diagnostics_.audio_retry.terminal = false;
         }
     }
+    // A call can snapshot the recovery generation after the first queue drain
+    // but before the session is marked closed above.  Drain once more after
+    // publication of that closed state so it cannot remain queued behind the
+    // now-stopped pump.
+    cancel_control_calls(
+        device_id, std::nullopt, "AXTP session was released");
     clear_media_streams();
     clear_video_stream_params_session();
     drop_pending_media_frames_for_device(device_id);
@@ -1507,11 +2290,13 @@ bool AxtpAdapter::open_session(const std::string& device_id, std::string& error)
     return open_session_status(device_id, error) == ControlStatus::Ok;
 }
 
-ControlStatus AxtpAdapter::open_session_status(const std::string& device_id, std::string& error)
+ControlStatus AxtpAdapter::open_session_status(const std::string& device_id,
+                                               std::string& error,
+                                               bool configure_media)
 {
     std::lock_guard<std::mutex> session_lock(session_mutex_);
     ControlStatus status = ControlStatus::Unavailable;
-    (void)ensure_session_locked(device_id, error, status, true,
+    (void)ensure_session_locked(device_id, error, status, configure_media,
                                 MediaStreamEventReason::InitialOpen);
     return status;
 }
@@ -1546,12 +2331,22 @@ void AxtpAdapter::set_session_health(SessionHealthState state,
     diagnostics_.health_probe_failures = health_probe_failures_;
     diagnostics_.session_recoveries = session_recoveries_;
     diagnostics_.last_session_recovery_reason = last_session_recovery_reason_;
+    diagnostics_.requested_probe_mode = config_.session_probe_mode;
+    diagnostics_.effective_probe_mode = effective_probe_mode_;
+    diagnostics_.negotiated_heartbeat_interval_ms = negotiated_heartbeat_interval_ms_;
+    diagnostics_.inbound_activity_generation = inbound_activity_generation_;
+    diagnostics_.heartbeat_attempts = heartbeat_attempts_;
+    diagnostics_.heartbeat_acks = heartbeat_acks_;
+    diagnostics_.heartbeat_timeouts = heartbeat_timeouts_;
+    diagnostics_.legacy_probe_attempts = legacy_probe_attempts_;
+    diagnostics_.legacy_probe_successes = legacy_probe_successes_;
+    diagnostics_.legacy_fallbacks = legacy_fallbacks_;
+    diagnostics_.legacy_fallback_reason = legacy_fallback_reason_;
 }
 
 bool AxtpAdapter::session_health_probe_due(std::chrono::steady_clock::time_point now)
 {
-    if (!config_.enable_session_health_probe ||
-        runtime_->health_probe_method.empty()) {
+    if (!config_.enable_session_health_probe) {
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1559,42 +2354,217 @@ bool AxtpAdapter::session_health_probe_due(std::chrono::steady_clock::time_point
         session_health_ == SessionHealthState::Recovering) {
         return false;
     }
-    const auto interval = std::chrono::milliseconds(
-        std::max<std::uint32_t>(1, config_.session_health_probe_interval_ms));
+    const auto configuredInterval = std::max<std::uint32_t>(
+        1, config_.session_health_probe_interval_ms);
+    const auto intervalMs = effective_probe_mode_ == SessionProbeMode::ControlHeartbeat &&
+            negotiated_heartbeat_interval_ms_ >= 500
+        ? negotiated_heartbeat_interval_ms_
+        : configuredInterval;
+    const auto interval = std::chrono::milliseconds(intervalMs);
     if (next_health_probe_.time_since_epoch().count() != 0 &&
         now < next_health_probe_) {
         return false;
     }
     if (last_transport_activity_.time_since_epoch().count() != 0 &&
         now - last_transport_activity_ < interval) {
-        next_health_probe_ = last_transport_activity_ + interval;
+        next_health_probe_ = last_transport_activity_ +
+            (effective_probe_mode_ == SessionProbeMode::ControlHeartbeat
+                ? heartbeat_schedule_delay(intervalMs, inbound_activity_generation_ + 1)
+                : interval);
+        last_probe_activity_generation_ = inbound_activity_generation_;
         return false;
     }
-    next_health_probe_ = now + interval;
+    next_health_probe_ = now +
+        (effective_probe_mode_ == SessionProbeMode::ControlHeartbeat
+            ? heartbeat_schedule_delay(intervalMs, heartbeat_attempts_ + 1)
+            : interval);
+    last_probe_activity_generation_ = inbound_activity_generation_;
     return true;
 }
 
 bool AxtpAdapter::run_session_health_probe(const std::string& device_id)
 {
-    if (runtime_->client == nullptr ||
-        runtime_->health_probe_method.empty() ||
-        !has_media_delivery_session(device_id)) {
+    if (runtime_->client == nullptr || !has_media_delivery_session(device_id)) {
         return true;
     }
 
+    bool transportError = false;
+    bool hadOtherActivity = false;
+    SessionProbeMode mode;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mode = effective_probe_mode_;
+    }
+
+    if (mode == SessionProbeMode::ControlHeartbeat) {
+        const bool heartbeatAlive = run_control_heartbeat_probe(
+            device_id, &transportError, &hadOtherActivity);
+        if (heartbeatAlive || hadOtherActivity) {
+            return true;
+        }
+        // Explicit control-heartbeat mode is an opt-in strict mode.  Auto is
+        // the only mode allowed to spend one legacy RPC as a compatibility
+        // fallback after a heartbeat failure.
+        if (config_.session_probe_mode != SessionProbeMode::Auto) {
+            return false;
+        }
+        const bool legacyAlive = run_legacy_capabilities_probe(device_id);
+        if (!legacyAlive) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        effective_probe_mode_ = SessionProbeMode::LegacyRpc;
+        ++legacy_fallbacks_;
+        legacy_fallback_reason_ = transportError
+            ? "heartbeat-transport-error"
+            : "heartbeat-timeout-or-not-supported";
+        return true;
+    }
+
+    if (mode == SessionProbeMode::LegacyRpc) {
+        return run_legacy_capabilities_probe(device_id);
+    }
+
+    // Auto remains observable only before a physical session has completed
+    // negotiation (for example in a test seam).  Apply the same preference
+    // without changing the public contract.
+    if (mode == SessionProbeMode::Auto && negotiated_heartbeat_interval_ms_ != 0) {
+        const bool heartbeatAlive = run_control_heartbeat_probe(
+            device_id, &transportError, &hadOtherActivity);
+        if (heartbeatAlive || hadOtherActivity) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            effective_probe_mode_ = SessionProbeMode::ControlHeartbeat;
+            return true;
+        }
+        const bool legacyAlive = run_legacy_capabilities_probe(device_id);
+        if (legacyAlive) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            effective_probe_mode_ = SessionProbeMode::LegacyRpc;
+            ++legacy_fallbacks_;
+            legacy_fallback_reason_ = transportError
+                ? "heartbeat-transport-error"
+                : "heartbeat-timeout-or-not-supported";
+        }
+        return legacyAlive;
+    }
+    return run_legacy_capabilities_probe(device_id);
+}
+
+bool AxtpAdapter::run_control_heartbeat_probe(const std::string& device_id,
+                                              bool* transportError,
+                                              bool* hadOtherActivity)
+{
+    (void)device_id;
+    if (transportError != nullptr) {
+        *transportError = false;
+    }
+    if (hadOtherActivity != nullptr) {
+        *hadOtherActivity = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++heartbeat_attempts_;
+        last_probe_activity_generation_ = inbound_activity_generation_;
+    }
+    // HEARTBEAT owns the session pump while it waits for its ACK.  Keep the
+    // same poll/progress boundary as business RPCs so media callbacks are
+    // committed during a quiet or non-responsive probe instead of being held
+    // behind the full timeout.  The hook never calls the client recursively.
+    const auto probeProgress = [this, &device_id]() {
+        publish_runtime_progress(device_id);
+    };
+    const auto result = runtime_->client->heartbeat(
+        std::chrono::milliseconds(
+            std::max<std::uint32_t>(1, config_.session_health_probe_timeout_ms)),
+        probeProgress);
+    sync_runtime_activity();
+    commit_pending_media_batch();
+    std::uint64_t activity = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        activity = inbound_activity_generation_;
+        if (activity != last_probe_activity_generation_ && hadOtherActivity != nullptr) {
+            *hadOtherActivity = true;
+        }
+        if (result.ok()) {
+            ++heartbeat_acks_;
+        } else if (result.code == axtp::ErrorCode::ControlHeartbeatTimeout) {
+            ++heartbeat_timeouts_;
+        }
+    }
+    if (result.ok()) {
+        return true;
+    }
+    switch (result.code) {
+    case axtp::ErrorCode::Unavailable:
+    case axtp::ErrorCode::Timeout:
+    case axtp::ErrorCode::RpcResponseTimeout:
+    case axtp::ErrorCode::TransportReadFailed:
+    case axtp::ErrorCode::TransportWriteFailed:
+    case axtp::ErrorCode::TransportDisconnected:
+    case axtp::ErrorCode::ControlOpenRequired:
+    case axtp::ErrorCode::ControlSessionInvalid:
+    case axtp::ErrorCode::ControlSessionExpired:
+    case axtp::ErrorCode::ControlHeartbeatTimeout:
+        if (transportError != nullptr) {
+            *transportError = true;
+        }
+        return false;
+    case axtp::ErrorCode::NotSupported:
+    case axtp::ErrorCode::RpcMethodNotFound:
+    case axtp::ErrorCode::RpcMethodNotSupported:
+    case axtp::ErrorCode::RpcMethodDisabled:
+        // The peer parsed the request but does not implement this probe.  It
+        // is alive, yet Auto must pin the physical session to LegacyRpc so it
+        // does not emit a failing heartbeat on every interval.
+        return false;
+    default:
+        // A typed business error means the peer parsed and answered the
+        // request, so it is valid liveness evidence.
+        return true;
+    }
+}
+
+bool AxtpAdapter::run_legacy_capabilities_probe(const std::string& device_id)
+{
+    (void)device_id;
+    std::string method;
+    nlohmann::json params = nlohmann::json::object();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++legacy_probe_attempts_;
+    }
+    if (!runtime_->health_probe_method.empty()) {
+        method = runtime_->health_probe_method;
+        params = runtime_->health_probe_params;
+    } else if (config_.enable_video) {
+        method = capabilities_method_name(MediaKind::Video);
+        params = nlohmann::json{{"source", config_.video_source}};
+    } else if (config_.enable_audio) {
+        method = capabilities_method_name(MediaKind::Audio);
+        params = nlohmann::json{{"source", config_.audio_source}};
+    } else {
+        return true;
+    }
     axtp::sdk::CallOptions options;
     options.timeout = std::chrono::milliseconds(
         std::max<std::uint32_t>(1, config_.session_health_probe_timeout_ms));
-    (void)runtime_->client->callJson(
-        runtime_->health_probe_method,
-        runtime_->health_probe_params.dump(),
-        options);
+    // A legacy capabilities probe is still a synchronous RPC.  It must carry
+    // the same non-recursive media progress hook as every other control call.
+    options.progress = [this, &device_id]() {
+        publish_runtime_progress(device_id);
+    };
+    (void)runtime_->client->callJson(method, params.dump(), options);
     const auto error = runtime_->client->lastError();
+    sync_runtime_activity();
+    commit_pending_media_batch();
     process_pending_media_source_state_events(device_id);
     if (error.ok()) {
+        note_inbound_activity();
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++legacy_probe_successes_;
         return true;
     }
-
     switch (error.code) {
     case axtp::ErrorCode::Unavailable:
     case axtp::ErrorCode::Timeout:
@@ -1608,9 +2578,8 @@ bool AxtpAdapter::run_session_health_probe(const std::string& device_id)
     case axtp::ErrorCode::ControlHeartbeatTimeout:
         return false;
     default:
-        // A typed response such as NotSupported or InvalidArgument proves
-        // that the device and its session are alive; do not reconnect for a
-        // business-level failure.
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++legacy_probe_successes_;
         return true;
     }
 }
@@ -1618,6 +2587,7 @@ bool AxtpAdapter::run_session_health_probe(const std::string& device_id)
 void AxtpAdapter::request_session_recovery(const std::string& device_id,
                                            std::string reason)
 {
+    std::uint32_t probe_failures = 0;
     {
         std::lock_guard<std::mutex> lock(recovery_mutex_);
         if (stop_recovery_worker_ || recovery_requested_) {
@@ -1629,9 +2599,16 @@ void AxtpAdapter::request_session_recovery(const std::string& device_id,
         recovery_reason_ = std::move(reason);
         recovery_attempt_ = 0;
     }
+    // health_probe_failures_ is owned by the adapter state mutex.  Take a
+    // snapshot before publishing the recovery state; the pump may update the
+    // counter concurrently with an external release/recovery request.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        probe_failures = health_probe_failures_;
+    }
     set_session_health(
         SessionHealthState::Recovering,
-        health_probe_failures_,
+        probe_failures,
         "health-probe-timeout");
     recovery_cv_.notify_one();
 }
@@ -1645,6 +2622,8 @@ bool AxtpAdapter::recover_session_once(const std::string& device_id,
         error = "media session was released during recovery";
         return false;
     }
+    cancel_control_calls(
+        device_id, std::nullopt, "AXTP physical session is recovering");
 
     std::thread stopped_pump;
     {
@@ -1663,22 +2642,34 @@ bool AxtpAdapter::recover_session_once(const std::string& device_id,
         {
             std::lock_guard<std::mutex> client_lock(client_mutex_);
             if (runtime_->client != nullptr) {
+                snapshot_transport_diagnostics_from_runtime(true);
+                runtime_->active_transport = nullptr;
                 runtime_->client->close();
                 runtime_->client.reset();
             }
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            runtime_->active_transport = nullptr;
+            transport_counters_snapshot_owned_ = false;
+            next_transport_diagnostics_snapshot_ = {};
             active_device_id_.clear();
             diagnostics_.open = false;
         }
     }
+    // request_session_recovery() invalidates queued operations before this
+    // teardown starts. Repeat the drain after making the old session visibly
+    // unavailable to cover a caller that raced that first drain.
+    cancel_control_calls(
+        device_id, std::nullopt, "AXTP physical session is recovering");
 
     // The old physical session is gone; publish its terminal lifecycle before
     // the replacement open and never send closeStream to the dead device.
     clear_media_streams(MediaStreamEventReason::SessionRecovery);
-    drain_pending_media_callbacks();
+    // Raw stream callbacks can race the pump shutdown.  They carry payloads
+    // from the old physical session and must not be re-bound to the newly
+    // created descriptor after recovery.
+    drop_pending_media_frames_for_device(device_id);
+    notify_media_dispatch();
     clear_video_stream_params_session(true);
 
     if (!has_media_delivery_session(device_id) ||
@@ -1703,7 +2694,7 @@ bool AxtpAdapter::recover_session_once(const std::string& device_id,
         }
         return false;
     }
-    drain_pending_media_callbacks();
+    notify_media_dispatch();
     return true;
 }
 
@@ -1751,7 +2742,15 @@ void AxtpAdapter::run_session_recovery_worker()
                 break;
             }
 
-            const auto attempt = ++recovery_attempt_;
+            std::uint32_t attempt = 0;
+            {
+                std::lock_guard<std::mutex> lock(recovery_mutex_);
+                // A new request can reset the retry counter while this worker
+                // is between attempts.  Keep the increment serialized with
+                // that reset so the backoff sequence is deterministic and
+                // race-free.
+                attempt = ++recovery_attempt_;
+            }
             const auto initial = std::max<std::uint32_t>(
                 1, config_.session_recovery_backoff_initial_ms);
             const auto maximum = std::max(
@@ -1784,35 +2783,40 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                                         MediaStreamEventReason open_reason)
 {
     status = ControlStatus::Unavailable;
+    // Capture the physical recovery generation before entering the transport
+    // handshake. A concurrent release/recovery increments it and the SDK
+    // app-ready cancellation hook below can then retire this wait promptly.
+    const auto opening_recovery_generation = recovery_generation_.load();
     std::thread stopped_pump;
+    bool session_ready = false;
+    bool media_ready = false;
     {
-        std::lock_guard<std::mutex> client_lock(client_mutex_);
-        bool session_ready = false;
-        bool media_ready = false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            session_ready = runtime_->client != nullptr && runtime_->client->isConnected() && runtime_->client->isAppReady() &&
-                active_device_id_ == device_id;
-            media_ready = diagnostics_.active_media_streams != 0 ||
-                !config_.enable_media ||
-                (!config_.enable_video && !config_.enable_audio);
-            if (!active_device_id_.empty() && active_device_id_ != device_id) {
-                error = "AXTP session busy for active device " + active_device_id_;
-                status = ControlStatus::Busy;
-                return false;
-            }
+        std::lock_guard<std::mutex> lock(mutex_);
+        session_ready = diagnostics_.open && active_device_id_ == device_id;
+        media_ready = diagnostics_.active_media_streams != 0 ||
+            !config_.enable_media ||
+            (!config_.enable_video && !config_.enable_audio);
+        if (!active_device_id_.empty() && active_device_id_ != device_id) {
+            error = "AXTP session busy for active device " + active_device_id_;
+            status = ControlStatus::Busy;
+            return false;
         }
-        if (session_ready) {
-            if (configure_media && !media_ready && runtime_->client != nullptr) {
-                configure_media_streams(device_id, open_reason);
-            }
-            status = ControlStatus::Ok;
-            return true;
+        if (session_ready && configure_media && !media_ready) {
+            // Once connected, only the pump may use AxtpClient.  Convert a
+            // late media lease into pump work instead of issuing openStream
+            // RPCs on the lease-accepting thread.
+            next_media_configure_attempt_ = std::chrono::steady_clock::now();
+            media_configure_attempts_ = 0;
         }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopped_pump = request_stop_session_pump_locked();
-        }
+    }
+    if (session_ready) {
+        status = ControlStatus::Ok;
+        control_cv_.notify_all();
+        return true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopped_pump = request_stop_session_pump_locked();
     }
     if (stopped_pump.joinable()) {
         stopped_pump.join();
@@ -1820,17 +2824,49 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     {
         std::lock_guard<std::mutex> client_lock(client_mutex_);
         if (runtime_->client != nullptr) {
+            snapshot_transport_diagnostics_from_runtime(true);
+            runtime_->active_transport = nullptr;
             runtime_->client->close();
             runtime_->client.reset();
         }
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (runtime_->active_transport != nullptr || !active_device_id_.empty()) {
-            runtime_->active_transport = nullptr;
+        transport_counters_snapshot_owned_ = false;
+        next_transport_diagnostics_snapshot_ = {};
+        if (!active_device_id_.empty()) {
             active_device_id_.clear();
             diagnostics_.open = false;
         }
+        effective_probe_mode_ = config_.session_probe_mode;
+        negotiated_heartbeat_interval_ms_ = 0;
+        inbound_activity_generation_ = 0;
+        last_probe_activity_generation_ = 0;
+        last_runtime_activity_generation_ = 0;
+        heartbeat_attempts_ = 0;
+        heartbeat_acks_ = 0;
+        heartbeat_timeouts_ = 0;
+        legacy_probe_attempts_ = 0;
+        legacy_probe_successes_ = 0;
+        legacy_fallbacks_ = 0;
+        legacy_fallback_reason_.clear();
+        next_media_configure_attempt_ = {};
+        next_video_configure_attempt_ = {};
+        next_audio_configure_attempt_ = {};
+        video_configure_retry_attempt_ = 0;
+        audio_configure_retry_attempt_ = 0;
+        video_source_terminal_ = false;
+        audio_source_terminal_ = false;
+        video_source_recovery_pending_ = false;
+        audio_source_recovery_pending_ = false;
+        next_video_source_recovery_attempt_ = {};
+        next_audio_source_recovery_attempt_ = {};
+        diagnostics_.video_retry.last_error.clear();
+        diagnostics_.video_retry.next_retry_in_ms = 0;
+        diagnostics_.video_retry.terminal = false;
+        diagnostics_.audio_retry.last_error.clear();
+        diagnostics_.audio_retry.next_retry_in_ms = 0;
+        diagnostics_.audio_retry.terminal = false;
     }
     clear_media_streams();
     clear_video_stream_params_session();
@@ -1859,6 +2895,8 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     axtp::sdk::ClientOptions client_options;
     client_options.autoOpen = true;
     client_options.autoIdentify = false;
+    client_options.requestedHeartbeatInterval = std::chrono::milliseconds(
+        std::clamp<std::uint32_t>(config_.requested_heartbeat_interval_ms, 1U, 60000U));
     auto client = std::make_unique<axtp::sdk::AxtpClient>(client_options);
     auto register_source_state_event = [this, &client](
                                            axtp::EventId event_id,
@@ -1894,8 +2932,23 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     client->setStreamHandler(
         [this, device_id](const axtp::BrokerContext&, const axtp::StreamPayload& stream) {
             handle_stream_payload(
-                device_id, stream.streamId, stream.seqId, stream.cursor, stream.data);
+                device_id,
+                stream.streamId,
+                stream.seqId,
+                stream.cursor,
+                stream.data,
+                stream.meta.ingressToken);
         });
+    client->setIngressTokenProvider([this, device_id]() {
+        // A standalone adapter has no Host lease and must retain the legacy
+        // unbound-frame behavior.  Only a currently bound logical device gets
+        // a non-zero provenance token.
+        std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+        if (media_delivery_sessions_.find(device_id) == media_delivery_sessions_.end()) {
+            return std::uint64_t{0};
+        }
+        return media_binding_epoch_.load(std::memory_order_acquire);
+    });
     auto* active_transport = transport.get();
     client->attachTransport(std::move(transport));
 
@@ -1905,12 +2958,24 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     ready_options.trace = [&last_ready_event](const axtp::sdk::AppReadyTraceEvent& event) {
         last_ready_event = "app-ready:" + event.stage + ":" + event.action;
     };
+    ready_options.progress = [this, device_id]() {
+        // The handshake owns a local AxtpClient until it succeeds.  Drain
+        // staged media/lifecycle work without recursively touching that
+        // client; the regular session pump takes over after publication.
+        publish_runtime_progress(device_id);
+    };
+    ready_options.cancelled = [this, opening_recovery_generation]() {
+        return recovery_generation_.load() != opening_recovery_generation;
+    };
     const auto ready = client->ensureAppReady(ready_options);
+    const auto negotiatedHeartbeat = client->negotiatedHeartbeatIntervalMs();
     std::unique_lock<std::mutex> client_lock(client_mutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         runtime_->client = std::move(client);
         runtime_->active_transport = active_transport;
+        transport_counters_snapshot_owned_ = false;
+        next_transport_diagnostics_snapshot_ = {};
         if (!last_ready_event.empty()) {
             diagnostics_.last_event = last_ready_event;
         }
@@ -1919,17 +2984,44 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     if (!ready.ok) {
         error = "AXTP app-ready failed at " + ready.stage + ": " + error_name(ready.statusCode);
         {
+            runtime_->active_transport = nullptr;
             runtime_->client->close();
             runtime_->client.reset();
         }
         client_lock.unlock();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            runtime_->active_transport = nullptr;
+            transport_counters_snapshot_owned_ = false;
+            next_transport_diagnostics_snapshot_ = {};
             active_device_id_.clear();
             diagnostics_.open = false;
         }
         return false;
+    }
+
+    snapshot_transport_diagnostics_from_runtime(true);
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        negotiated_heartbeat_interval_ms_ = negotiatedHeartbeat.value_or(0);
+        effective_probe_mode_ = config_.session_probe_mode;
+        legacy_fallback_reason_.clear();
+        if (effective_probe_mode_ == SessionProbeMode::Auto) {
+            effective_probe_mode_ = negotiatedHeartbeat.has_value()
+                ? SessionProbeMode::ControlHeartbeat
+                : SessionProbeMode::LegacyRpc;
+        } else if (effective_probe_mode_ == SessionProbeMode::ControlHeartbeat &&
+                   !negotiatedHeartbeat.has_value()) {
+            legacy_fallback_reason_ = "peer-did-not-advertise-valid-interval";
+        }
+        inbound_activity_generation_ = 0;
+        last_probe_activity_generation_ = 0;
+        heartbeat_attempts_ = 0;
+        heartbeat_acks_ = 0;
+        heartbeat_timeouts_ = 0;
+        legacy_probe_attempts_ = 0;
+        legacy_probe_successes_ = 0;
+        legacy_fallbacks_ = 0;
     }
 
     std::string logical_session_id;
@@ -1963,6 +3055,7 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        ++runtime_->physical_session_generation;
         active_device_id_ = device_id;
         diagnostics_.open = true;
         if (diagnostics_.active_media_streams == 0 &&
@@ -1972,8 +3065,12 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
         session_health_ = SessionHealthState::Healthy;
         health_probe_failures_ = 0;
         last_transport_activity_ = std::chrono::steady_clock::now();
-        next_health_probe_ = last_transport_activity_ +
-            std::chrono::milliseconds(config_.session_health_probe_interval_ms);
+        const auto initialProbeInterval = effective_probe_mode_ == SessionProbeMode::ControlHeartbeat &&
+                negotiated_heartbeat_interval_ms_ >= 500
+            ? heartbeat_schedule_delay(
+                negotiated_heartbeat_interval_ms_, inbound_activity_generation_ + 1)
+            : std::chrono::milliseconds(config_.session_health_probe_interval_ms);
+        next_health_probe_ = last_transport_activity_ + initialProbeInterval;
         refresh_diagnostics_locked();
         stop_session_pump_.store(false);
         session_pump_ = std::thread([this, device_id]() {
@@ -2004,14 +3101,19 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                         configure_media_streams(retry_device_id);
                     }
                     runtime_->client->poll();
+                    sync_runtime_activity();
                     // Source transitions are reconciled after the complete
                     // runtime poll. AXTP receiver-pull requires a successful
                     // replacement openStream response before the device emits
                     // frames for the new generation; any frame already in the
                     // same pre-open poll therefore belongs to the old one.
                     process_pending_media_source_state_events(device_id);
+                    run_pending_orphan_stream_closes(device_id);
                     advance_video_reconfigure(device_id);
                     retry_pending_media_source_recoveries(device_id, now);
+                    expire_pending_control_calls(
+                        std::chrono::steady_clock::now());
+                    process_next_control_call(device_id);
                     if (session_health_probe_due(now)) {
                         if (run_session_health_probe(device_id)) {
                             set_session_health(SessionHealthState::Healthy, 0);
@@ -2037,11 +3139,12 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
                             }
                         }
                     }
+                    snapshot_transport_diagnostics_from_runtime();
                 }
                 if (request_recovery) {
                     request_session_recovery(device_id, std::move(recovery_reason));
                 }
-                drain_pending_media_callbacks();
+                commit_pending_media_batch();
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         });
@@ -2053,19 +3156,18 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
 bool AxtpAdapter::media_configure_retry_due_locked(std::chrono::steady_clock::time_point now) const
 {
     if (!config_.enable_media ||
-        (!config_.enable_video && !config_.enable_audio) ||
-        diagnostics_.active_media_streams != 0) {
+        (!config_.enable_video && !config_.enable_audio)) {
         return false;
     }
-    const bool video_can_open = config_.enable_video && !video_source_terminal_ &&
-        !video_source_recovery_pending_;
-    const bool audio_can_open = config_.enable_audio && !audio_source_terminal_ &&
-        !audio_source_recovery_pending_;
-    if (!video_can_open && !audio_can_open) {
-        return false;
-    }
-    return next_media_configure_attempt_.time_since_epoch().count() == 0 ||
-        now >= next_media_configure_attempt_;
+    const bool video_due = config_.enable_video && diagnostics_.active_video_stream_id == 0 &&
+        !video_source_terminal_ && !video_source_recovery_pending_ &&
+        (next_video_configure_attempt_.time_since_epoch().count() == 0 ||
+         now >= next_video_configure_attempt_);
+    const bool audio_due = config_.enable_audio && diagnostics_.active_audio_stream_id == 0 &&
+        !audio_source_terminal_ && !audio_source_recovery_pending_ &&
+        (next_audio_configure_attempt_.time_since_epoch().count() == 0 ||
+         now >= next_audio_configure_attempt_);
+    return video_due || audio_due;
 }
 
 void AxtpAdapter::configure_media_streams(
@@ -2076,8 +3178,17 @@ void AxtpAdapter::configure_media_streams(
     bool configure_audio = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        configure_video = config_.enable_video && !video_source_recovery_pending_;
-        configure_audio = config_.enable_audio && !audio_source_recovery_pending_;
+        const auto now = std::chrono::steady_clock::now();
+        configure_video = config_.enable_video && diagnostics_.active_video_stream_id == 0 &&
+            !video_source_terminal_ && !video_source_recovery_pending_ &&
+            (open_reason != MediaStreamEventReason::InitialOpen ||
+             next_video_configure_attempt_.time_since_epoch().count() == 0 ||
+             now >= next_video_configure_attempt_);
+        configure_audio = config_.enable_audio && diagnostics_.active_audio_stream_id == 0 &&
+            !audio_source_terminal_ && !audio_source_recovery_pending_ &&
+            (open_reason != MediaStreamEventReason::InitialOpen ||
+             next_audio_configure_attempt_.time_since_epoch().count() == 0 ||
+             now >= next_audio_configure_attempt_);
     }
     if (configure_video) {
         configure_media_stream_kind(
@@ -2218,6 +3329,9 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
         if (!close_sent) {
             axtp::sdk::CallOptions options;
             options.timeout = std::chrono::milliseconds(5000);
+            options.progress = [this, &device_id]() {
+                publish_runtime_progress(device_id);
+            };
             const nlohmann::json params{
                 {"streamId", descriptor->key.stream_id},
                 {"peerRole", "transmitter"},
@@ -2244,6 +3358,9 @@ void AxtpAdapter::advance_video_reconfigure(const std::string& device_id)
             }
             axtp::sdk::CallOptions options;
             options.timeout = std::chrono::milliseconds(500);
+            options.progress = [this, &device_id]() {
+                publish_runtime_progress(device_id);
+            };
             const nlohmann::json params{
                 {"streamId", descriptor->key.stream_id},
             };
@@ -2485,6 +3602,65 @@ bool AxtpAdapter::configure_media_stream_kind(
         (kind != MediaKind::Video && kind != MediaKind::Audio)) {
         return false;
     }
+    const bool is_video = kind == MediaKind::Video;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& retry = is_video ? diagnostics_.video_retry : diagnostics_.audio_retry;
+        ++retry.configure_attempts;
+        retry.next_retry_in_ms = 0;
+    }
+    const auto mark_retry_failure = [this, is_video, kind](std::string error,
+                                                           bool terminal = false,
+                                                           bool source_waiting = false) {
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& retry = is_video ? diagnostics_.video_retry : diagnostics_.audio_retry;
+        retry.last_error = std::move(error);
+        retry.terminal = terminal;
+        auto& next_configure = is_video
+            ? next_video_configure_attempt_
+            : next_audio_configure_attempt_;
+        auto& retry_attempt = is_video
+            ? video_configure_retry_attempt_
+            : audio_configure_retry_attempt_;
+        if (terminal) {
+            if (is_video) {
+                video_source_terminal_ = true;
+                video_source_recovery_pending_ = false;
+            } else {
+                audio_source_terminal_ = true;
+                audio_source_recovery_pending_ = false;
+            }
+            next_configure = {};
+            retry.next_retry_in_ms = 0;
+            return;
+        }
+        if (source_waiting) {
+            if (is_video) {
+                video_source_recovery_pending_ = true;
+                next_video_source_recovery_attempt_ = now + kSourceWaitingFallbackInterval;
+                next_configure = next_video_source_recovery_attempt_;
+            } else {
+                audio_source_recovery_pending_ = true;
+                next_audio_source_recovery_attempt_ = now + kSourceWaitingFallbackInterval;
+                next_configure = next_audio_source_recovery_attempt_;
+            }
+            retry.next_retry_in_ms = static_cast<std::uint64_t>(
+                kSourceWaitingFallbackInterval.count() * 1000);
+            return;
+        }
+        if (is_video) {
+            video_source_recovery_pending_ = false;
+        } else {
+            audio_source_recovery_pending_ = false;
+        }
+        ++retry_attempt;
+        next_configure = now + media_retry_delay(retry_attempt, false, kind);
+        retry.next_retry_in_ms = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(1,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    next_configure - now).count()));
+    };
     std::optional<VideoStreamParamsState> video_params_update;
     if (!from_video_reconfigure) {
         std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
@@ -2501,18 +3677,54 @@ bool AxtpAdapter::configure_media_stream_kind(
         }
     }
 
-    auto call_json = [this](const std::string& method, const nlohmann::json& params)
+    // callJson() keeps polling media through its progress hook.  Do not let
+    // that hook commit frames while this open/reopen is still selecting and
+    // publishing the replacement generation.  On every return path, append
+    // any surviving ingress only after the lifecycle entries produced here.
+    auto& lifecycle_transition_depth = is_video
+        ? video_lifecycle_transition_depth_
+        : audio_lifecycle_transition_depth_;
+    lifecycle_transition_depth.fetch_add(1, std::memory_order_acq_rel);
+    struct LifecycleTransitionGuard {
+        AxtpAdapter& adapter;
+        std::atomic<std::uint32_t>& depth;
+        MediaKind kind;
+        ~LifecycleTransitionGuard()
+        {
+            {
+                std::lock_guard<std::mutex> lock(
+                    adapter.pending_media_source_state_mutex_);
+                auto& candidates = kind == MediaKind::Video
+                    ? adapter.pending_video_open_terminal_orders_
+                    : adapter.pending_audio_open_terminal_orders_;
+                candidates.clear();
+            }
+            if (depth.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                adapter.commit_pending_media_batch();
+            }
+        }
+    } lifecycle_transition_guard{*this, lifecycle_transition_depth, kind};
+
+    axtp::ErrorCode last_call_error = axtp::ErrorCode::Success;
+    std::string last_call_error_message;
+    auto call_json = [this, &device_id, &last_call_error, &last_call_error_message](
+                         const std::string& method, const nlohmann::json& params)
         -> std::optional<nlohmann::json> {
         axtp::sdk::CallOptions options;
         options.timeout = std::chrono::milliseconds(5000);
+        options.progress = [this, &device_id]() {
+            publish_runtime_progress(device_id);
+        };
         const auto text = runtime_->client->callJson(method, params.dump(), options);
-        if (!runtime_->client->lastError().ok()) {
+        const auto error = runtime_->client->lastError();
+        last_call_error = error.code;
+        last_call_error_message = error.message;
+        if (!error.ok()) {
             return std::nullopt;
         }
         return parse_json_object(text);
     };
 
-    const bool is_video = kind == MediaKind::Video;
     const std::string source = is_video ? config_.video_source : config_.audio_source;
     // Snapshot the frame-rate selected for this particular open before the
     // capabilities RPC pumps any more inbound events.  A replacement open
@@ -2532,8 +3744,23 @@ bool AxtpAdapter::configure_media_stream_kind(
         }
     }
     const nlohmann::json source_params{{"source", source}};
-    auto capabilities = call_json(capabilities_method_name(kind), source_params);
+    std::optional<nlohmann::json> capabilities;
+    const auto cachedCapabilities = runtime_->capabilities_cache.find(kind);
+    if (cachedCapabilities != runtime_->capabilities_cache.end()) {
+        capabilities = cachedCapabilities->second;
+    } else {
+        capabilities = call_json(capabilities_method_name(kind), source_params);
+        if (capabilities.has_value() && capabilities_are_streamable(*capabilities, source)) {
+            runtime_->capabilities_cache[kind] = *capabilities;
+        }
+    }
     if (!capabilities.has_value()) {
+        const bool terminal = runtime_error_is_terminal(last_call_error);
+        mark_retry_failure(
+            last_call_error_message.empty()
+                ? std::string(media_kind_name(kind)) + " capabilities unavailable"
+                : last_call_error_message,
+            terminal);
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_event =
             std::string(media_kind_name(kind)) + "-capabilities-unavailable";
@@ -2545,6 +3772,8 @@ bool AxtpAdapter::configure_media_stream_kind(
     runtime_->health_probe_method = capabilities_method_name(kind);
     runtime_->health_probe_params = source_params;
     if (!capabilities_are_streamable(*capabilities, source)) {
+        mark_retry_failure(
+            std::string(media_kind_name(kind)) + " source waiting", false, true);
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
         return false;
@@ -2629,6 +3858,18 @@ bool AxtpAdapter::configure_media_stream_kind(
 
     const auto response = call_json(open_stream_method_name(kind), open_params);
     if (!response.has_value()) {
+        const bool terminal = runtime_error_is_terminal(last_call_error);
+        const auto errorText = ascii_lower(last_call_error_message);
+        const bool source_waiting = !terminal &&
+            (errorText.find("source waiting") != std::string::npos ||
+             errorText.find("source unavailable") != std::string::npos ||
+             errorText.find("source disconnected") != std::string::npos);
+        mark_retry_failure(
+            last_call_error_message.empty()
+                ? std::string(media_kind_name(kind)) + " open failed"
+                : last_call_error_message,
+            terminal,
+            source_waiting);
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-failed";
         return false;
@@ -2636,8 +3877,52 @@ bool AxtpAdapter::configure_media_stream_kind(
 
     const auto stream_id = json_u32_or(*response, "streamId", 0);
     if (stream_id == 0) {
+        mark_retry_failure(std::string(media_kind_name(kind)) + " open returned no stream id");
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-no-stream-id";
+        return false;
+    }
+
+    bool terminal_candidate_matches = false;
+    {
+        std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+        auto& candidates = is_video
+            ? pending_video_open_terminal_orders_
+            : pending_audio_open_terminal_orders_;
+        const auto candidate = candidates.find(stream_id);
+        terminal_candidate_matches = candidate != candidates.end();
+        if (terminal_candidate_matches) {
+            // The event could not be identified until openStream returned its
+            // future stream ID. Once it matches, make its source-state order
+            // authoritative so an older receiving event deferred by the same
+            // in-flight open cannot reopen the just-terminated stream.
+            auto& latest_order = is_video
+                ? latest_video_source_state_order_
+                : latest_audio_source_state_order_;
+            latest_order = std::max(
+                latest_order,
+                candidate->second);
+        }
+        candidates.clear();
+    }
+    bool source_terminal = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& terminal = is_video
+            ? video_source_terminal_
+            : audio_source_terminal_;
+        if (terminal_candidate_matches) {
+            terminal = true;
+        }
+        source_terminal = terminal;
+    }
+    if (source_terminal) {
+        // A terminal source event may arrive while openStream is waiting and
+        // is reconciled by the non-recursive progress hook.  The response has
+        // already allocated a peer stream, so defer one orphan close to the
+        // next top-level pump iteration, but never publish this descriptor.
+        std::lock_guard<std::mutex> lock(pending_media_source_state_mutex_);
+        pending_orphan_stream_closes_.push({kind, stream_id});
         return false;
     }
 
@@ -2709,6 +3994,10 @@ bool AxtpAdapter::configure_media_stream_kind(
         if (update_retry_state) {
             diagnostics_.last_event = std::string(media_kind_name(kind)) + "-stream-open";
         }
+        auto& retry = is_video ? diagnostics_.video_retry : diagnostics_.audio_retry;
+        retry.last_error.clear();
+        retry.next_retry_in_ms = 0;
+        retry.terminal = false;
         if (kind == MediaKind::Video) {
             diagnostics_.active_video_stream_id = stream_id;
         } else {
@@ -2720,9 +4009,15 @@ bool AxtpAdapter::configure_media_stream_kind(
             next_media_configure_attempt_ = {};
         }
         if (kind == MediaKind::Video) {
+            video_configure_retry_attempt_ = 0;
+            next_video_configure_attempt_ = {};
+            video_source_terminal_ = false;
             video_source_recovery_pending_ = false;
             next_video_source_recovery_attempt_ = {};
         } else {
+            audio_configure_retry_attempt_ = 0;
+            next_audio_configure_attempt_ = {};
+            audio_source_terminal_ = false;
             audio_source_recovery_pending_ = false;
             next_audio_source_recovery_attempt_ = {};
         }
@@ -2772,7 +4067,8 @@ MediaFrame AxtpAdapter::frame_from_stream(const std::string& device_id,
                                           std::uint32_t stream_id,
                                           std::uint32_t sequence_id,
                                           std::uint64_t cursor,
-                                          std::vector<std::uint8_t> data) const
+                                          std::vector<std::uint8_t> data,
+                                          std::uint64_t ingress_token) const
 {
     MediaFrame frame;
     frame.device_id = device_id;
@@ -2782,6 +4078,7 @@ MediaFrame AxtpAdapter::frame_from_stream(const std::string& device_id,
     frame.timestamp_us = cursor;
     frame.payload = std::move(data);
     frame.flags = MediaFrameFlag::EndOfFrame;
+    frame.binding_epoch = ingress_token;
     {
         std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
         const auto binding = media_delivery_sessions_.find(device_id);
@@ -2825,16 +4122,51 @@ void AxtpAdapter::handle_stream_payload(const std::string& device_id,
                                         std::uint32_t stream_id,
                                         std::uint32_t sequence_id,
                                         std::uint64_t cursor,
-                                        std::vector<std::uint8_t> data)
+                                        std::vector<std::uint8_t> data,
+                                        std::uint64_t ingress_token)
 {
+    note_inbound_activity();
+    // This must happen at ingress, rather than during commit.  poll() queues
+    // source-state events for later reconciliation, so by commit time a
+    // same-numeric-ID stream may already describe the replacement generation
+    // and the logical Host lease may have changed as well.
     auto frame = frame_from_stream(
-        device_id, stream_id, sequence_id, cursor, std::move(data));
-    std::lock_guard<std::mutex> lock(pending_media_mutex_);
-    pending_media_frames_.emplace(device_id, std::move(frame));
+        device_id, stream_id, sequence_id, cursor, std::move(data), ingress_token);
+    {
+        std::lock_guard<std::mutex> lock(pending_media_ingress_mutex_);
+        pending_media_ingress_frames_.push(
+            PendingMediaIngressFrame{std::move(frame)});
+    }
 }
 
 bool AxtpAdapter::is_current_media_frame(const MediaFrame& frame) const
 {
+    // A physical stream generation can outlive several logical Host leases.
+    // The session id captured when the frame entered staging is therefore a
+    // second, independent lifetime fence.  Without this check a frame that
+    // was already committed to the dispatcher FIFO before unbind could be
+    // delivered after a replacement lease acquired the same physical stream.
+    // Keep unbound direct-adapter/test delivery compatible: a frame with an
+    // empty session id is valid only while no logical binding exists.
+    {
+        std::lock_guard<std::mutex> lock(media_delivery_session_mutex_);
+        const auto binding = media_delivery_sessions_.find(frame.device_id);
+        if (binding == media_delivery_sessions_.end()) {
+            if (!frame.session_id.empty() || frame.binding_epoch != 0) {
+                return false;
+            }
+        } else if (frame.session_id.empty() || binding->second != frame.session_id ||
+                   frame.binding_epoch == 0 ||
+                   frame.binding_epoch !=
+                       media_binding_epoch_.load(std::memory_order_acquire)) {
+            // The frame may have been decoded into the runtime Core event
+            // queue before unbind/rebind, then delivered to this adapter only
+            // afterwards. Session IDs alone are insufficient because the
+            // deferred callback observes the replacement binding when it is
+            // finally materialized.
+            return false;
+        }
+    }
     if (frame.generation == 0) {
         return true;
     }
@@ -2845,8 +4177,82 @@ bool AxtpAdapter::is_current_media_frame(const MediaFrame& frame) const
         active->second.descriptor.key.generation == frame.generation;
 }
 
+void AxtpAdapter::commit_pending_media_batch()
+{
+    // Source-state events from the same runtime poll can change the stream
+    // generation.  Leave ingress staged until the pump has reconciled those
+    // events, then stamp frames from the resulting descriptor and append them
+    // after lifecycle entries in one dispatcher FIFO.
+    if (has_pending_media_source_state_events()) {
+        return;
+    }
+
+    std::queue<PendingMediaIngressFrame> ingress;
+    {
+        std::lock_guard<std::mutex> lock(pending_media_ingress_mutex_);
+        ingress.swap(pending_media_ingress_frames_);
+    }
+    if (ingress.empty()) {
+        return;
+    }
+
+    std::vector<MediaFrame> frames;
+    frames.reserve(ingress.size());
+    std::queue<PendingMediaIngressFrame> retained;
+    while (!ingress.empty()) {
+        auto pending = std::move(ingress.front());
+        ingress.pop();
+        const bool kind_is_fenced =
+            (pending.frame.kind == MediaKind::Video &&
+             video_lifecycle_transition_depth_.load(std::memory_order_acquire) != 0) ||
+            (pending.frame.kind == MediaKind::Audio &&
+             audio_lifecycle_transition_depth_.load(std::memory_order_acquire) != 0) ||
+            (pending.frame.kind == MediaKind::Unknown &&
+             (video_lifecycle_transition_depth_.load(std::memory_order_acquire) != 0 ||
+              audio_lifecycle_transition_depth_.load(std::memory_order_acquire) != 0));
+        if (kind_is_fenced) {
+            retained.push(std::move(pending));
+            continue;
+        }
+        frames.push_back(std::move(pending.frame));
+    }
+    if (!retained.empty()) {
+        // A different kind may continue through a slow open/reopen.  Put the
+        // fenced kind back ahead of ingress that arrived while partitioning
+        // so its own FIFO order is unchanged when the lifecycle guard opens.
+        std::lock_guard<std::mutex> lock(pending_media_ingress_mutex_);
+        while (!pending_media_ingress_frames_.empty()) {
+            retained.push(std::move(pending_media_ingress_frames_.front()));
+            pending_media_ingress_frames_.pop();
+        }
+        pending_media_ingress_frames_.swap(retained);
+    }
+    if (frames.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending_media_dispatch_mutex_);
+        for (auto& frame : frames) {
+            PendingMediaDispatchItem item;
+            item.kind = PendingMediaDispatchItem::Kind::Frame;
+            item.frame = std::move(frame);
+            pending_media_dispatch_items_.push(std::move(item));
+        }
+        const auto depth = pending_media_dispatch_items_.size();
+        media_dispatch_queue_depth_.store(depth, std::memory_order_relaxed);
+        update_high_water(media_dispatch_queue_high_water_, depth);
+    }
+    notify_media_dispatch();
+}
+
 void AxtpAdapter::drain_pending_media_callbacks()
 {
+    // The AXTP pump is the sole production committer for ingress frames. It
+    // reconciles all source-state events from a poll before calling
+    // commit_pending_media_batch(), which makes the lifecycle entries precede
+    // frames in this FIFO. Letting this independent dispatcher commit ingress
+    // would race a poll halfway through an event/frame batch and could invert
+    // that order.
     std::lock_guard<std::recursive_mutex> dispatch_lock(
         media_callback_dispatch_mutex_);
     if (draining_media_callbacks_) {
@@ -2859,87 +4265,132 @@ void AxtpAdapter::drain_pending_media_callbacks()
     } drain_state_guard{draining_media_callbacks_};
 
     for (;;) {
-        std::queue<MediaStreamEvent> events;
-        std::queue<std::pair<std::string, MediaFrame>> frames;
+        PendingMediaDispatchItem item;
         {
-            std::lock_guard<std::mutex> lock(pending_media_event_mutex_);
-            events.swap(pending_media_stream_events_);
-        }
-        {
-            std::lock_guard<std::mutex> lock(pending_media_mutex_);
-            frames.swap(pending_media_frames_);
-        }
-        if (events.empty() && frames.empty()) {
-            return;
+            std::lock_guard<std::mutex> lock(pending_media_dispatch_mutex_);
+            if (pending_media_dispatch_items_.empty()) {
+                media_dispatch_queue_depth_.store(0, std::memory_order_relaxed);
+                return;
+            }
+            item = std::move(pending_media_dispatch_items_.front());
+            pending_media_dispatch_items_.pop();
+            media_dispatch_queue_depth_.store(
+                pending_media_dispatch_items_.size(), std::memory_order_relaxed);
         }
 
-        MediaFrameCallback callback;
-        MediaStreamEventCallback event_callback;
-        {
-            std::lock_guard<std::mutex> lock(media_callback_mutex_);
-            callback = media_frame_callback_;
-            event_callback = media_stream_event_callback_;
-        }
-        while (!events.empty()) {
-            auto event = std::move(events.front());
-            events.pop();
-            if (event_callback) {
-                try {
-                    event_callback(std::move(event));
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    diagnostics_.last_error = "media stream event callback threw";
-                }
+        if (item.kind == PendingMediaDispatchItem::Kind::StreamEvent) {
+            MediaStreamEventCallback event_callback;
+            {
+                std::lock_guard<std::mutex> lock(media_callback_mutex_);
+                event_callback = media_stream_event_callback_;
             }
-        }
-        while (!frames.empty()) {
-            auto entry = std::move(frames.front());
-            frames.pop();
-            if (!callback || !is_current_media_frame(entry.second)) {
+            if (!event_callback) {
                 continue;
             }
             try {
-                callback(entry.first, std::move(entry.second));
+                event_callback(std::move(item.event));
             } catch (...) {
                 std::lock_guard<std::mutex> lock(mutex_);
-                diagnostics_.last_error = "media frame callback threw";
+                diagnostics_.last_error = "media stream event callback threw";
             }
+            continue;
         }
+
+        MediaFrameCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(media_callback_mutex_);
+            callback = media_frame_callback_;
+        }
+        if (!callback || !is_current_media_frame(item.frame)) {
+            continue;
+        }
+        const auto device_id = item.frame.device_id;
+        if (control_in_flight_.load(std::memory_order_relaxed) != 0) {
+            media_frames_dispatched_during_control_call_.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+        try {
+            callback(device_id, std::move(item.frame));
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.last_error = "media frame callback threw";
+        }
+    }
+}
+
+void AxtpAdapter::notify_media_dispatch()
+{
+    {
+        std::lock_guard<std::mutex> lock(media_dispatch_mutex_);
+        ++media_dispatch_generation_;
+    }
+    media_dispatch_cv_.notify_one();
+}
+
+void AxtpAdapter::run_media_dispatcher()
+{
+    std::uint64_t observed_generation = 0;
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lock(media_dispatch_mutex_);
+            media_dispatch_cv_.wait(lock, [this, &observed_generation]() {
+                return stop_media_dispatcher_ ||
+                    media_dispatch_generation_ != observed_generation;
+            });
+            if (stop_media_dispatcher_) {
+                return;
+            }
+            observed_generation = media_dispatch_generation_;
+        }
+        drain_pending_media_callbacks();
     }
 }
 
 void AxtpAdapter::refresh_diagnostics_locked()
 {
+    diagnostics_.control_queue_depth =
+        control_queue_depth_.load(std::memory_order_relaxed);
+    diagnostics_.control_in_flight =
+        control_in_flight_.load(std::memory_order_relaxed);
+    diagnostics_.control_outstanding_high_water =
+        control_outstanding_high_water_.load(std::memory_order_relaxed);
+    diagnostics_.media_dispatch_queue_depth =
+        media_dispatch_queue_depth_.load(std::memory_order_relaxed);
+    diagnostics_.media_dispatch_queue_high_water =
+        media_dispatch_queue_high_water_.load(std::memory_order_relaxed);
+    diagnostics_.media_frames_dispatched_during_control_call =
+        media_frames_dispatched_during_control_call_.load(
+            std::memory_order_relaxed);
     diagnostics_.session_health = session_health_;
     diagnostics_.health_probe_failures = health_probe_failures_;
     diagnostics_.session_recoveries = session_recoveries_;
     diagnostics_.last_session_recovery_reason = last_session_recovery_reason_;
-#if AXENT_HAS_AXTP_HID_TRANSPORT
-    if (runtime_->client == nullptr || !runtime_->client->isConnected()) {
-        diagnostics_.open = false;
-        return;
-    }
-    const auto* transport = dynamic_cast<const axent::transport::HidTransport*>(runtime_->active_transport);
-    if (transport == nullptr) {
-        return;
-    }
-    const auto& options = transport->options();
-    const auto profile = transport->profile();
-    const auto stats = transport->stats();
-    diagnostics_.open = transport->isOpen();
-    diagnostics_.negotiated_input_report_size = options.inputReportSize;
-    diagnostics_.negotiated_output_report_size = options.outputReportSize;
-    diagnostics_.read_buffer_size = options.readBufferSize;
-    diagnostics_.preferred_frame_size = profile.preferredFrameSize;
-    diagnostics_.read_reports = stats.acceptedReports;
-    diagnostics_.write_reports = stats.writeReports;
-    diagnostics_.read_errors = stats.readErrors;
-    diagnostics_.write_errors = stats.writeErrors;
-    diagnostics_.dropped_reports = stats.droppedReportId;
-    diagnostics_.queued_reports = stats.queuedReports;
-#else
-    diagnostics_.open = runtime_->client != nullptr && runtime_->client->isConnected() && runtime_->client->isAppReady();
-#endif
+    diagnostics_.requested_probe_mode = config_.session_probe_mode;
+    diagnostics_.effective_probe_mode = effective_probe_mode_;
+    diagnostics_.negotiated_heartbeat_interval_ms = negotiated_heartbeat_interval_ms_;
+    diagnostics_.inbound_activity_generation = inbound_activity_generation_;
+    diagnostics_.heartbeat_attempts = heartbeat_attempts_;
+    diagnostics_.heartbeat_acks = heartbeat_acks_;
+    diagnostics_.heartbeat_timeouts = heartbeat_timeouts_;
+    diagnostics_.legacy_probe_attempts = legacy_probe_attempts_;
+    diagnostics_.legacy_probe_successes = legacy_probe_successes_;
+    diagnostics_.legacy_fallbacks = legacy_fallbacks_;
+    diagnostics_.legacy_fallback_reason = legacy_fallback_reason_;
+    const auto now = std::chrono::steady_clock::now();
+    const auto remainingMs = [now](std::chrono::steady_clock::time_point deadline) {
+        if (deadline.time_since_epoch().count() == 0 || deadline <= now) {
+            return std::uint64_t{0};
+        }
+        return static_cast<std::uint64_t>(
+            std::max<std::int64_t>(1,
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count()));
+    };
+    diagnostics_.video_retry.next_retry_in_ms = diagnostics_.video_retry.terminal
+        ? 0 : remainingMs(video_source_recovery_pending_
+            ? next_video_source_recovery_attempt_ : next_video_configure_attempt_);
+    diagnostics_.audio_retry.next_retry_in_ms = diagnostics_.audio_retry.terminal
+        ? 0 : remainingMs(audio_source_recovery_pending_
+            ? next_audio_source_recovery_attempt_ : next_audio_configure_attempt_);
 }
 
 void testing::AxtpAdapterTestSeam::disconnect_session(AxtpAdapter& adapter)
@@ -2995,11 +4446,33 @@ void testing::AxtpAdapterTestSeam::reopen_media_streams(
 {
     std::lock_guard<std::mutex> session_lock(adapter.session_mutex_);
     std::lock_guard<std::mutex> client_lock(adapter.client_mutex_);
-    adapter.configure_media_streams(device_id);
+    // Exercise an explicit same-ID receiver-pull replacement. Production
+    // configure_media_streams() intentionally leaves healthy active legs
+    // alone, so it cannot stand in for this lifecycle transition now that
+    // recovery retries are per kind.
+    if (adapter.config_.enable_video) {
+        adapter.configure_media_stream_kind(
+            device_id,
+            MediaKind::Video,
+            true,
+            false,
+            MediaStreamEventReason::SourceRecovery);
+    }
+    if (adapter.config_.enable_audio) {
+        adapter.configure_media_stream_kind(
+            device_id,
+            MediaKind::Audio,
+            true,
+            false,
+            MediaStreamEventReason::SourceRecovery);
+    }
 }
 
 void testing::AxtpAdapterTestSeam::drain_media_callbacks(AxtpAdapter& adapter)
 {
+    // Tests that stop the pump can explicitly advance its normally-owned
+    // ingress-to-dispatch boundary before draining callbacks.
+    adapter.commit_pending_media_batch();
     adapter.drain_pending_media_callbacks();
 }
 
