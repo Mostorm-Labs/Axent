@@ -81,6 +81,9 @@ public:
 
     std::vector<DeviceSnapshot> discover_devices() const;
     TransportDiagnostics transport_diagnostics() const;
+    // Return diagnostics for one physical device.  The no-argument form is
+    // retained for compatibility and returns the adapter's aggregate view.
+    TransportDiagnostics transport_diagnostics(const std::string& device_id) const;
     void upsert_device(DeviceSnapshot snapshot);
     SessionLease acquire_session(const SessionAcquireRequest& request);
     void release_session(const std::string& session_id, const std::string& reason);

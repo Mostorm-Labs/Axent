@@ -30,6 +30,7 @@ std::vector<DeviceSnapshot> MockAdapter::discover()
 {
     DeviceSnapshot device;
     device.id = "mock-device-001";
+    device.endpoint_id = "endpoint/mock-primary";
     device.adapter = "mock";
     device.identity.vendor = "Mostorm";
     device.identity.model = "MockCam";

@@ -11,13 +11,19 @@ namespace axent {
 struct RouteTarget {
     std::string adapter;
     std::string device_id;
+    std::string endpoint_id;
 };
 
 class RouteManager {
 public:
     explicit RouteManager(const DeviceManager& devices);
 
-    std::optional<RouteTarget> resolve(const std::string& device_id) const;
+    // Resolve a logical endpoint ID.  Only online devices are routable.
+    std::optional<RouteTarget> resolve_endpoint(const std::string& endpoint_id) const;
+    // Resolve a legacy device ID or serial number.  Kept for existing callers.
+    std::optional<RouteTarget> resolve_device(const std::string& device_id) const;
+    // Resolve either an endpoint ID (preferred) or a legacy device selector.
+    std::optional<RouteTarget> resolve(const std::string& destination) const;
     std::vector<DeviceSnapshot> list_devices() const;
 
 private:

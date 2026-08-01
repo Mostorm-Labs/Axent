@@ -1273,7 +1273,6 @@ struct AxentHost::Impl {
     std::vector<ControlOperationPtr> take_control_operations_locked(
         const std::optional<std::string>& session_id = std::nullopt);
     bool is_axtp_device_locked(const std::string& device_id) const;
-    std::optional<std::string> other_axtp_lease_device_locked(const std::string& device_id) const;
     bool has_lease_for_device_locked(const std::string& device_id) const;
 
     mutable std::mutex mutex;
@@ -1472,18 +1471,6 @@ bool AxentHost::Impl::is_axtp_device_locked(const std::string& device_id) const
     return device.has_value() && device->adapter == "axtp";
 }
 
-std::optional<std::string> AxentHost::Impl::other_axtp_lease_device_locked(
-    const std::string& device_id) const
-{
-    for (const auto& entry : leases) {
-        const auto& lease = entry.second;
-        if (lease.device_id != device_id && is_axtp_device_locked(lease.device_id)) {
-            return lease.device_id;
-        }
-    }
-    return std::nullopt;
-}
-
 bool AxentHost::Impl::has_lease_for_device_locked(const std::string& device_id) const
 {
     for (const auto& entry : leases) {
@@ -1658,6 +1645,15 @@ TransportDiagnostics AxentHost::transport_diagnostics() const
     return {};
 }
 
+TransportDiagnostics AxentHost::transport_diagnostics(const std::string& device_id) const
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (const auto* adapter = dynamic_cast<const AxtpAdapter*>(impl_->axtp_adapter.get())) {
+        return adapter->diagnostics(device_id);
+    }
+    return {};
+}
+
 void AxentHost::upsert_device(DeviceSnapshot snapshot)
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1699,17 +1695,6 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
         }
         if (device->adapter == "axtp") {
             session_adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
-            const auto other_device =
-                impl_->other_axtp_lease_device_locked(request.device_id);
-            if (other_device.has_value()) {
-                return {false,
-                        "",
-                        request.device_id,
-                        request.client_id,
-                        request.media,
-                        "AXTP session busy for active device " + *other_device,
-                        ControlStatus::Busy};
-            }
         }
         if (request.media && device->adapter == "axtp") {
             media_adapter = session_adapter;
@@ -1751,18 +1736,6 @@ SessionLease AxentHost::acquire_session(const SessionAcquireRequest& request)
                    != impl_->media_owner_session_by_device.end()) {
             return {false, "", request.device_id, request.client_id, false, "media lease busy",
                     ControlStatus::Busy};
-        }
-        if (device->adapter == "axtp") {
-            const auto other_device = impl_->other_axtp_lease_device_locked(request.device_id);
-            if (other_device.has_value()) {
-                return {false,
-                        "",
-                        request.device_id,
-                        request.client_id,
-                        request.media,
-                        "AXTP session busy for active device " + *other_device,
-                        ControlStatus::Busy};
-            }
         }
         const std::string session_id =
             impl_->sessions.device().open(request.device_id, device->adapter);
@@ -1942,7 +1915,7 @@ MediaStreamSubscriptionPtr AxentHost::subscribe_media_stream(
         auto& active = impl_->active_media_streams[session_id];
         if (auto* adapter = dynamic_cast<AxtpAdapter*>(impl_->axtp_adapter.get());
             adapter != nullptr && impl_->is_axtp_device_locked(lease->device_id)) {
-            for (auto descriptor : adapter->active_media_stream_descriptors()) {
+            for (auto descriptor : adapter->active_media_stream_descriptors(lease->device_id)) {
                 if (!descriptor.device_id.empty() && descriptor.device_id != lease->device_id) {
                     continue;
                 }

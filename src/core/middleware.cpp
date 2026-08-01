@@ -1,5 +1,7 @@
 #include "axent/core/middleware.hpp"
 
+#include <utility>
+
 namespace axent {
 
 Middleware::Middleware(Logger& logger)
@@ -9,23 +11,37 @@ Middleware::Middleware(Logger& logger)
 
 void Middleware::before_dispatch(const ControlCommand& command)
 {
-    logger_.audit("control.request", {
+    nlohmann::json fields = {
         {"requestId", command.request_id},
         {"method", command.method},
         {"deviceId", command.device_id},
         {"source", protocol_source_name(command.source)}
-    });
+    };
+    if (!command.src.empty()) {
+        fields["src"] = command.src;
+    }
+    if (!command.dst.empty()) {
+        fields["dst"] = command.dst;
+    }
+    logger_.audit("control.request", std::move(fields));
 }
 
 void Middleware::after_dispatch(const ControlCommand& command, const ControlResult& result)
 {
-    logger_.audit("control.response", {
+    nlohmann::json fields = {
         {"requestId", command.request_id},
         {"method", command.method},
         {"deviceId", command.device_id},
         {"source", protocol_source_name(command.source)},
         {"status", control_status_name(result.status)}
-    });
+    };
+    if (!command.src.empty()) {
+        fields["src"] = command.src;
+    }
+    if (!command.dst.empty()) {
+        fields["dst"] = command.dst;
+    }
+    logger_.audit("control.response", std::move(fields));
 }
 
 } // namespace axent

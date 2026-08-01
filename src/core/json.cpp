@@ -40,7 +40,7 @@ const char* control_status_name(ControlStatus status)
 
 nlohmann::json to_json(const DeviceSnapshot& device)
 {
-    return {
+    nlohmann::json result = {
         {"id", device.id},
         {"adapter", device.adapter},
         {"identity", {
@@ -57,6 +57,12 @@ nlohmann::json to_json(const DeviceSnapshot& device)
         }},
         {"status", {{"health", device.status.health}}}
     };
+    // Omit the extension for hand-built legacy snapshots that have not gone
+    // through DeviceManager; managed snapshots always carry endpoint_id.
+    if (!device.endpoint_id.empty()) {
+        result["endpointId"] = device.endpoint_id;
+    }
+    return result;
 }
 
 nlohmann::json to_json(const Capability& capability)

@@ -21,6 +21,18 @@ int main()
     if (!devices.get("dev-1") || devices.get("dev-1")->adapter != "mock") {
         throw std::runtime_error("device lookup mismatch");
     }
+    const auto generated_endpoint = devices.get("dev-1")->endpoint_id;
+    if (generated_endpoint.rfind("endpoint/", 0) != 0 ||
+        generated_endpoint.find("dev-1") != std::string::npos ||
+        generated_endpoint.find("SERIAL-1") != std::string::npos) {
+        throw std::runtime_error("device endpoint fallback must be opaque");
+    }
+    auto refreshed = device;
+    refreshed.status.health = "healthy";
+    devices.upsert(refreshed);
+    if (!devices.get("dev-1") || devices.get("dev-1")->endpoint_id != generated_endpoint) {
+        throw std::runtime_error("device endpoint must remain stable across refreshes");
+    }
     if (!devices.find_by_serial_number("SERIAL-1") || devices.find_by_serial_number("SERIAL-1")->id != "dev-1") {
         throw std::runtime_error("device serial lookup mismatch");
     }

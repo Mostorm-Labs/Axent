@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -10,6 +11,12 @@ namespace axent {
 
 class DeviceManager {
 public:
+    DeviceManager() = default;
+    DeviceManager(const DeviceManager& other);
+    DeviceManager& operator=(const DeviceManager& other);
+    DeviceManager(DeviceManager&& other) noexcept;
+    DeviceManager& operator=(DeviceManager&& other) noexcept;
+
     void upsert(DeviceSnapshot snapshot);
     void mark_offline(const std::string& id, const std::string& reason);
     std::optional<DeviceSnapshot> get(const std::string& id) const;
@@ -17,6 +24,7 @@ public:
     std::vector<DeviceSnapshot> list() const;
 
 private:
+    mutable std::mutex mutex_;
     std::vector<DeviceSnapshot> devices_;
 };
 

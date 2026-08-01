@@ -41,6 +41,12 @@ public:
     static void drain_media_callbacks(AxtpAdapter& adapter);
     static bool is_current_media_frame(const AxtpAdapter& adapter,
                                        const MediaFrame& frame);
+    // Hold a manager context operation for lifecycle-race regression tests.
+    // The callback runs without holding the context mutex.
+    static bool hold_device_context_operation(
+        AxtpAdapter& adapter,
+        const std::string& device_id,
+        const std::function<void()>& callback);
 };
 
 } // namespace axent::testing

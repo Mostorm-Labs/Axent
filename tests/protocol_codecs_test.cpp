@@ -33,6 +33,28 @@ void require_no_throw(Func&& func, const char* message)
 
 int main()
 {
+    const auto routed_json_rpc = axent::decode_control_message({
+        {"jsonrpc", "2.0"},
+        {"id", "routed-1"},
+        {"src", "controller:nearcast"},
+        {"dst", "endpoint/mock-primary"},
+        {"method", "status.get"},
+        {"params", {
+            {"deviceId", "must-not-reach-adapter"},
+            {"serialNumber", "must-not-reach-adapter-either"},
+            {"detail", "business-value"},
+        }}
+    });
+    require(routed_json_rpc.command.src == "controller:nearcast",
+            "json-rpc src endpoint mismatch");
+    require(routed_json_rpc.command.dst == "endpoint/mock-primary",
+            "json-rpc dst endpoint mismatch");
+    require(routed_json_rpc.command.device_id.empty(),
+            "endpoint-routed json-rpc must not invent a physical device id");
+    require_eq(routed_json_rpc.command.params,
+               {{"detail", "business-value"}},
+               "endpoint-routed json-rpc must remove legacy physical selectors");
+
     const auto json_rpc = axent::decode_control_message({
         {"jsonrpc", "2.0"},
         {"id", "jr-1"},
@@ -60,6 +82,17 @@ int main()
     require(legacy.command.device_id == "MOCK001", "legacy serialNumber device id mismatch");
     require(legacy.command.source == axent::ProtocolSource::LegacyOp, "legacy source mismatch");
     require(legacy.wire_method == "GetDeviceList", "legacy wire method mismatch");
+
+    const auto legacy_address_precedence = axent::decode_control_message({
+        {"op", 7},
+        {"d", {
+            {"id", "legacy-address-precedence"},
+            {"method", "GetDeviceInfo"},
+            {"params", {{"serialNumber", "SERIAL-WINS"}, {"deviceId", "device-loses"}}}
+        }}
+    });
+    require(legacy_address_precedence.command.device_id == "SERIAL-WINS",
+            "legacy serialNumber precedence must remain compatible");
 
     const auto legacy_device_id = axent::decode_control_message({
         {"op", 7},
@@ -91,6 +124,12 @@ int main()
     require(json_response.at("id") == "jr-1", "json-rpc response id mismatch");
     require(json_response.at("result").at("devices").is_array(), "json-rpc response result mismatch");
 
+    const auto routed_json_response = axent::encode_control_response(routed_json_rpc, result);
+    require(routed_json_response.at("src") == "endpoint/mock-primary",
+            "json-rpc response src must be the request destination");
+    require(routed_json_response.at("dst") == "controller:nearcast",
+            "json-rpc response dst must be the request source");
+
     const auto numeric_id_json_rpc = axent::decode_control_message({
         {"jsonrpc", "2.0"},
         {"id", 7},
@@ -110,6 +149,25 @@ int main()
     require(json_error.at("error").at("message") == "invalid_argument", "json-rpc error message mismatch");
     require(json_error.at("error").at("data").at("detail") == "bad params", "json-rpc error data mismatch");
 
+    const auto routed_json_error = axent::encode_control_response(routed_json_rpc, error);
+    require(routed_json_error.at("src") == "endpoint/mock-primary",
+            "json-rpc error src must be the request destination");
+    require(routed_json_error.at("dst") == "controller:nearcast",
+            "json-rpc error dst must be the request source");
+
+    const auto incomplete_routed_json_rpc = axent::decode_control_message({
+        {"jsonrpc", "2.0"},
+        {"id", "incomplete-routed-error"},
+        {"dst", "endpoint/mock-primary"},
+        {"method", "status.get"},
+        {"params", nlohmann::json::object()},
+    });
+    const auto incomplete_routed_json_error =
+        axent::encode_control_response(incomplete_routed_json_rpc, error);
+    require(!incomplete_routed_json_error.contains("src") &&
+                !incomplete_routed_json_error.contains("dst"),
+            "malformed json-rpc error must not expose a half routing envelope");
+
     axent::ControlResult busy_error;
     busy_error.status = axent::ControlStatus::Busy;
     const auto json_busy = axent::encode_control_response(json_rpc, busy_error);
@@ -126,6 +184,8 @@ int main()
         const auto malformed_json_rpc = axent::decode_control_message({
             {"jsonrpc", "2.0"},
             {"id", 12},
+            {"src", 42},
+            {"dst", false},
             {"method", {"status.get"}},
             {"params", {{"deviceId", 42}}}
         });
@@ -134,6 +194,8 @@ int main()
         require(malformed_json_rpc.command.request_id == "12", "numeric json-rpc id should be available for logs");
         require(malformed_json_rpc.command.method.empty(), "malformed json-rpc method should default empty");
         require(malformed_json_rpc.command.device_id.empty(), "malformed json-rpc device id should default empty");
+        require(malformed_json_rpc.command.src.empty(), "malformed json-rpc src should default empty");
+        require(malformed_json_rpc.command.dst.empty(), "malformed json-rpc dst should default empty");
         require(malformed_json_rpc.command.params.is_object(), "malformed json-rpc params should stay object");
     }, "malformed json-rpc decode should not throw");
 

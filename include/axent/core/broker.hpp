@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "axent/core/adapter.hpp"
@@ -22,6 +23,11 @@ public:
     ControlOperationPtr dispatch_async(
         const ControlCommand& command,
         ControlCallOptions options = {});
+    // Return the internal scheduling lane for a command. Known logical and
+    // legacy selectors are canonicalized to the physical route so aliases
+    // cannot execute concurrently against one device. Unknown selectors keep
+    // their own deterministic lane for FIFO/error handling.
+    std::string route_key(const ControlCommand& command) const;
 
 private:
     RouteManager& routes_;
@@ -30,6 +36,7 @@ private:
     struct AsyncState;
     std::shared_ptr<AsyncState> async_state_;
     // Registered adapters are non-owning and must outlive their broker registration.
+    mutable std::mutex adapters_mutex_;
     std::map<std::string, Adapter*> adapters_;
 };
 

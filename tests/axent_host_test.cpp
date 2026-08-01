@@ -623,6 +623,38 @@ int main()
     const auto devices_after_upsert = host.discover_devices();
     require(devices_after_upsert.size() == 2, "host should allow upserting a second device");
 
+    // Host lease ownership is device-scoped even when the concrete AXTP
+    // adapter is supplied later by an embedded product host.  Keeping this
+    // gate test independent of transport setup makes a regression back to a
+    // single global AXTP owner fail immediately.
+    const auto make_axtp_snapshot = [](std::string id, std::string serial) {
+        axent::DeviceSnapshot device;
+        device.id = std::move(id);
+        device.adapter = "axtp";
+        device.identity.serial_number = std::move(serial);
+        device.connection.online = true;
+        device.connection.transport = "hid";
+        device.status.health = "ready";
+        return device;
+    };
+    const auto isolated_axtp_a = make_axtp_snapshot(
+        "hid:0581:2582:HOST-ISOLATION-A", "HOST-ISOLATION-A");
+    const auto isolated_axtp_b = make_axtp_snapshot(
+        "hid:0581:2582:HOST-ISOLATION-B", "HOST-ISOLATION-B");
+    host.upsert_device(isolated_axtp_a);
+    host.upsert_device(isolated_axtp_b);
+    axent::SessionAcquireRequest isolated_axtp_request;
+    isolated_axtp_request.client_id = "host-isolation-a";
+    isolated_axtp_request.device_id = isolated_axtp_a.id;
+    const auto isolated_axtp_lease_a = host.acquire_session(isolated_axtp_request);
+    isolated_axtp_request.client_id = "host-isolation-b";
+    isolated_axtp_request.device_id = isolated_axtp_b.id;
+    const auto isolated_axtp_lease_b = host.acquire_session(isolated_axtp_request);
+    require(isolated_axtp_lease_a.acquired && isolated_axtp_lease_b.acquired,
+            "distinct AXTP devices should hold concurrent Host leases");
+    host.release_session(isolated_axtp_lease_a.session_id, "host isolation complete");
+    host.release_session(isolated_axtp_lease_b.session_id, "host isolation complete");
+
     axent::SessionAcquireRequest unknown_device_request;
     unknown_device_request.client_id = "nearcast-test";
     unknown_device_request.device_id = "missing-device";
@@ -853,6 +885,7 @@ int main()
 
     axent::AxentHost real_host;
     ScriptedAxtpTransport* scripted = nullptr;
+    ScriptedAxtpTransport* second_scripted = nullptr;
     axent::AxtpAdapter* real_adapter = nullptr;
     int transport_factory_calls = 0;
     axent::AxentHostOptions real_options;
@@ -861,10 +894,14 @@ int main()
     real_options.axtp_adapter_factory = [&](axent::AxtpAdapterConfig config) {
         auto adapter = axent::testing::AxtpAdapterTestSeam::make(
             std::move(config),
-            [&](const axent::transport::HidTransportOptions&) {
+            [&](const axent::transport::HidTransportOptions& options) {
                 ++transport_factory_calls;
                 auto transport = std::make_unique<ScriptedAxtpTransport>();
-                scripted = transport.get();
+                if (options.serialNumber == "NA20-SECOND") {
+                    second_scripted = transport.get();
+                } else {
+                    scripted = transport.get();
+                }
                 return transport;
             });
         real_adapter = adapter.get();
@@ -873,7 +910,7 @@ int main()
     require(real_host.start(std::move(real_options)), "real AXTP host should start");
 
     axent::DeviceSnapshot real_device;
-    real_device.id = "hid:0581:2581:NA20-SERIAL";
+    real_device.id = "hid:0581:2582:NA20-SERIAL";
     real_device.adapter = "axtp";
     real_device.identity.vendor = "Mostorm";
     real_device.identity.model = "NA20";
@@ -951,27 +988,58 @@ int main()
             "audio descriptor mapping mismatch");
 
     axent::DeviceSnapshot second_real_device = real_device;
-    second_real_device.id = "hid:0581:2581:NA20-SECOND";
+    second_real_device.id = "hid:0581:2582:NA20-SECOND";
     second_real_device.identity.serial_number = "NA20-SECOND";
     real_host.upsert_device(second_real_device);
     axent::SessionAcquireRequest second_real_request;
     second_real_request.client_id = "nearcast-second-real";
     second_real_request.device_id = second_real_device.id;
     second_real_request.media = true;
-    const auto busy_lease = real_host.acquire_session(second_real_request);
-    require(!busy_lease.acquired, "second real AXTP device must fail fast");
-    require(busy_lease.status == axent::ControlStatus::Busy,
-            "second real AXTP device must return typed Busy");
-    require(busy_lease.reason.find("AXTP session busy") != std::string::npos,
-            "second real AXTP Busy reason mismatch");
-    require(transport_factory_calls == 1,
-            "Busy acquisition must not construct a replacement transport");
-    const auto original_after_busy =
+    const auto second_real_lease = real_host.acquire_session(second_real_request);
+    require(second_real_lease.acquired,
+            "a second physical AXTP device should acquire concurrently");
+    require(second_real_lease.status == axent::ControlStatus::Ok,
+            "the second physical AXTP device should return typed Ok");
+    require(second_scripted != nullptr && transport_factory_calls == 2,
+            "each AXTP device should own an independent transport");
+    const auto second_real_call = real_host.call(
+        second_real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(second_real_call.status == axent::ControlStatus::Ok &&
+                second_scripted->saw_business_request,
+            "the second AXTP device should dispatch on its own transport");
+    require(real_host.transport_diagnostics(real_device.id).open &&
+                real_host.transport_diagnostics(second_real_device.id).open,
+            "Host diagnostics should report each physical AXTP session independently");
+    auto second_stream_sink = std::make_shared<RecordingMediaStreamSink>();
+    auto second_stream_subscription = real_host.subscribe_media_stream(
+        second_real_lease.session_id, second_stream_sink);
+    require(second_stream_subscription != nullptr &&
+                second_stream_sink->wait_for_records(2),
+            "the second AXTP media lease should replay only its descriptors");
+    const auto second_replayed_streams = second_stream_sink->records();
+    require(second_replayed_streams.size() == 2 &&
+                second_replayed_streams[0].descriptor.device_id == second_real_device.id &&
+                second_replayed_streams[1].descriptor.device_id == second_real_device.id &&
+                second_replayed_streams[0].key.session_id == second_real_lease.session_id &&
+                second_replayed_streams[1].key.session_id == second_real_lease.session_id,
+            "same-ID streams must remain bound to the second device and lease");
+    second_scripted->injectStream(
+        0x1001, 8, 8000, {0x00, 0x00, 0x01, 0x65});
+    require(second_stream_sink->wait_for_records(3) &&
+                stream_sink->records().size() == 2,
+            "a frame from B must not be delivered to A's same-ID stream");
+    const auto original_after_second_open =
         real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
-    require(original_after_busy.status == axent::ControlStatus::Ok,
-            "Busy acquisition must not disconnect the original AXTP session");
-    require(transport_factory_calls == 1,
-            "original session should remain attached after Busy acquisition");
+    require(original_after_second_open.status == axent::ControlStatus::Ok,
+            "opening a second AXTP device must not disconnect the first");
+    real_host.release_session(second_real_lease.session_id,
+                              "second device isolation verified");
+    const auto original_after_second_release =
+        real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(original_after_second_release.status == axent::ControlStatus::Ok &&
+                real_host.transport_diagnostics(real_device.id).open &&
+                !real_host.transport_diagnostics(second_real_device.id).open,
+            "releasing the second AXTP device must not reset the first");
 
     axent::MediaRelayOptions real_relay_options;
     real_relay_options.max_frames = 4;
@@ -1486,19 +1554,25 @@ int main()
             "release must end each stream lifecycle before SubscriptionClosed");
 
     const auto factory_calls_after_media_release = transport_factory_calls;
-    const auto busy_after_media_release = real_host.acquire_session(second_real_request);
-    require(!busy_after_media_release.acquired,
-            "releasing A media lease must not let B replace a remaining A control lease");
-    require(busy_after_media_release.status == axent::ControlStatus::Busy,
-            "B must remain typed Busy while A still has a control lease");
-    require(transport_factory_calls == factory_calls_after_media_release,
-            "B Busy after A media release must not replace A transport");
+    const auto second_after_media_release =
+        real_host.acquire_session(second_real_request);
+    require(second_after_media_release.acquired,
+            "B should acquire while A retains a control-only lease");
+    require(second_after_media_release.status == axent::ControlStatus::Ok &&
+                transport_factory_calls == factory_calls_after_media_release + 1,
+            "reopening B should create only B's replacement transport");
+    const auto second_after_media_release_call = real_host.call(
+        second_after_media_release.session_id, "audio.getAlgorithmConfig", {});
+    require(second_after_media_release_call.status == axent::ControlStatus::Ok,
+            "B should remain controllable while A has a control lease");
     const auto control_after_media_release =
         real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
     require(control_after_media_release.status == axent::ControlStatus::Ok,
             "A control lease must remain usable after its media lease is released");
-    require(transport_factory_calls == factory_calls_after_media_release,
-            "A control call after media release must keep the existing transport");
+    require(transport_factory_calls == factory_calls_after_media_release + 1,
+            "A control call must keep A's existing transport while B is open");
+    real_host.release_session(second_after_media_release.session_id,
+                              "second device media complete");
 
     const auto replacement_lease = real_host.acquire_session(real_request);
     require(replacement_lease.acquired, "replacement media lease should be acquired");

@@ -44,6 +44,51 @@ public:
     }
 };
 
+class SyncOnlyAdapter final : public axent::Adapter {
+public:
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"sync-only", "Sync-only lazy session adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        axent::DeviceSnapshot device;
+        device.id = "physical-sync-only";
+        device.endpoint_id = "endpoint/sync-only";
+        device.adapter = "sync-only";
+        device.connection.online = true;
+        return {device};
+    }
+
+    axent::ControlResult call(
+        const std::string&, const std::string&, const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::Ok, {{"path", "sync"}}};
+    }
+
+    axent::ControlOperationPtr call_async(
+        const std::string&,
+        const std::string&,
+        const nlohmann::json&,
+        axent::ControlCallOptions) override
+    {
+        return axent::make_completed_control_operation(
+            {axent::ControlStatus::Unavailable, {{"path", "async"}}});
+    }
+
+    axent::ControlResult start_firmware_update(
+        const std::string&, const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+};
+
 void require(bool condition, const char* message)
 {
     if (!condition) {
@@ -98,6 +143,104 @@ int main()
             "legacy GetDeviceList should succeed");
     require(legacy_device_list.at("d").at("result").at("devices").size() == 2,
             "legacy GetDeviceList should return managed devices");
+    require(legacy_device_list.at("d").at("result").at("devices").at(0).contains("endpointId"),
+            "managed device snapshots should expose a stable endpointId");
+
+    const auto mock_route = routes.resolve_endpoint("endpoint/mock-primary");
+    require(mock_route.has_value(), "mock endpoint should resolve");
+    require(mock_route->device_id == "mock-device-001",
+            "mock endpoint should resolve to the physical mock device");
+    require(mock_route->endpoint_id == "endpoint/mock-primary",
+            "resolved route should preserve the logical endpoint");
+
+    // Duplicate logical endpoints are ambiguous and must fail closed rather
+    // than selecting whichever physical device was inserted first.
+    axent::DeviceManager collision_devices;
+    auto collision_a = adapter.discover().front();
+    auto collision_b = collision_a;
+    collision_a.id = "collision-a";
+    collision_b.id = "collision-b";
+    collision_a.endpoint_id = "endpoint/duplicate";
+    collision_b.endpoint_id = "endpoint/duplicate";
+    collision_devices.upsert(collision_a);
+    collision_devices.upsert(collision_b);
+    axent::RouteManager collision_routes(collision_devices);
+    require(!collision_routes.resolve_endpoint("endpoint/duplicate").has_value(),
+            "duplicate logical endpoints must fail closed");
+
+    const auto routed_status = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "endpoint-status"},
+        {"src", "controller:nearcast"},
+        {"dst", "endpoint/mock-primary"},
+        {"method", "status.get"},
+        {"params", nlohmann::json::object()},
+    });
+    require(routed_status.at("result").at("health") == "ok",
+            "endpoint-routed JSON-RPC call should reach the mock device");
+    require(routed_status.at("src") == "endpoint/mock-primary" &&
+                routed_status.at("dst") == "controller:nearcast",
+            "endpoint-routed JSON-RPC response should reverse src and dst");
+
+    const auto dst_takes_precedence = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "endpoint-precedence"},
+        {"src", "controller:nearcast"},
+        {"dst", "endpoint/mock-primary"},
+        {"method", "status.get"},
+        {"params", {{"deviceId", "throw-device-001"}}},
+    });
+    require(dst_takes_precedence.at("result").at("health") == "ok",
+            "logical dst must take precedence over legacy deviceId");
+
+    const auto missing_endpoint = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "missing-endpoint"},
+        {"src", "controller:nearcast"},
+        {"dst", "endpoint/missing"},
+        {"method", "status.get"},
+        {"params", nlohmann::json::object()},
+    });
+    require(missing_endpoint.at("error").at("code") == -32004,
+            "unknown logical endpoint should report a stable NotFound error");
+    require(missing_endpoint.at("src") == "endpoint/missing" &&
+                missing_endpoint.at("dst") == "controller:nearcast",
+            "unknown endpoint errors should retain the reversible routing envelope");
+
+    const auto incomplete_envelope = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "incomplete-envelope"},
+        {"dst", "endpoint/mock-primary"},
+        {"method", "status.get"},
+        {"params", nlohmann::json::object()},
+    });
+    require(incomplete_envelope.at("error").at("code") == -32602,
+            "endpoint-routed JSON-RPC must provide src and dst together");
+
+    // WebSocket/ControlPlane dispatch is the synchronous lazy-connect
+    // boundary. A real AxtpAdapter uses this path to open the destination's
+    // HID session; Host lease calls use Broker::dispatch_async separately.
+    SyncOnlyAdapter sync_only_adapter;
+    axent::DeviceManager sync_only_devices;
+    sync_only_devices.upsert(sync_only_adapter.discover().front());
+    axent::RouteManager sync_only_routes(sync_only_devices);
+    axent::Logger sync_only_logger;
+    axent::Middleware sync_only_middleware(sync_only_logger);
+    axent::FlowControl sync_only_flow;
+    axent::Broker sync_only_broker(
+        sync_only_routes, sync_only_middleware, sync_only_flow);
+    sync_only_broker.register_adapter(sync_only_adapter);
+    axent::ControlPlane sync_only_control_plane(sync_only_broker);
+    const auto lazy_connect_response = sync_only_control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "lazy-connect"},
+        {"src", "controller:nearcast"},
+        {"dst", "endpoint/sync-only"},
+        {"method", "status.get"},
+        {"params", nlohmann::json::object()},
+    });
+    require(lazy_connect_response.at("result").at("path") == "sync",
+            "ControlPlane must use the adapter sync path for lazy session open");
 
     const auto legacy_info_by_serial = control_plane.handle_text({
         {"op", 7},

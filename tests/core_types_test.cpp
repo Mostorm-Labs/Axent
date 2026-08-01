@@ -9,6 +9,7 @@ int main()
 {
     axent::DeviceSnapshot device;
     device.id = "mock-device-001";
+    device.endpoint_id = "endpoint/mock-primary";
     device.adapter = "mock";
     device.identity.vendor = "Mostorm";
     device.identity.model = "MockCam";
@@ -19,6 +20,7 @@ int main()
 
     assert_json_eq(axent::to_json(device), {
         {"id", "mock-device-001"},
+        {"endpointId", "endpoint/mock-primary"},
         {"adapter", "mock"},
         {"identity", {
             {"vendor", "Mostorm"},

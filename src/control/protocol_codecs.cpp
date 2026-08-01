@@ -65,6 +65,26 @@ nlohmann::json object_or_empty(const nlohmann::json& object, const char* key)
     return *found;
 }
 
+void decode_routing_fields(const nlohmann::json& object, ControlCommand& command)
+{
+    command.src = optional_string(object, "src");
+    command.dst = optional_string(object, "dst");
+}
+
+void fill_legacy_destination(ControlCommand& command,
+                             const nlohmann::json& params,
+                             bool prefer_serial_number)
+{
+    // deviceId/serialNumber are the pre-endpoint addressing contract.  Keep
+    // normalizing them into device_id so existing adapters continue to work.
+    const auto device_id = optional_string(params, "deviceId");
+    const auto serial_number = optional_string(params, "serialNumber");
+    command.device_id = prefer_serial_number ? serial_number : device_id;
+    if (command.device_id.empty()) {
+        command.device_id = prefer_serial_number ? device_id : serial_number;
+    }
+}
+
 int int_or_default(const nlohmann::json& object, const char* key, int default_value)
 {
     if (!object.is_object()) {
@@ -106,7 +126,18 @@ DecodedControlMessage decode_control_message(const nlohmann::json& message)
         decoded.command.request_id = request_id_for_log(decoded.json_rpc_id);
         decoded.command.method = optional_string(message, "method");
         decoded.command.params = object_or_empty(message, "params");
-        decoded.command.device_id = optional_string(decoded.command.params, "deviceId");
+        decode_routing_fields(message, decoded.command);
+        // Once a logical destination is present, physical selectors in
+        // params must not become a routing or downstream device identity.
+        // Treat them as deprecated envelope fields and remove them before
+        // invoking the adapter; endpoint-aware methods receive one canonical
+        // destination only. They remain accepted for requests that omit dst.
+        if (decoded.command.dst.empty()) {
+            fill_legacy_destination(decoded.command, decoded.command.params, false);
+        } else if (decoded.command.params.is_object()) {
+            decoded.command.params.erase("deviceId");
+            decoded.command.params.erase("serialNumber");
+        }
         decoded.wire_method = decoded.command.method;
         return decoded;
     }
@@ -117,24 +148,40 @@ DecodedControlMessage decode_control_message(const nlohmann::json& message)
     decoded.wire_method = optional_string(d, "method");
     decoded.command.method = map_legacy_method(decoded.wire_method);
     decoded.command.params = object_or_empty(d, "params");
-    decoded.command.device_id = optional_string(decoded.command.params, "serialNumber");
-    if (decoded.command.device_id.empty()) {
-        decoded.command.device_id = optional_string(decoded.command.params, "deviceId");
-    }
+    fill_legacy_destination(decoded.command, decoded.command.params, true);
     return decoded;
 }
+
+namespace {
+
+void add_json_rpc_routing_envelope(nlohmann::json& response,
+                                   const DecodedControlMessage& decoded)
+{
+    // Routing is directional: a reply travels from the requested endpoint
+    // back to the source endpoint.  Do not emit a half-envelope for malformed
+    // requests where only one field was a string; ControlPlane reports the
+    // validation error without inventing the missing peer.
+    if (!decoded.command.dst.empty() && !decoded.command.src.empty()) {
+        response["src"] = decoded.command.dst;
+        response["dst"] = decoded.command.src;
+    }
+}
+
+} // namespace
 
 nlohmann::json encode_control_response(const DecodedControlMessage& decoded, const ControlResult& result)
 {
     if (decoded.command.source == ProtocolSource::JsonRpc) {
         if (is_success(result.status)) {
-            return {
+            auto response = nlohmann::json{
                 {"jsonrpc", "2.0"},
                 {"id", decoded.json_rpc_id},
                 {"result", result.body},
             };
+            add_json_rpc_routing_envelope(response, decoded);
+            return response;
         }
-        return {
+        auto response = nlohmann::json{
             {"jsonrpc", "2.0"},
             {"id", decoded.json_rpc_id},
             {"error", {
@@ -143,6 +190,8 @@ nlohmann::json encode_control_response(const DecodedControlMessage& decoded, con
                 {"data", result.body},
             }},
         };
+        add_json_rpc_routing_envelope(response, decoded);
+        return response;
     }
 
     return {

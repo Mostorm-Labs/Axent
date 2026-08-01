@@ -44,22 +44,98 @@ Broker::~Broker()
 
 void Broker::register_adapter(Adapter& adapter)
 {
+    std::lock_guard<std::mutex> lock(adapters_mutex_);
     adapters_[adapter.metadata().name] = &adapter;
 }
 
 void Broker::unregister_adapter(const std::string& name)
 {
+    std::lock_guard<std::mutex> lock(adapters_mutex_);
     adapters_.erase(name);
+}
+
+std::string Broker::route_key(const ControlCommand& command) const
+{
+    if (command.method == "devices.list") {
+        return "control-plane";
+    }
+    const auto target = !command.dst.empty()
+        ? routes_.resolve_endpoint(command.dst)
+        : routes_.resolve_device(command.device_id);
+    if (target.has_value()) {
+        return "physical:" + target->adapter + ":" + target->device_id;
+    }
+    if (!command.dst.empty()) {
+        return "endpoint:" + command.dst;
+    }
+    if (!command.device_id.empty()) {
+        return "legacy-device:" + command.device_id;
+    }
+    return "control-plane";
 }
 
 ControlResult Broker::dispatch(const ControlCommand& command)
 {
-    auto operation = dispatch_async(command);
-    return operation
-        ? operation->wait()
-        : ControlResult{
-              ControlStatus::InternalError,
-              {{"error", "adapter returned no control operation"}}};
+    // The synchronous control plane is also the lazy connection boundary for
+    // daemon/WebSocket callers. In particular AxtpAdapter::call() may open the
+    // destination's physical session, whereas call_async() intentionally
+    // never blocks its submitting thread on a HID handshake. Host/session
+    // callers continue to use dispatch_async() after lease acquisition.
+    middleware_.before_dispatch(command);
+    ControlResult result;
+    try {
+        if (flow_control_.snapshot().paused) {
+            flow_control_.record_drop();
+            result = {ControlStatus::Unavailable, {{"error", "flow paused"}}};
+        } else if (command.source == ProtocolSource::JsonRpc &&
+                   command.src.empty() != command.dst.empty()) {
+            result = {ControlStatus::InvalidArgument,
+                      {{"error", "JSON-RPC src and dst must be provided together"}}};
+        } else if (command.method == "devices.list") {
+            result = {ControlStatus::Ok, device_list_body(routes_.list_devices())};
+        } else {
+            const auto target = !command.dst.empty()
+                ? routes_.resolve_endpoint(command.dst)
+                : routes_.resolve_device(command.device_id);
+            if (!target) {
+                result = {ControlStatus::NotFound, {{"error", "route not found"}}};
+            } else {
+                Adapter* adapter = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(adapters_mutex_);
+                    const auto found = adapters_.find(target->adapter);
+                    if (found != adapters_.end()) {
+                        adapter = found->second;
+                    }
+                }
+                if (adapter == nullptr) {
+                    result = {ControlStatus::Unavailable,
+                              {{"error", "adapter unavailable"}}};
+                } else if (command.method == "firmware.update") {
+                    if (!command.params.is_object() ||
+                        !command.params.contains("file") ||
+                        !command.params.at("file").is_string()) {
+                        result = {ControlStatus::InvalidArgument,
+                                  {{"error", "invalid firmware file"}}};
+                    } else {
+                        result = adapter->start_firmware_update(
+                            target->device_id,
+                            command.params.at("file").get<std::string>());
+                    }
+                } else {
+                    result = adapter->call(
+                        target->device_id, command.method, command.params);
+                }
+            }
+        }
+    } catch (const std::exception& error) {
+        result = {ControlStatus::InternalError, {{"error", error.what()}}};
+    } catch (...) {
+        result = {ControlStatus::InternalError,
+                  {{"error", "unknown error"}}};
+    }
+    middleware_.after_dispatch(command, result);
+    return result;
 }
 
 ControlOperationPtr Broker::dispatch_async(
@@ -80,17 +156,34 @@ ControlOperationPtr Broker::dispatch_async(
             flow_control_.record_drop();
             operation = make_completed_control_operation(
                 {ControlStatus::Unavailable, {{"error", "flow paused"}}});
+        } else if (command.source == ProtocolSource::JsonRpc &&
+                   command.src.empty() != command.dst.empty()) {
+            operation = make_completed_control_operation(
+                {ControlStatus::InvalidArgument,
+                 {{"error", "JSON-RPC src and dst must be provided together"}}});
         } else if (command.method == "devices.list") {
             operation = make_completed_control_operation(
                 {ControlStatus::Ok, device_list_body(routes_.list_devices())});
         } else {
-            const auto target = routes_.resolve(command.device_id);
+            // `dst` is the logical endpoint contract for JSON-RPC.  Route it
+            // before consulting the legacy physical selector kept in
+            // device_id (which may contain a serial number).
+            const auto target = !command.dst.empty()
+                ? routes_.resolve_endpoint(command.dst)
+                : routes_.resolve_device(command.device_id);
             if (!target) {
                 operation = make_completed_control_operation(
                     {ControlStatus::NotFound, {{"error", "route not found"}}});
             } else {
-                const auto adapter = adapters_.find(target->adapter);
-                if (adapter == adapters_.end()) {
+                Adapter* adapter = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(adapters_mutex_);
+                    const auto found = adapters_.find(target->adapter);
+                    if (found != adapters_.end()) {
+                        adapter = found->second;
+                    }
+                }
+                if (adapter == nullptr) {
                     operation = make_completed_control_operation(
                         {ControlStatus::Unavailable,
                          {{"error", "adapter unavailable"}}});
@@ -102,12 +195,12 @@ ControlOperationPtr Broker::dispatch_async(
                              {{"error", "invalid firmware file"}}});
                     } else {
                         operation = make_completed_control_operation(
-                            adapter->second->start_firmware_update(
+                            adapter->start_firmware_update(
                                 target->device_id,
                                 command.params.at("file").get<std::string>()));
                     }
                 } else {
-                    operation = adapter->second->call_async(
+                    operation = adapter->call_async(
                         target->device_id,
                         command.method,
                         command.params,

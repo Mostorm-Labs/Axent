@@ -4,6 +4,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
@@ -675,47 +676,474 @@ int main()
         defaults, [](const axent::transport::HidTransportOptions&) {
         return std::unique_ptr<axtp::ITransport>{};
     });
-    const auto result = unavailable_adapter->call("hid:0581:2581:NA20-SERIAL", "status.get", {});
+    const auto result = unavailable_adapter->call("hid:0581:2582:NA20-SERIAL", "status.get", {});
     require(result.status == axent::ControlStatus::Unavailable,
             "real adapter without a transport should be unavailable");
     require(result.body.at("error") == "AXTP HID transport target is unavailable",
             "unavailable transport message mismatch");
     const auto firmware_route = unavailable_adapter->start_firmware_update(
-        "hid:0581:2581:NA20-SERIAL", "firmware.bin");
+        "hid:0581:2582:NA20-SERIAL", "firmware.bin");
     require(firmware_route.status == axent::ControlStatus::Unavailable &&
                 firmware_route.body.at("error") ==
                     "AXTP firmware update skeleton only",
             "real adapter firmware route must remain unavailable");
 
-    ScriptedAxtpTransport* scripted = nullptr;
+    // Concurrent first use of one canonical physical ID must create and open
+    // exactly one leaf runtime. Both callers then share that device context.
+    {
+        auto concurrent_config = defaults;
+        concurrent_config.enable_media = false;
+        concurrent_config.enable_session_health_probe = false;
+        std::atomic<int> concurrent_factory_calls{0};
+        std::atomic<int> concurrent_open_calls{0};
+        auto concurrent_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            concurrent_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                ++concurrent_factory_calls;
+                class CountingOpenTransport final : public ScriptedAxtpTransport {
+                public:
+                    explicit CountingOpenTransport(std::atomic<int>& open_calls)
+                        : open_calls_(open_calls)
+                    {
+                    }
+
+                    void open() override
+                    {
+                        ++open_calls_;
+                        ScriptedAxtpTransport::open();
+                    }
+
+                private:
+                    std::atomic<int>& open_calls_;
+                };
+                return std::make_unique<CountingOpenTransport>(
+                    concurrent_open_calls);
+            });
+        std::atomic<int> concurrent_ready{0};
+        std::atomic<bool> concurrent_start{false};
+        axent::ControlResult concurrent_first;
+        axent::ControlResult concurrent_second;
+        const auto concurrent_call = [&](axent::ControlResult& call_result) {
+            ++concurrent_ready;
+            while (!concurrent_start.load()) {
+                std::this_thread::yield();
+            }
+            call_result = concurrent_adapter->call(
+                "hid:0581:2582:NA20-CONCURRENT",
+                "audio.getAlgorithmConfig", {});
+        };
+        std::thread concurrent_thread_a(
+            concurrent_call, std::ref(concurrent_first));
+        std::thread concurrent_thread_b(
+            concurrent_call, std::ref(concurrent_second));
+        while (concurrent_ready.load() != 2) {
+            std::this_thread::yield();
+        }
+        concurrent_start.store(true);
+        concurrent_thread_a.join();
+        concurrent_thread_b.join();
+
+        require(concurrent_first.status == axent::ControlStatus::Ok &&
+                    concurrent_second.status == axent::ControlStatus::Ok,
+                "concurrent calls for one physical device should both succeed");
+        require(concurrent_factory_calls.load() == 1 &&
+                    concurrent_open_calls.load() == 1,
+                "concurrent first use must create and open one physical runtime");
+    }
+
+    // A broad HID selector is discovery-only. It cannot turn an arbitrary
+    // logical name into the first matching physical handle.
+    {
+        std::atomic<int> broad_selector_factory_calls{0};
+        auto broad_selector_adapter =
+            axent::testing::AxtpAdapterTestSeam::make(
+                defaults,
+                [&](const axent::transport::HidTransportOptions&) {
+                    ++broad_selector_factory_calls;
+                    return std::make_unique<ScriptedAxtpTransport>();
+                });
+        const auto broad_selector_result = broad_selector_adapter->call(
+            "logical-device-without-physical-selector",
+            "audio.getAlgorithmConfig", {});
+        require(broad_selector_result.status == axent::ControlStatus::NotFound,
+                "broad selector must reject a non-canonical device id");
+        for (const auto& malformed_id : std::vector<std::string>{
+                 "hid:581:2582:SHORT-VID",
+                 "hid:+581:2582:SIGNED-VID",
+                 "hid:0581:258:SHORT-PID",
+                 "hid:0581:25g2:NON-HEX-PID",
+                 "hid:0581:25A2:UPPERCASE-PID",
+                 "hid:0581:2582:"}) {
+            const auto malformed_result = broad_selector_adapter->call(
+                malformed_id, "audio.getAlgorithmConfig", {});
+            require(malformed_result.status == axent::ControlStatus::NotFound,
+                    "broad selector must reject malformed canonical HID ids");
+        }
+        const auto mismatched_pid_result = broad_selector_adapter->call(
+            "hid:0581:2581:UNCONFIGURED-PID",
+            "audio.getAlgorithmConfig", {});
+        require(mismatched_pid_result.status == axent::ControlStatus::NotFound,
+                "canonical HID id must not bypass the configured PID allowlist");
+        require(broad_selector_factory_calls.load() == 0,
+                "rejected broad-selector routing must not construct a runtime");
+    }
+
+    // Retiring a context must wait for an operation that already captured its
+    // shared_ptr, while new callers fail fast until the old leaf is closed.
+    // This models a WS lazy-open racing with the Host's final-lease reset.
+    {
+        auto lifecycle_config = defaults;
+        lifecycle_config.enable_media = false;
+        lifecycle_config.enable_session_health_probe = false;
+        std::atomic<int> lifecycle_factory_calls{0};
+        auto lifecycle_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            lifecycle_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                ++lifecycle_factory_calls;
+                return std::make_unique<ScriptedAxtpTransport>();
+            });
+        const std::string lifecycle_device = "hid:0581:2582:LIFECYCLE-RACE";
+        require(lifecycle_adapter->call(
+                    lifecycle_device, "audio.getAlgorithmConfig", {})
+                    .status == axent::ControlStatus::Ok,
+                "lifecycle race fixture should open its first context");
+
+        std::atomic<bool> holder_entered{false};
+        std::atomic<bool> holder_release{false};
+        std::atomic<bool> holder_ok{false};
+        std::thread holder([&]() {
+            holder_ok.store(
+                axent::testing::AxtpAdapterTestSeam::hold_device_context_operation(
+                    *lifecycle_adapter,
+                    lifecycle_device,
+                    [&]() {
+                        holder_entered.store(true);
+                        while (!holder_release.load()) {
+                            std::this_thread::yield();
+                        }
+                    }));
+        });
+        require(wait_until([&]() { return holder_entered.load(); }),
+                "lifecycle holder should enter the context gate");
+
+        std::atomic<bool> reset_done{false};
+        std::thread reset([&]() {
+            axent::testing::AxtpAdapterTestSeam::release_session(
+                *lifecycle_adapter, lifecycle_device);
+            reset_done.store(true);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        require(!reset_done.load(),
+                "context reset must wait for an in-flight manager operation");
+
+        bool saw_retiring = false;
+        const auto retiring_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < retiring_deadline &&
+               !saw_retiring) {
+            const auto result = lifecycle_adapter->call(
+                lifecycle_device, "audio.getAlgorithmConfig", {});
+            saw_retiring = result.status == axent::ControlStatus::NotFound;
+            if (!saw_retiring) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+        holder_release.store(true);
+        holder.join();
+        reset.join();
+        require(holder_ok.load(), "lifecycle holder should complete normally");
+        require(saw_retiring,
+                "new calls must not create a replacement while a context retires");
+        require(reset_done.load(), "context reset should complete after the holder exits");
+
+        const auto reopened = lifecycle_adapter->call(
+            lifecycle_device, "audio.getAlgorithmConfig", {});
+        require(reopened.status == axent::ControlStatus::Ok,
+                "a device should reopen after its retired context is fully closed");
+        require(lifecycle_factory_calls.load() == 2,
+                "retirement must prevent duplicate leaf creation during reset");
+    }
+
+    auto session_config = defaults;
+    session_config.enable_media = false;
+    session_config.enable_session_health_probe = false;
+    std::vector<ScriptedAxtpTransport*> session_transports;
+    std::vector<std::string> session_transport_serials;
     int session_transport_factory_calls = 0;
     auto session_adapter = axent::testing::AxtpAdapterTestSeam::make(
-        defaults, [&](const axent::transport::HidTransportOptions&) {
+        session_config, [&](const axent::transport::HidTransportOptions& options) {
         ++session_transport_factory_calls;
         auto transport = std::make_unique<ScriptedAxtpTransport>();
-        scripted = transport.get();
+        session_transports.push_back(transport.get());
+        session_transport_serials.push_back(options.serialNumber);
         return transport;
     });
-    const auto call_result = session_adapter->call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+    const std::string first_session_device = "hid:0581:2582:NA20-FIRST";
+    const std::string second_session_device = "hid:0581:2582:NA20-SECOND";
+    const auto call_result = session_adapter->call(
+        first_session_device, "audio.getAlgorithmConfig", {});
     require(call_result.status == axent::ControlStatus::Ok,
             std::string("scripted AXTP call should succeed: ") + call_result.body.dump());
     require(call_result.body.at("ok") == true, "scripted AXTP response should be parsed");
-    require(scripted != nullptr, "scripted transport should be constructed");
-    require(scripted->saw_control_open, "AXTP session should send control open");
-    require(scripted->saw_identify, "AXTP session should send identify");
-    require(scripted->saw_business_request, "AXTP call should send a business request");
-    require(scripted->last_business_sid == "axent-session-1", "business request should use app-ready sid");
+    require(session_transports.size() == 1 && session_transports[0] != nullptr,
+            "first scripted transport should be constructed");
+    require(session_transports[0]->saw_control_open,
+            "first AXTP session should send control open");
+    require(session_transports[0]->saw_identify,
+            "first AXTP session should send identify");
+    require(session_transports[0]->saw_business_request,
+            "first AXTP call should send a business request");
+    require(session_transports[0]->last_business_sid == "axent-session-1",
+            "first business request should use app-ready sid");
 
-    axent::testing::AxtpAdapterTestSeam::disconnect_session(*session_adapter);
-    std::string disconnected_error;
-    const auto disconnected_busy = session_adapter->open_session_status(
-        "hid:0581:2581:NA20-SECOND", disconnected_error);
-    require(disconnected_busy == axent::ControlStatus::Busy,
-            "a disconnected but unreleased AXTP owner must still reject a second device");
-    require(disconnected_error.find("AXTP session busy") != std::string::npos,
-            "disconnected AXTP owner Busy reason mismatch");
-    require(session_transport_factory_calls == 1,
-            "disconnected ownership must not construct a second transport before release");
+    std::string second_session_error;
+    const auto second_session_status = session_adapter->open_session_status(
+        second_session_device, second_session_error, false);
+    require(second_session_status == axent::ControlStatus::Ok,
+            std::string("a second AXTP device should open independently: ") +
+                second_session_error);
+    const auto second_call_result = session_adapter->call(
+        second_session_device, "audio.getAlgorithmConfig", {});
+    require(second_call_result.status == axent::ControlStatus::Ok &&
+                second_call_result.body.at("ok") == true,
+            "control on the second AXTP device should succeed while the first is open");
+    require(session_transport_factory_calls == 2 && session_transports.size() == 2,
+            "two devices must own two physical AXTP transports");
+    require(session_transport_serials.size() == 2 &&
+                session_transport_serials[0] == "NA20-FIRST" &&
+                session_transport_serials[1] == "NA20-SECOND",
+            "each device context must open its own serial-number selector");
+    require(session_adapter->diagnostics(first_session_device).open &&
+                session_adapter->diagnostics(second_session_device).open,
+            "both AXTP device diagnostics should remain open concurrently");
+
+    axent::testing::AxtpAdapterTestSeam::release_session(
+        *session_adapter, first_session_device);
+    require(!session_adapter->diagnostics(first_session_device).open &&
+                session_adapter->diagnostics(second_session_device).open,
+            "releasing the first AXTP session must not close the second device");
+    const auto second_after_release = session_adapter->call(
+        second_session_device, "audio.getAlgorithmConfig", {});
+    require(second_after_release.status == axent::ControlStatus::Ok &&
+                session_transport_factory_calls == 2,
+            "control on the second device must reuse its transport after first-device release");
+    const auto reopened_first = session_adapter->call(
+        first_session_device, "audio.getAlgorithmConfig", {});
+    require(reopened_first.status == axent::ControlStatus::Ok &&
+                session_transport_factory_calls == 3 &&
+                session_transport_serials.back() == "NA20-FIRST",
+            "a released device should reopen only its own physical transport");
+
+    // Both physical devices intentionally advertise the same numeric AXTP
+    // stream IDs. Device-local contexts must keep their descriptors,
+    // generations, bindings, and frame callbacks separate.
+    {
+        auto multi_media_config = defaults;
+        multi_media_config.enable_session_health_probe = false;
+        int multi_media_factory_calls = 0;
+        std::mutex multi_frames_mutex;
+        std::vector<axent::MediaFrame> multi_frames;
+        auto multi_media_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            multi_media_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                ++multi_media_factory_calls;
+                return std::make_unique<ScriptedAxtpTransport>();
+            });
+        multi_media_adapter->set_media_frame_callback(
+            [&](std::string device_id, axent::MediaFrame frame) {
+                frame.device_id = std::move(device_id);
+                std::lock_guard<std::mutex> lock(multi_frames_mutex);
+                multi_frames.push_back(std::move(frame));
+            });
+
+        const std::string media_device_a = "hid:0581:2582:NA20-MEDIA-A";
+        const std::string media_device_b = "hid:0581:2582:NA20-MEDIA-B";
+        std::string media_error_a;
+        std::string media_error_b;
+        require(multi_media_adapter->open_session(media_device_a, media_error_a),
+                std::string("first multi-device media session should open: ") +
+                    media_error_a);
+        require(multi_media_adapter->open_session(media_device_b, media_error_b),
+                std::string("second multi-device media session should open: ") +
+                    media_error_b);
+        require(multi_media_factory_calls == 2,
+                "multi-device media sessions must use independent transports");
+
+        const auto media_descriptors_a =
+            multi_media_adapter->active_media_stream_descriptors(media_device_a);
+        const auto media_descriptors_b =
+            multi_media_adapter->active_media_stream_descriptors(media_device_b);
+        const auto has_stream = [](const std::vector<axent::MediaStreamDescriptor>& descriptors,
+                                   const std::string& device_id,
+                                   axent::MediaKind kind,
+                                   std::uint32_t stream_id) {
+            return std::any_of(
+                descriptors.begin(), descriptors.end(),
+                [&](const axent::MediaStreamDescriptor& descriptor) {
+                    return descriptor.device_id == device_id &&
+                        descriptor.kind == kind &&
+                        descriptor.key.stream_id == stream_id;
+                });
+        };
+        require(media_descriptors_a.size() == 2 &&
+                    has_stream(media_descriptors_a, media_device_a,
+                               axent::MediaKind::Video, 1) &&
+                    has_stream(media_descriptors_a, media_device_a,
+                               axent::MediaKind::Audio, 2),
+                "first device should own its video/audio stream IDs");
+        require(media_descriptors_b.size() == 2 &&
+                    has_stream(media_descriptors_b, media_device_b,
+                               axent::MediaKind::Video, 1) &&
+                    has_stream(media_descriptors_b, media_device_b,
+                               axent::MediaKind::Audio, 2),
+                "second device should independently reuse the same numeric stream IDs");
+        require(multi_media_adapter->active_media_stream_descriptors().size() == 4,
+                "aggregate media descriptors should retain both device namespaces");
+        const auto aggregate_media_diagnostics = multi_media_adapter->diagnostics();
+        require(aggregate_media_diagnostics.active_media_streams == 4 &&
+                    aggregate_media_diagnostics.active_video_stream_id == 0 &&
+                    aggregate_media_diagnostics.active_audio_stream_id == 0,
+                "aggregate diagnostics must not assign a device-ambiguous stream ID");
+
+        // Direct seam injection has no runtime ingress token. Leave the
+        // logical lease unbound here and exercise the legacy frame path;
+        // device and stream provenance remain fully physical-device scoped.
+        axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
+            *multi_media_adapter, media_device_a, 1, 101, 1001,
+            {0x00, 0x00, 0x01, 0x65});
+        axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
+            *multi_media_adapter, media_device_b, 1, 201, 2001,
+            {0x00, 0x00, 0x01, 0x41});
+        axent::testing::AxtpAdapterTestSeam::drain_media_callbacks(
+            *multi_media_adapter);
+        require(wait_for_frames(multi_frames, multi_frames_mutex, 2),
+                "same-ID media frames from both devices should be delivered");
+        {
+            std::lock_guard<std::mutex> lock(multi_frames_mutex);
+            const auto has_frame = [&](const std::string& device_id,
+                                       std::uint64_t sequence_id) {
+                return std::any_of(
+                    multi_frames.begin(), multi_frames.end(),
+                    [&](const axent::MediaFrame& frame) {
+                        return frame.device_id == device_id &&
+                            frame.session_id.empty() &&
+                            frame.stream_id == 1 &&
+                            frame.sequence_id == sequence_id &&
+                            frame.generation == 1;
+                    });
+            };
+            require(has_frame(media_device_a, 101),
+                    "first same-ID frame should retain first-device provenance");
+            require(has_frame(media_device_b, 201),
+                    "second same-ID frame should retain second-device provenance");
+        }
+
+        axent::testing::AxtpAdapterTestSeam::release_session(
+            *multi_media_adapter, media_device_a);
+        require(multi_media_adapter->active_media_stream_descriptors(
+                    media_device_a).empty() &&
+                    multi_media_adapter->active_media_stream_descriptors(
+                        media_device_b).size() == 2 &&
+                    !multi_media_adapter->diagnostics(media_device_a).open &&
+                    multi_media_adapter->diagnostics(media_device_b).open,
+                "first-device media reset must preserve second-device streams and session");
+        axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
+            *multi_media_adapter, media_device_b, 1, 202, 2002,
+            {0x00, 0x00, 0x01, 0x41});
+        axent::testing::AxtpAdapterTestSeam::drain_media_callbacks(
+            *multi_media_adapter);
+        require(wait_for_frames(multi_frames, multi_frames_mutex, 3),
+                "second-device media should continue after first-device reset");
+        {
+            std::lock_guard<std::mutex> lock(multi_frames_mutex);
+            require(std::any_of(
+                        multi_frames.begin(), multi_frames.end(),
+                        [&](const axent::MediaFrame& frame) {
+                            return frame.device_id == media_device_b &&
+                                frame.session_id.empty() &&
+                                frame.sequence_id == 202;
+                        }),
+                    "post-reset media should retain the surviving device binding");
+        }
+    }
+
+    // A silent reset and physical transport rebuild is device-local. A
+    // healthy sibling context must neither reconnect nor inherit recovery
+    // counters from the failing device.
+    {
+        auto isolation_recovery_config = defaults;
+        isolation_recovery_config.enable_media = false;
+        isolation_recovery_config.session_probe_mode =
+            axent::SessionProbeMode::LegacyRpc;
+        isolation_recovery_config.session_health_probe_interval_ms = 20;
+        isolation_recovery_config.session_health_probe_timeout_ms = 15;
+        isolation_recovery_config.session_health_failure_threshold = 1;
+        isolation_recovery_config.session_recovery_backoff_initial_ms = 20;
+        isolation_recovery_config.session_recovery_backoff_max_ms = 40;
+        std::atomic<bool> reset_recovery_a{false};
+        std::mutex isolation_factory_mutex;
+        std::map<std::string, int> isolation_factory_calls;
+        auto isolation_recovery_adapter =
+            axent::testing::AxtpAdapterTestSeam::make(
+                isolation_recovery_config,
+                [&](const axent::transport::HidTransportOptions& options) {
+                    int serial_call = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(isolation_factory_mutex);
+                        serial_call = ++isolation_factory_calls[options.serialNumber];
+                    }
+                    auto transport = std::make_unique<ScriptedAxtpTransport>();
+                    if (options.serialNumber == "NA20-RECOVERY-A") {
+                        transport->drop_capability_responses = serial_call == 1;
+                        transport->silent_reset = &reset_recovery_a;
+                    }
+                    return transport;
+                });
+        const auto factory_calls_for = [&](const std::string& serial) {
+            std::lock_guard<std::mutex> lock(isolation_factory_mutex);
+            const auto found = isolation_factory_calls.find(serial);
+            return found == isolation_factory_calls.end() ? 0 : found->second;
+        };
+        const std::string recovery_device_a =
+            "hid:0581:2582:NA20-RECOVERY-A";
+        const std::string recovery_device_b =
+            "hid:0581:2582:NA20-RECOVERY-B";
+        std::string recovery_error_a;
+        std::string recovery_error_b;
+        require(isolation_recovery_adapter->open_session_status(
+                    recovery_device_a, recovery_error_a, false) ==
+                    axent::ControlStatus::Ok,
+                std::string("first recovery-isolation session should open: ") +
+                    recovery_error_a);
+        require(isolation_recovery_adapter->open_session_status(
+                    recovery_device_b, recovery_error_b, false) ==
+                    axent::ControlStatus::Ok,
+                std::string("second recovery-isolation session should open: ") +
+                    recovery_error_b);
+        axent::testing::AxtpAdapterTestSeam::bind_media_delivery_session(
+            *isolation_recovery_adapter, recovery_device_a, "lease-recovery-a");
+        axent::testing::AxtpAdapterTestSeam::bind_media_delivery_session(
+            *isolation_recovery_adapter, recovery_device_b, "lease-recovery-b");
+        reset_recovery_a.store(true);
+        require(wait_until([&]() {
+            const auto diagnostics =
+                isolation_recovery_adapter->diagnostics(recovery_device_a);
+            return factory_calls_for("NA20-RECOVERY-A") >= 2 &&
+                diagnostics.session_recoveries >= 1 &&
+                diagnostics.session_health == axent::SessionHealthState::Healthy;
+        }), "silent reset should rebuild only the failing device context");
+        require(factory_calls_for("NA20-RECOVERY-B") == 1 &&
+                    isolation_recovery_adapter->diagnostics(
+                        recovery_device_b).session_recoveries == 0 &&
+                    isolation_recovery_adapter->diagnostics(
+                        recovery_device_b).open,
+                "healthy sibling device must remain on its original transport");
+        const auto healthy_sibling_call = isolation_recovery_adapter->call(
+            recovery_device_b, "audio.getAlgorithmConfig", {});
+        require(healthy_sibling_call.status == axent::ControlStatus::Ok &&
+                    factory_calls_for("NA20-RECOVERY-B") == 1,
+                "healthy sibling control should continue without reconnection");
+    }
 
     std::mutex frames_mutex;
     std::vector<axent::MediaFrame> frames;
@@ -777,7 +1205,7 @@ int main()
         });
 
     std::string error;
-    require(media_adapter->open_session("hid:0581:2581:NA20-SERIAL", error),
+    require(media_adapter->open_session("hid:0581:2582:NA20-SERIAL", error),
             "scripted adapter session should open");
     require(media_scripted != nullptr, "scripted media transport should be constructed");
     const auto media_diagnostics = media_adapter->diagnostics();
@@ -789,7 +1217,7 @@ int main()
     std::mutex media_video_params_mutex;
     std::vector<axent::VideoStreamParamsState> media_video_params_updates;
     auto media_video_params_subscription = media_adapter->subscribe_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL",
+        "hid:0581:2582:NA20-SERIAL",
         [&](const axent::VideoStreamParamsState& update) {
             std::lock_guard<std::mutex> lock(media_video_params_mutex);
             media_video_params_updates.push_back(update);
@@ -802,7 +1230,7 @@ int main()
     require(descriptors[0].key.session_id.empty() &&
                 descriptors[0].key.stream_id == 1 &&
                 descriptors[0].key.generation == 1 &&
-                descriptors[0].device_id == "hid:0581:2581:NA20-SERIAL" &&
+                descriptors[0].device_id == "hid:0581:2582:NA20-SERIAL" &&
                 descriptors[0].kind == axent::MediaKind::Video &&
                 descriptors[0].codec == axent::MediaCodec::H264 &&
                 descriptors[0].source == "wireless_cast" &&
@@ -830,7 +1258,7 @@ int main()
         require(frames.size() == 1, "stream payload should publish one media frame");
         received_frame = frames.front();
     }
-    require(received_frame.device_id == "hid:0581:2581:NA20-SERIAL", "device id mismatch");
+    require(received_frame.device_id == "hid:0581:2582:NA20-SERIAL", "device id mismatch");
     require(received_frame.stream_id == 1, "stream id mismatch");
     require(received_frame.kind == axent::MediaKind::Video, "stream kind mismatch");
     require(received_frame.codec == axent::MediaCodec::H264, "codec mismatch");
@@ -852,7 +1280,7 @@ int main()
         require(frames.size() == 2, "audio stream should append one media frame");
         received_audio_frame = frames.back();
     }
-    require(received_audio_frame.device_id == "hid:0581:2581:NA20-SERIAL", "audio device id mismatch");
+    require(received_audio_frame.device_id == "hid:0581:2582:NA20-SERIAL", "audio device id mismatch");
     require(received_audio_frame.stream_id == 2, "audio stream id mismatch");
     require(received_audio_frame.kind == axent::MediaKind::Audio, "audio stream kind mismatch");
     require(received_audio_frame.codec == axent::MediaCodec::Aac, "audio codec mismatch");
@@ -872,7 +1300,7 @@ int main()
     axent::ControlCallOptions slow_call_options;
     slow_call_options.timeout = std::chrono::seconds(4);
     auto slow_operation = media_adapter->call_async(
-        "hid:0581:2581:NA20-SERIAL",
+        "hid:0581:2582:NA20-SERIAL",
         "video.requestKeyFrame",
         {{"streamId", 1}, {"reason", "progress-test"}},
         slow_call_options);
@@ -885,7 +1313,7 @@ int main()
     // (or its session state lock) before it receives an operation handle.
     const auto queued_submit_started = std::chrono::steady_clock::now();
     auto queued_behind_slow_call = media_adapter->call_async(
-        "hid:0581:2581:NA20-SERIAL",
+        "hid:0581:2582:NA20-SERIAL",
         "audio.getAlgorithmConfig",
         {},
         slow_call_options);
@@ -1039,7 +1467,7 @@ int main()
     }
     require(wait_until([&]() {
         const auto state = media_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL");
+            "hid:0581:2582:NA20-SERIAL");
         std::lock_guard<std::mutex> lock(media_video_params_mutex);
         return state.state == axent::VideoStreamParamsStateKind::Idle &&
             state.phase == axent::VideoStreamParamsPhase::Idle &&
@@ -1116,7 +1544,7 @@ int main()
     }
     require(wait_until([&]() {
         const auto state = media_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL");
+            "hid:0581:2582:NA20-SERIAL");
         std::lock_guard<std::mutex> lock(media_video_params_mutex);
         return state.phase == axent::VideoStreamParamsPhase::Streaming &&
             state.active_stream_id == 1U &&
@@ -1258,7 +1686,7 @@ int main()
     }
     media_scripted->injectStream(1, 7, 1100000, {0x00, 0x00, 0x01, 0x41});
     const auto stale_frame_fence = media_adapter->call(
-        "hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+        "hid:0581:2582:NA20-SERIAL", "audio.getAlgorithmConfig", {});
     require(stale_frame_fence.status == axent::ControlStatus::Ok,
             "public call should fence stale-frame dispatch");
     {
@@ -1370,7 +1798,7 @@ int main()
 
     axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
         *media_adapter,
-        "hid:0581:2581:NA20-SERIAL",
+        "hid:0581:2582:NA20-SERIAL",
         1,
         5,
         999000,
@@ -1385,7 +1813,7 @@ int main()
     // gate first so the test does not race that notification and accidentally
     // observe a frame only after the lifecycle event was already delivered.
     axent::testing::AxtpAdapterTestSeam::reopen_media_streams(
-        *media_adapter, "hid:0581:2581:NA20-SERIAL");
+        *media_adapter, "hid:0581:2582:NA20-SERIAL");
     std::thread first_drain([&]() {
         axent::testing::AxtpAdapterTestSeam::drain_media_callbacks(*media_adapter);
     });
@@ -1397,7 +1825,7 @@ int main()
     }
     axent::testing::AxtpAdapterTestSeam::enqueue_stream_payload(
         *media_adapter,
-        "hid:0581:2581:NA20-SERIAL",
+        "hid:0581:2582:NA20-SERIAL",
         1,
         6,
         1000000,
@@ -1463,7 +1891,7 @@ int main()
     capture_wire_callback_order.store(true);
     media_scripted->queue_terminal_frame_before_next_response.store(true);
     const auto terminal_call = media_adapter->call(
-        "hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+        "hid:0581:2582:NA20-SERIAL", "audio.getAlgorithmConfig", {});
     {
         std::lock_guard<std::mutex> lock(wire_callback_order_mutex);
         wire_callback_order.push_back("response");
@@ -1515,7 +1943,7 @@ int main()
 
         std::string open_terminal_error;
         require(open_terminal_adapter->open_session_status(
-                    "hid:0581:2581:OPEN-TERMINAL",
+                    "hid:0581:2582:OPEN-TERMINAL",
                     open_terminal_error,
                     false) == axent::ControlStatus::Ok,
                 "open-terminal fixture should establish a physical session");
@@ -1581,7 +2009,7 @@ int main()
             });
         std::string per_kind_fence_error;
         require(per_kind_fence_adapter->open_session(
-                    "hid:0581:2581:PER-KIND-FENCE", per_kind_fence_error) &&
+                    "hid:0581:2582:PER-KIND-FENCE", per_kind_fence_error) &&
                     per_kind_fence_transport != nullptr &&
                     wait_until([&]() {
                         return per_kind_fence_adapter->
@@ -1594,7 +2022,7 @@ int main()
         std::thread per_kind_reopen([&]() {
             axent::testing::AxtpAdapterTestSeam::reopen_media_streams(
                 *per_kind_fence_adapter,
-                "hid:0581:2581:PER-KIND-FENCE");
+                "hid:0581:2582:PER-KIND-FENCE");
             per_kind_reopen_finished.store(true);
         });
         const bool per_kind_video_open_held = wait_until([&]() {
@@ -1658,7 +2086,7 @@ int main()
             });
         std::string terminal_progress_error;
         require(terminal_progress_adapter->open_session(
-                    "hid:0581:2581:TERMINAL-PROGRESS", terminal_progress_error) &&
+                    "hid:0581:2582:TERMINAL-PROGRESS", terminal_progress_error) &&
                     terminal_progress_transport != nullptr &&
                     wait_for_stream_events(
                         terminal_progress_events,
@@ -1674,7 +2102,7 @@ int main()
         axent::ControlCallOptions terminal_progress_options;
         terminal_progress_options.timeout = std::chrono::seconds(3);
         auto terminal_progress_operation = terminal_progress_adapter->call_async(
-            "hid:0581:2581:TERMINAL-PROGRESS",
+            "hid:0581:2582:TERMINAL-PROGRESS",
             "video.requestKeyFrame",
             {{"streamId", 1}, {"reason", "terminal-progress"}},
             terminal_progress_options);
@@ -1759,7 +2187,7 @@ int main()
             });
         std::string ordered_source_error;
         require(ordered_source_adapter->open_session(
-                    "hid:0581:2581:ORDERED-SOURCE", ordered_source_error) &&
+                    "hid:0581:2582:ORDERED-SOURCE", ordered_source_error) &&
                     ordered_source_transport != nullptr &&
                     wait_for_stream_events(
                         ordered_source_events, ordered_source_events_mutex, 1),
@@ -1776,7 +2204,7 @@ int main()
         axent::ControlCallOptions ordered_call_options;
         ordered_call_options.timeout = std::chrono::seconds(2);
         auto ordered_operation = ordered_source_adapter->call_async(
-            "hid:0581:2581:ORDERED-SOURCE",
+            "hid:0581:2582:ORDERED-SOURCE",
             "video.requestKeyFrame",
             {{"streamId", 1}, {"reason", "source-order"}},
             ordered_call_options);
@@ -1835,7 +2263,7 @@ int main()
             kind_fallback_events.push_back(std::move(event));
         });
     require(kind_fallback_adapter->open_session(
-                "hid:0581:2581:NA20-SERIAL", error),
+                "hid:0581:2582:NA20-SERIAL", error),
             "kind-fallback adapter session should open");
     require(kind_fallback_scripted != nullptr &&
                 wait_for_stream_events(
@@ -1922,12 +2350,12 @@ int main()
                 reentrant_frames.push_back(std::move(frame));
             }
             const auto result =
-                reentrant_adapter->call("hid:0581:2581:NA20-SERIAL", "audio.getAlgorithmConfig", {});
+                reentrant_adapter->call("hid:0581:2582:NA20-SERIAL", "audio.getAlgorithmConfig", {});
             reentrant_call_succeeded.store(result.status == axent::ControlStatus::Ok
                 && result.body.value("ok", false));
         });
 
-    require(reentrant_adapter->open_session("hid:0581:2581:NA20-SERIAL", error),
+    require(reentrant_adapter->open_session("hid:0581:2582:NA20-SERIAL", error),
             "reentrant scripted adapter session should open");
     require(reentrant_scripted != nullptr, "reentrant scripted transport should be constructed");
     reentrant_scripted->injectStream(0x1001, 5, 999000, {0x00, 0x00, 0x01, 0x65});
@@ -1963,7 +2391,7 @@ int main()
             frame_rate_events.push_back(std::move(event));
         });
     require(frame_rate_adapter->open_session(
-                "hid:0581:2581:NA20-SERIAL", error),
+                "hid:0581:2582:NA20-SERIAL", error),
             "frame-rate adapter session should open");
     require(frame_rate_scripted != nullptr &&
                 wait_for_stream_events(frame_rate_events, frame_rate_events_mutex, 2),
@@ -1995,7 +2423,7 @@ int main()
     std::mutex params_updates_mutex;
     std::vector<axent::VideoStreamParamsState> params_updates;
     auto params_subscription = frame_rate_adapter->subscribe_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL",
+        "hid:0581:2582:NA20-SERIAL",
         [&](const axent::VideoStreamParamsState& update) {
             std::lock_guard<std::mutex> lock(params_updates_mutex);
             params_updates.push_back(update);
@@ -2006,18 +2434,18 @@ int main()
     axent::VideoStreamParamsRequest set_fifteen;
     set_fifteen.frame_rate = 15;
     const auto pending_frame_rate = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+        "hid:0581:2582:NA20-SERIAL", set_fifteen);
     require(pending_frame_rate.status_code == 0 && pending_frame_rate.accepted &&
                 pending_frame_rate.state.state == axent::VideoStreamParamsStateKind::Pending &&
                 pending_frame_rate.state.phase == axent::VideoStreamParamsPhase::Closing,
             "active frame-rate update should be accepted as pending/closing");
     const auto concurrent_frame_rate = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+        "hid:0581:2582:NA20-SERIAL", set_fifteen);
     require(concurrent_frame_rate.status_code == 0x0005 && !concurrent_frame_rate.accepted,
             "concurrent frame-rate update should fail fast with BUSY");
     require(wait_until([&]() {
         return frame_rate_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL").state ==
+            "hid:0581:2582:NA20-SERIAL").state ==
                 axent::VideoStreamParamsStateKind::Applied;
     }), "frame-rate close/open transaction should reach applied");
     require(frame_rate_scripted->video_close_requests.load() == 1 &&
@@ -2048,7 +2476,7 @@ int main()
                 "both close requests must precede either replacement open request");
     }
     const auto applied_state = frame_rate_adapter->video_stream_params_state(
-        "hid:0581:2581:NA20-SERIAL");
+        "hid:0581:2582:NA20-SERIAL");
     require(applied_state.desired_frame_rate == 15U &&
                 applied_state.effective_frame_rate == 15U &&
                 applied_state.active_stream_id.has_value() &&
@@ -2069,7 +2497,7 @@ int main()
             "frame-rate reconfiguration must advance both stream generations");
 
     const auto unchanged_frame_rate = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+        "hid:0581:2582:NA20-SERIAL", set_fifteen);
     require(unchanged_frame_rate.status_code == 0 && unchanged_frame_rate.accepted &&
                 unchanged_frame_rate.state.state == axent::VideoStreamParamsStateKind::Unchanged &&
                 frame_rate_scripted->video_close_requests.load() == 1,
@@ -2078,12 +2506,12 @@ int main()
     axent::VideoStreamParamsRequest reset_frame_rate;
     reset_frame_rate.reset_frame_rate = true;
     const auto reset_pending = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", reset_frame_rate);
+        "hid:0581:2582:NA20-SERIAL", reset_frame_rate);
     require(reset_pending.status_code == 0 && reset_pending.accepted,
             "frame-rate reset should be accepted");
     require(wait_until([&]() {
         const auto state = frame_rate_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL");
+            "hid:0581:2582:NA20-SERIAL");
         return state.state == axent::VideoStreamParamsStateKind::Applied &&
             !state.desired_frame_rate.has_value();
     }), "frame-rate reset should reopen using the source default");
@@ -2100,13 +2528,13 @@ int main()
     axent::VideoStreamParamsRequest invalid_frame_rate;
     invalid_frame_rate.frame_rate = 0;
     const auto invalid_result = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", invalid_frame_rate);
+        "hid:0581:2582:NA20-SERIAL", invalid_frame_rate);
     require(invalid_result.status_code == 0x000A && !invalid_result.accepted,
             "zero encoder frame rate should be rejected as INVALID_ARGUMENT");
     axent::VideoStreamParamsRequest unsupported_frame_rate;
     unsupported_frame_rate.frame_rate = 17;
     const auto unsupported_result = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", unsupported_frame_rate);
+        "hid:0581:2582:NA20-SERIAL", unsupported_frame_rate);
     require(unsupported_result.status_code == 0x0805 && !unsupported_result.accepted,
             "frame rate outside the advertised source profile should be rejected");
 
@@ -2138,7 +2566,7 @@ int main()
             std::lock_guard<std::mutex> lock(recovery_events_mutex);
             recovery_events.push_back(std::move(event));
         });
-    const std::string recovery_device_id = "hid:0581:2581:NA20-RECOVERY";
+    const std::string recovery_device_id = "hid:0581:2582:NA20-RECOVERY";
     require(recovery_adapter->open_session(recovery_device_id, error),
             "silent-session recovery adapter should open");
     require(wait_for_stream_events(
@@ -2221,16 +2649,16 @@ int main()
 
     frame_rate_scripted->fail_video_open_count.store(1);
     const auto rollback_pending = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+        "hid:0581:2582:NA20-SERIAL", set_fifteen);
     require(rollback_pending.status_code == 0 && rollback_pending.accepted,
             "rollback scenario should begin as an accepted reconfiguration");
     require(wait_until([&]() {
         return frame_rate_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL").state ==
+            "hid:0581:2582:NA20-SERIAL").state ==
                 axent::VideoStreamParamsStateKind::RolledBack;
     }), "failed replacement open should restore the previous stream parameters");
     const auto rolled_back_state = frame_rate_adapter->video_stream_params_state(
-        "hid:0581:2581:NA20-SERIAL");
+        "hid:0581:2582:NA20-SERIAL");
     require(rolled_back_state.rollback_applied &&
                 !rolled_back_state.desired_frame_rate.has_value() &&
                 rolled_back_state.active_stream_id.has_value(),
@@ -2245,12 +2673,12 @@ int main()
 
     frame_rate_scripted->fail_audio_open_count.store(1);
     const auto audio_rollback_pending = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+        "hid:0581:2582:NA20-SERIAL", set_fifteen);
     require(audio_rollback_pending.status_code == 0 && audio_rollback_pending.accepted,
             "audio-open rollback scenario should begin as pending");
     require(wait_until([&]() {
         return frame_rate_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL").state ==
+            "hid:0581:2582:NA20-SERIAL").state ==
                 axent::VideoStreamParamsStateKind::RolledBack;
     }), "failed replacement audio open should close replacement video and restore both streams");
     const auto after_audio_rollback = frame_rate_adapter->active_media_stream_descriptors();
@@ -2269,16 +2697,16 @@ int main()
 
     frame_rate_scripted->fail_video_open_count.store(2);
     const auto rollback_failure_pending = frame_rate_adapter->set_video_stream_params(
-        "hid:0581:2581:NA20-SERIAL", set_fifteen);
+        "hid:0581:2582:NA20-SERIAL", set_fifteen);
     require(rollback_failure_pending.status_code == 0 && rollback_failure_pending.accepted,
             "rollback-failure scenario should begin as pending");
     require(wait_until([&]() {
         return frame_rate_adapter->video_stream_params_state(
-            "hid:0581:2581:NA20-SERIAL").state ==
+            "hid:0581:2582:NA20-SERIAL").state ==
                 axent::VideoStreamParamsStateKind::Failed;
     }), "replacement and rollback open failures should reach failed");
     const auto rollback_failed_state = frame_rate_adapter->video_stream_params_state(
-        "hid:0581:2581:NA20-SERIAL");
+        "hid:0581:2582:NA20-SERIAL");
     require(!rollback_failed_state.rollback_applied &&
                 !rollback_failed_state.active_stream_id.has_value() &&
                 rollback_failed_state.last_error.has_value(),
