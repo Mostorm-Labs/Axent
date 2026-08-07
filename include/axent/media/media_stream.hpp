@@ -17,6 +17,7 @@ struct MediaStreamDescriptor {
     MediaCodec codec = MediaCodec::Unknown;
     std::string source;
     std::string transport_format;
+    std::string alignment;
     std::string stream_profile;
     std::string cursor_unit;
     std::uint32_t sample_rate = 0;
@@ -24,6 +25,7 @@ struct MediaStreamDescriptor {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t frame_rate = 0;
+    std::uint32_t reorder_depth = 0;
 };
 
 enum class MediaStreamEventKind {

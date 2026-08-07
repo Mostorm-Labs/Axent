@@ -38,6 +38,10 @@ struct AxtpAdapterConfig {
     std::uint32_t audio_sample_rate = 48000;
     std::uint32_t audio_channels = 2;
     std::optional<std::uint32_t> video_frame_rate;
+    // Ordered, generic codec preferences supplied by the product host.  The
+    // adapter intersects these with the peer capabilities; it does not own
+    // product/backend policy.  Empty retains legacy H.264 behavior.
+    std::vector<MediaCodec> video_codec_preferences;
     std::string video_source = "wireless_cast";
     std::string audio_source = "wireless_cast_audio";
     bool enable_session_health_probe = true;

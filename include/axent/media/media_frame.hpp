@@ -39,6 +39,7 @@ enum class MediaKind {
 enum class MediaCodec {
     Unknown,
     H264,
+    H265,
     Aac,
     Pcm,
     Opaque,

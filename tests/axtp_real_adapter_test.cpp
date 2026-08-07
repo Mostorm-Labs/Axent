@@ -260,6 +260,9 @@ public:
                     static_cast<std::uint32_t>(axtp::MethodId::VideoGetStreamCapabilities)) {
                     ++video_capability_requests;
                     body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast","currentState":"receiving","frameRates":[15,25,30],"supportsReconfigure":true}]})";
+                    if (advertise_video_codecs) {
+                        body = R"({"supported":true,"openModes":["receiver_pull"],"sourceState":{"available":true,"state":"receiving"},"sources":[{"sourceId":"wireless_cast","currentState":"receiving","frameRates":[15,25,30],"supportsReconfigure":true,"codecs":["h264","h265"]}]})";
+                    }
                     if (fail_next_video_capabilities.exchange(false)) {
                         body = R"({"supported":false,"openModes":[],"sourceState":{"available":false,"state":"waiting"},"sources":[{"sourceId":"wireless_cast","currentState":"waiting"}]})";
                     }
@@ -278,7 +281,11 @@ public:
                         media_request_order.push_back("video.open");
                     }
                     auto failures = fail_video_open_count.load();
-                    if (failures > 0 &&
+                    const auto requested_codec = params.value("codec", std::string{"h264"});
+                    if (reject_h265_open && requested_codec == "h265") {
+                        response.statusCode = axtp::ErrorCode::NotSupported;
+                        body = R"({"error":"h265 unsupported"})";
+                    } else if (failures > 0 &&
                         fail_video_open_count.compare_exchange_strong(failures, failures - 1)) {
                         response.statusCode = axtp::ErrorCode::MediaFramerateUnsupported;
                         body = R"({"error":"unsupported frame rate"})";
@@ -287,7 +294,7 @@ public:
                             {"streamId", unique_video_stream_ids ? 1000 + request_number : 1},
                             {"state", "streaming"},
                             {"source", "wireless_cast"},
-                            {"codec", "h264"},
+                            {"codec", omit_video_open_codec ? "" : requested_codec},
                         };
                         if (params.contains("frameRate")) {
                             result["frameRate"] = params["frameRate"];
@@ -455,6 +462,9 @@ public:
     std::atomic<int> delay_next_keyframe_response_ms{0};
     std::atomic<bool> hold_next_video_open_response{false};
     std::atomic<bool> video_open_response_held{false};
+    bool advertise_video_codecs = false;
+    bool reject_h265_open = false;
+    bool omit_video_open_codec = false;
     bool unique_video_stream_ids = false;
     std::mutex requests_mutex;
     std::vector<nlohmann::json> video_open_params;
@@ -2286,6 +2296,122 @@ int main()
     const auto after_rollback_failure = frame_rate_adapter->active_media_stream_descriptors();
     require(after_rollback_failure.empty(),
             "rollback failure after a paired close must not expose a stale audio stream");
+
+    // Codec negotiation is session-local: auto prefers H.265 when both the
+    // peer and the runtime advertise it, but a rejected H.265 open retries
+    // H.264 in the same configure attempt without mutating the preference
+    // vector used by the next session.
+    {
+        auto codec_config = axent::AxtpAdapter::na20_defaults();
+        codec_config.video_codec_preferences = {
+            axent::MediaCodec::H265, axent::MediaCodec::H264};
+        ScriptedAxtpTransport* codec_scripted = nullptr;
+        auto codec_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            codec_config, [&](const axent::transport::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->advertise_video_codecs = true;
+            codec_scripted = transport.get();
+            return transport;
+        });
+        std::string codec_error;
+        require(codec_adapter->open_session(
+                    "hid:0581:2581:NA20-SERIAL", codec_error),
+                "H.265 codec session should open");
+        require(codec_scripted != nullptr &&
+                    codec_scripted->video_open_params.size() == 1 &&
+                    codec_scripted->video_open_params.front().at("codec") == "h265",
+                "auto codec selection should request H.265 first");
+        const auto negotiated = codec_adapter->active_media_stream_descriptors();
+        require(!negotiated.empty() && negotiated.front().codec == axent::MediaCodec::H265,
+                "H.265 lifecycle descriptor should remain authoritative");
+        const auto codec_diagnostics = codec_adapter->diagnostics();
+        require(codec_diagnostics.device_video_codecs.size() == 2 &&
+                    codec_diagnostics.requested_video_codec == "h265" &&
+                    codec_diagnostics.negotiated_video_codec == "h265" &&
+                    codec_diagnostics.video_codec_fallback_reason.empty(),
+                "H.265 negotiation diagnostics should expose capability and result");
+        axent::testing::AxtpAdapterTestSeam::disconnect_session(*codec_adapter);
+    }
+
+    {
+        auto fallback_config = axent::AxtpAdapter::na20_defaults();
+        fallback_config.video_codec_preferences = {
+            axent::MediaCodec::H265, axent::MediaCodec::H264};
+        ScriptedAxtpTransport* fallback_scripted = nullptr;
+        auto fallback_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            fallback_config, [&](const axent::transport::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->advertise_video_codecs = true;
+            transport->reject_h265_open = true;
+            fallback_scripted = transport.get();
+            return transport;
+        });
+        std::string fallback_error;
+        require(fallback_adapter->open_session(
+                    "hid:0581:2581:NA20-SERIAL", fallback_error),
+                "H.265 rejection should fall back to H.264");
+        require(fallback_scripted != nullptr &&
+                    fallback_scripted->video_open_params.size() == 2 &&
+                    fallback_scripted->video_open_params[0].at("codec") == "h265" &&
+                    fallback_scripted->video_open_params[1].at("codec") == "h264",
+                "codec fallback should retry H.264 immediately");
+        const auto negotiated = fallback_adapter->active_media_stream_descriptors();
+        require(!negotiated.empty() && negotiated.front().codec == axent::MediaCodec::H264,
+                "fallback descriptor should confirm H.264");
+        const auto fallback_diagnostics = fallback_adapter->diagnostics();
+        require(fallback_diagnostics.requested_video_codec == "h264" &&
+                    fallback_diagnostics.negotiated_video_codec == "h264" &&
+                    !fallback_diagnostics.video_codec_fallback_reason.empty(),
+                "codec fallback diagnostics should retain the H.265 failure reason");
+        axent::testing::AxtpAdapterTestSeam::disconnect_session(*fallback_adapter);
+    }
+
+    {
+        auto legacy_config = axent::AxtpAdapter::na20_defaults();
+        legacy_config.video_codec_preferences = {axent::MediaCodec::H264};
+        ScriptedAxtpTransport* legacy_scripted = nullptr;
+        auto legacy_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            legacy_config, [&](const axent::transport::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->advertise_video_codecs = true;
+            transport->omit_video_open_codec = true;
+            legacy_scripted = transport.get();
+            return transport;
+        });
+        std::string legacy_error;
+        require(legacy_adapter->open_session(
+                    "hid:0581:2581:NA20-SERIAL", legacy_error),
+                "legacy H.264 response without a codec should remain compatible");
+        require(legacy_scripted != nullptr &&
+                    !legacy_adapter->active_media_stream_descriptors().empty(),
+                "legacy H.264 response should publish a descriptor");
+        axent::testing::AxtpAdapterTestSeam::disconnect_session(*legacy_adapter);
+    }
+
+    {
+        auto explicit_config = axent::AxtpAdapter::na20_defaults();
+        explicit_config.video_codec_preferences = {axent::MediaCodec::H265};
+        ScriptedAxtpTransport* explicit_scripted = nullptr;
+        auto explicit_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            explicit_config, [&](const axent::transport::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->advertise_video_codecs = true;
+            transport->omit_video_open_codec = true;
+            explicit_scripted = transport.get();
+            return transport;
+        });
+        std::string explicit_error;
+        require(explicit_adapter->open_session(
+                    "hid:0581:2581:NA20-SERIAL", explicit_error),
+                "transport session should remain open while H.265 negotiation fails");
+        require(explicit_scripted != nullptr &&
+                    wait_until([&]() {
+                        return explicit_adapter->diagnostics().active_video_stream_id == 0;
+                    }),
+                "H.265 response without an explicit codec must not publish a video stream");
+        require(explicit_scripted->video_open_params.size() >= 1,
+                "explicit codec test should construct transport");
+    }
 
     return 0;
 }

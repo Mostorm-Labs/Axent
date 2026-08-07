@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace axent {
 
@@ -115,6 +116,12 @@ struct TransportDiagnostics {
     std::uint64_t media_frames_dispatched_during_control_call = 0;
     std::string last_event;
     std::string last_error;
+    // Generic media negotiation diagnostics. The adapter records the peer
+    // capability intersection and result without owning product preference.
+    std::vector<std::string> device_video_codecs;
+    std::string requested_video_codec;
+    std::string negotiated_video_codec;
+    std::string video_codec_fallback_reason;
     std::uint32_t active_video_stream_id = 0;
     std::uint32_t active_audio_stream_id = 0;
     std::uint32_t active_media_streams = 0;
