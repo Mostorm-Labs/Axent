@@ -2413,5 +2413,45 @@ int main()
                 "explicit codec test should construct transport");
     }
 
+    // The H.265 bring-up path must still issue video.openStream when the
+    // preceding capabilities response says the source is waiting.  The
+    // openStream response remains authoritative for the negotiated contract.
+    {
+        auto bypass_config = axent::AxtpAdapter::na20_defaults();
+        bypass_config.video_codec_preferences = {axent::MediaCodec::H265};
+        bypass_config.video_open_codec_override = axent::MediaCodec::H264;
+        bypass_config.video_decode_codec_override = axent::MediaCodec::H265;
+        ScriptedAxtpTransport* bypass_scripted = nullptr;
+        auto bypass_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            bypass_config, [&](const axent::transport::HidTransportOptions&) {
+            auto transport = std::make_unique<ScriptedAxtpTransport>();
+            transport->fail_next_video_capabilities.store(true);
+            bypass_scripted = transport.get();
+            return transport;
+        });
+        std::string bypass_error;
+        require(bypass_adapter->open_session(
+                    "hid:0581:2581:NA20-SERIAL", bypass_error),
+                "capability waiting must not prevent the H.265 session from opening");
+        require(bypass_scripted != nullptr &&
+                    bypass_scripted->video_open_params.size() >= 1 &&
+                    bypass_scripted->video_open_params.front().at("codec") == "h264",
+                "H.265 decode bypass must issue video.openStream(codec=h264)");
+        const auto bypass_diagnostics = bypass_adapter->diagnostics();
+        require(bypass_diagnostics.video_codec_capabilities_bypassed &&
+                    bypass_diagnostics.video_open_stream_attempts >= 1 &&
+                    bypass_diagnostics.video_open_last_status == "accepted" &&
+                    bypass_diagnostics.requested_video_codec == "h265" &&
+                    bypass_diagnostics.video_open_request_codec == "h264" &&
+                    bypass_diagnostics.negotiated_video_codec == "h264" &&
+                    bypass_diagnostics.video_decode_codec == "h265" &&
+                    bypass_diagnostics.video_codec_decode_bypassed &&
+                    !bypass_adapter->active_media_stream_descriptors().empty() &&
+                    bypass_adapter->active_media_stream_descriptors().front().codec ==
+                        axent::MediaCodec::H265,
+                "forced H.265 decode bypass diagnostics should expose both contracts");
+        axent::testing::AxtpAdapterTestSeam::disconnect_session(*bypass_adapter);
+    }
+
     return 0;
 }

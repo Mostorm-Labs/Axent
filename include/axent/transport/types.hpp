@@ -122,6 +122,19 @@ struct TransportDiagnostics {
     std::string requested_video_codec;
     std::string negotiated_video_codec;
     std::string video_codec_fallback_reason;
+    std::string video_open_request_codec;
+    std::string video_decode_codec;
+    bool video_codec_decode_bypassed = false;
+    // Video capabilities are still collected for diagnostics, but the
+    // current HID bring-up path deliberately does not use them as an
+    // openStream gate.  These fields make that distinction observable.
+    bool video_codec_capabilities_bypassed = false;
+    std::string video_capabilities_last_status;
+    std::string video_capabilities_last_error;
+    std::uint64_t video_open_stream_attempts = 0;
+    std::string video_open_last_status;
+    std::string video_open_last_error;
+    std::string video_open_last_request;
     std::uint32_t active_video_stream_id = 0;
     std::uint32_t active_audio_stream_id = 0;
     std::uint32_t active_media_streams = 0;

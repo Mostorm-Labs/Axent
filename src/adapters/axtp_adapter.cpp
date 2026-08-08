@@ -3606,11 +3606,40 @@ bool AxtpAdapter::configure_media_stream_kind(
         return false;
     }
     const bool is_video = kind == MediaKind::Video;
+    const auto codec_text = [](MediaCodec codec) -> const char* {
+        switch (codec) {
+        case MediaCodec::H264: return "h264";
+        case MediaCodec::H265: return "h265";
+        case MediaCodec::Aac: return "aac";
+        case MediaCodec::Pcm: return "pcm";
+        case MediaCodec::Opaque: return "opaque";
+        case MediaCodec::Unknown: default: return "";
+        }
+    };
+    const bool force_video_open = is_video && std::any_of(
+        config_.video_codec_preferences.begin(),
+        config_.video_codec_preferences.end(),
+        [](MediaCodec codec) { return codec == MediaCodec::H265; });
+    const bool video_decode_bypass = is_video &&
+        config_.video_open_codec_override.has_value() &&
+        config_.video_decode_codec_override.has_value() &&
+        *config_.video_open_codec_override != *config_.video_decode_codec_override;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& retry = is_video ? diagnostics_.video_retry : diagnostics_.audio_retry;
         ++retry.configure_attempts;
         retry.next_retry_in_ms = 0;
+        if (is_video) {
+            diagnostics_.video_codec_capabilities_bypassed = false;
+            diagnostics_.video_open_request_codec.clear();
+            diagnostics_.video_decode_codec.clear();
+            diagnostics_.video_codec_decode_bypassed = video_decode_bypass;
+            diagnostics_.video_capabilities_last_status = "pending";
+            diagnostics_.video_capabilities_last_error.clear();
+            diagnostics_.video_open_last_status = "capabilities-pending";
+            diagnostics_.video_open_last_error.clear();
+            diagnostics_.video_open_last_request.clear();
+        }
     }
     const auto mark_retry_failure = [this, is_video, kind](std::string error,
                                                            bool terminal = false,
@@ -3759,32 +3788,62 @@ bool AxtpAdapter::configure_media_stream_kind(
     }
     if (!capabilities.has_value()) {
         const bool terminal = runtime_error_is_terminal(last_call_error);
-        mark_retry_failure(
-            last_call_error_message.empty()
-                ? std::string(media_kind_name(kind)) + " capabilities unavailable"
-                : last_call_error_message,
-            terminal);
+        if (!force_video_open) {
+            mark_retry_failure(
+                last_call_error_message.empty()
+                    ? std::string(media_kind_name(kind)) + " capabilities unavailable"
+                    : last_call_error_message,
+                terminal);
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.last_event =
+                std::string(media_kind_name(kind)) + "-capabilities-unavailable";
+            return false;
+        }
+        // Capabilities are an observation for the current H.265 bring-up
+        // path, not a gate.  Some peers answer this read-only RPC late or not
+        // at all while still accepting an explicit video.openStream request.
         std::lock_guard<std::mutex> lock(mutex_);
-        diagnostics_.last_event =
-            std::string(media_kind_name(kind)) + "-capabilities-unavailable";
-        return false;
-    }
-    // A successful capabilities response is a safe, read-only liveness probe
-    // for this device/session.  Keep the method that actually worked instead
-    // of inventing a transport-specific heartbeat request.
-    runtime_->health_probe_method = capabilities_method_name(kind);
-    runtime_->health_probe_params = source_params;
-    if (!capabilities_are_streamable(*capabilities, source)) {
-        mark_retry_failure(
-            std::string(media_kind_name(kind)) + " source waiting", false, true);
-        std::lock_guard<std::mutex> lock(mutex_);
-        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
-        return false;
+        diagnostics_.video_codec_capabilities_bypassed = true;
+        diagnostics_.video_capabilities_last_status = "rpc-error-bypassed";
+        diagnostics_.video_capabilities_last_error = "code=" +
+            std::to_string(static_cast<std::uint16_t>(last_call_error)) +
+            (last_call_error_message.empty() ? std::string{} :
+                " message=" + last_call_error_message);
+        diagnostics_.video_open_last_status = "capabilities-error-bypassed";
+        diagnostics_.video_open_last_error.clear();
+    } else {
+        // A successful capabilities response is a safe, read-only liveness
+        // probe for this device/session. Keep the method that actually worked
+        // instead of inventing a transport-specific heartbeat request.
+        runtime_->health_probe_method = capabilities_method_name(kind);
+        runtime_->health_probe_params = source_params;
+        if (!capabilities_are_streamable(*capabilities, source)) {
+            if (!force_video_open) {
+                mark_retry_failure(
+                    std::string(media_kind_name(kind)) + " source waiting", false, true);
+                std::lock_guard<std::mutex> lock(mutex_);
+                diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
+                return false;
+            }
+            // Keep the response for diagnostics/frame-rate extraction, but do
+            // not prevent the explicit video.openStream request.
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.video_codec_capabilities_bypassed = true;
+            diagnostics_.video_capabilities_last_status = "source-state-bypassed";
+            diagnostics_.video_capabilities_last_error.clear();
+            diagnostics_.video_open_last_status = "source-state-bypassed";
+            diagnostics_.video_open_last_error.clear();
+        } else if (is_video) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.video_capabilities_last_status = "ok";
+            diagnostics_.video_capabilities_last_error.clear();
+        }
     }
     if (is_video) {
         std::vector<std::uint32_t> frame_rates;
         bool supports_reconfigure = true;
-        if (capabilities->contains("sources") && (*capabilities)["sources"].is_array()) {
+        if (capabilities.has_value() && capabilities->contains("sources") &&
+            (*capabilities)["sources"].is_array()) {
             for (const auto& entry : (*capabilities)["sources"]) {
                 if (!source_matches(entry, source)) {
                     continue;
@@ -3838,7 +3897,8 @@ bool AxtpAdapter::configure_media_stream_kind(
                     {"cursorUnit", "timestampUs"},
                 };
                 bool codec_list_published = false;
-                if (capabilities->is_object() && capabilities->contains("sources") &&
+                if (capabilities.has_value() && capabilities->is_object() &&
+                    capabilities->contains("sources") &&
                     (*capabilities)["sources"].is_array()) {
                     for (const auto& entry : (*capabilities)["sources"]) {
                         if (!source_matches(entry, source)) continue;
@@ -3858,22 +3918,26 @@ bool AxtpAdapter::configure_media_stream_kind(
                         break;
                     }
                 }
-                if (!codec_list_published) {
+                if (!codec_list_published && capabilities.has_value()) {
                     // Old peers did not publish a codec list and are defined
                     // by the compatibility contract to support H.264 only.
                     device_video_codecs.push_back("h264");
                 }
+                // H.265 bring-up may deliberately ignore the advertised
+                // codec list.  For the legacy H.264 path retain the existing
+                // capability intersection behavior.
                 const auto codec_preferences = config_.video_codec_preferences.empty()
                     ? std::vector<MediaCodec>{MediaCodec::H264}
                     : config_.video_codec_preferences;
-                const auto sourceSupports = [&](const std::string& candidate) {
-                    return std::find(device_video_codecs.begin(), device_video_codecs.end(),
-                                     candidate) != device_video_codecs.end();
-                };
                 for (const auto preference : codec_preferences) {
                     const std::string candidate = preference == MediaCodec::H265 ? "h265" :
                         preference == MediaCodec::H264 ? "h264" : "";
-                    if (!candidate.empty() && sourceSupports(candidate)) {
+                    const auto sourceSupports = [&](const std::string& value) {
+                        return std::find(device_video_codecs.begin(), device_video_codecs.end(),
+                                         value) != device_video_codecs.end();
+                    };
+                    if (!candidate.empty() &&
+                        (force_video_open || sourceSupports(candidate))) {
                         video_codec_candidates.push_back(candidate);
                     }
                 }
@@ -3890,6 +3954,7 @@ bool AxtpAdapter::configure_media_stream_kind(
                 }
                 {
                     std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                    diagnostics_.video_codec_capabilities_bypassed = force_video_open;
                     diagnostics_.device_video_codecs = device_video_codecs;
                     diagnostics_.requested_video_codec.clear();
                     diagnostics_.negotiated_video_codec.clear();
@@ -3936,12 +4001,23 @@ bool AxtpAdapter::configure_media_stream_kind(
     bool open_failure_terminal = false;
     bool open_failure_source_waiting = false;
     bool video_codec_fallback = false;
+    std::string negotiated_video_codec;
     const auto open_candidate = [&](const std::string& video_codec) {
+        const std::string open_request_codec = is_video && video_decode_bypass
+            ? codec_text(*config_.video_open_codec_override)
+            : video_codec;
         if (is_video) {
-            open_params["codec"] = video_codec;
+            open_params["codec"] = open_request_codec;
             requested_video_codec = video_codec;
             std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+            ++diagnostics_.video_open_stream_attempts;
             diagnostics_.requested_video_codec = video_codec;
+            diagnostics_.video_open_request_codec = open_request_codec;
+            diagnostics_.video_decode_codec = video_decode_bypass
+                ? codec_text(*config_.video_decode_codec_override) : video_codec;
+            diagnostics_.video_open_last_status = "requesting";
+            diagnostics_.video_open_last_error.clear();
+            diagnostics_.video_open_last_request = open_params.dump();
         }
         response = call_json(open_stream_method_name(kind), open_params);
         if (!response.has_value()) {
@@ -3952,8 +4028,15 @@ bool AxtpAdapter::configure_media_stream_kind(
                  errorText.find("source unavailable") != std::string::npos ||
                  errorText.find("source disconnected") != std::string::npos);
             open_failure = last_call_error_message.empty()
-                ? std::string(media_kind_name(kind)) + " open failed"
+                ? std::string(media_kind_name(kind)) + " open failed code=" +
+                    std::to_string(static_cast<std::uint16_t>(last_call_error))
                 : last_call_error_message;
+            if (is_video) {
+                std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                diagnostics_.video_open_last_status = open_failure_source_waiting
+                    ? "source-waiting" : open_failure_terminal ? "terminal-error" : "rpc-error";
+                diagnostics_.video_open_last_error = open_failure;
+            }
             return false;
         }
 
@@ -3961,6 +4044,11 @@ bool AxtpAdapter::configure_media_stream_kind(
         if (stream_id == 0) {
             open_failure = std::string(media_kind_name(kind)) +
                 " open returned no stream id";
+            if (is_video) {
+                std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                diagnostics_.video_open_last_status = "invalid-response";
+                diagnostics_.video_open_last_error = open_failure;
+            }
             response.reset();
             return false;
         }
@@ -3974,7 +4062,11 @@ bool AxtpAdapter::configure_media_stream_kind(
             : codec_for_open_result(kind, *response);
         const auto requested_codec = video_codec == "h265"
             ? MediaCodec::H265 : MediaCodec::H264;
-        if (effective_codec == requested_codec) {
+        const auto open_contract_codec = open_request_codec == "h265"
+            ? MediaCodec::H265 : MediaCodec::H264;
+        if (effective_codec == open_contract_codec &&
+            (video_decode_bypass || effective_codec == requested_codec)) {
+            negotiated_video_codec = codec_text(effective_codec);
             if (requested_codec == MediaCodec::H265) {
                 const auto transport_format = ascii_lower(json_string_or(
                     *response, "transportFormat", json_string_or(
@@ -3990,8 +4082,16 @@ bool AxtpAdapter::configure_media_stream_kind(
                     stream_id = 0;
                     response.reset();
                     open_failure = "video-codec-contract-unsupported";
+                    std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                    diagnostics_.video_open_last_status = "contract-rejected";
+                    diagnostics_.video_open_last_error = open_failure;
                     return false;
                 }
+            }
+            {
+                std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                diagnostics_.video_open_last_status = "accepted";
+                diagnostics_.video_open_last_error.clear();
             }
             return true;
         }
@@ -4004,6 +4104,11 @@ bool AxtpAdapter::configure_media_stream_kind(
         stream_id = 0;
         response.reset();
         open_failure = "video-codec-negotiation-mismatch";
+        {
+            std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+            diagnostics_.video_open_last_status = "codec-mismatch";
+            diagnostics_.video_open_last_error = open_failure;
+        }
         return false;
     };
 
@@ -4089,7 +4194,9 @@ bool AxtpAdapter::configure_media_stream_kind(
     descriptor.device_id = device_id;
     descriptor.kind = kind;
     descriptor.codec = is_video
-        ? (requested_video_codec == "h265" ? MediaCodec::H265 : MediaCodec::H264)
+        ? (video_decode_bypass
+            ? *config_.video_decode_codec_override
+            : codec_for_open_result(kind, *response))
         : codec_for_open_result(kind, *response);
     descriptor.source = json_string_or(*response, "source", source);
     descriptor.transport_format = json_string_or(
@@ -4164,7 +4271,10 @@ bool AxtpAdapter::configure_media_stream_kind(
         if (kind == MediaKind::Video) {
             diagnostics_.active_video_stream_id = stream_id;
             diagnostics_.requested_video_codec = requested_video_codec;
-            diagnostics_.negotiated_video_codec = requested_video_codec;
+            diagnostics_.negotiated_video_codec = negotiated_video_codec.empty()
+                ? requested_video_codec : negotiated_video_codec;
+            diagnostics_.video_decode_codec = codec_text(descriptor.codec);
+            diagnostics_.video_codec_decode_bypassed = video_decode_bypass;
         } else {
             diagnostics_.active_audio_stream_id = stream_id;
         }
