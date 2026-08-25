@@ -322,6 +322,12 @@ assert_files_do_not_contain(
     "Axent production public headers must not expose cpp-runtime types or headers"
 )
 
+assert_file_does_not_contain(
+    "${AXENT_REPO_ROOT}/include/axent/adapters/axtp_endpoint_identity.hpp"
+    "axtp::|axtp-cpp-runtime|#[ \\t]*include[ \\t]*[<\"](axtp_|core/runtime/|core/protocol/|json_rpc/)"
+    "The public AXTP Endpoint identity facade must not expose cpp-runtime details"
+)
+
 assert_files_do_not_contain(
     axent_hid_ownership_files
     "axtp::Hid|axtp::enumerateHid|axtp::transport_hidapi|#[ \\t]*include[ \\t]*[<\"]transports/hidapi/hid_transport\\.hpp"

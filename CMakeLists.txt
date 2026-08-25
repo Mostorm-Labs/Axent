@@ -99,6 +99,7 @@ add_library(libaxent
     src/cli/options.cpp
     src/logging/logger.cpp
     src/adapters/axdp_adapter.cpp
+    src/adapters/axtp_endpoint_identity.cpp
     src/adapters/axtp_adapter.cpp
     src/adapters/mock_adapter.cpp
     src/adapters/tea_adapter.cpp
@@ -376,4 +377,9 @@ if(AXENT_BUILD_TESTING)
     target_link_libraries(axtp_real_adapter_test PRIVATE axent::libaxent axent::axtp_adapter_test_support)
     axent_enable_warnings(axtp_real_adapter_test)
     add_test(NAME axtp_real_adapter_test COMMAND axtp_real_adapter_test)
+
+    add_executable(axtp_endpoint_identity_test tests/axtp_endpoint_identity_test.cpp)
+    target_link_libraries(axtp_endpoint_identity_test PRIVATE axent::libaxent)
+    axent_enable_warnings(axtp_endpoint_identity_test)
+    add_test(NAME axtp_endpoint_identity_test COMMAND axtp_endpoint_identity_test)
 endif()
