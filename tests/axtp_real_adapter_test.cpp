@@ -94,6 +94,11 @@ axtp::Bytes encode_stream(axtp::StreamPayload payload)
 
 class ScriptedAxtpTransport : public axtp::ITransport {
 public:
+    struct BusinessRequest {
+        axtp::EndpointMetadata endpoint;
+        std::string body;
+    };
+
     void bind(axtp::IByteSink& sink) override
     {
         sink_ = &sink;
@@ -228,6 +233,12 @@ public:
             if (rpc.op == axtp::RpcOp::Request) {
                 saw_business_request = true;
                 last_business_sid = rpc.meta.jsonSid;
+                {
+                    std::lock_guard<std::mutex> lock(business_request_mutex_);
+                    last_business_request_.endpoint = rpc.meta.endpoint;
+                    last_business_request_.body.assign(
+                        rpc.body.begin(), rpc.body.end());
+                }
                 const bool capability_request =
                     rpc.methodOrEventId == static_cast<std::uint32_t>(
                         axtp::MethodId::VideoGetStreamCapabilities) ||
@@ -432,6 +443,12 @@ public:
         };
     }
 
+    BusinessRequest lastBusinessRequest() const
+    {
+        std::lock_guard<std::mutex> lock(business_request_mutex_);
+        return last_business_request_;
+    }
+
     bool saw_control_open = false;
     bool saw_identify = false;
     bool saw_business_request = false;
@@ -491,6 +508,8 @@ private:
     }
 
     axtp::IByteSink* sink_ = nullptr;
+    mutable std::mutex business_request_mutex_;
+    BusinessRequest last_business_request_;
     std::mutex rx_mutex_;
     std::queue<axtp::Bytes> rx_queue_;
     std::vector<DelayedBytes> delayed_rx_;
@@ -734,6 +753,86 @@ int main()
                 firmware_route.body.at("error") ==
                     "AXTP firmware update skeleton only",
             "real adapter firmware route must remain unavailable");
+
+    {
+        auto local_config = defaults;
+        local_config.enable_media = false;
+        local_config.enable_session_health_probe = false;
+        ScriptedAxtpTransport* local_transport = nullptr;
+        auto local_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            local_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                local_transport = transport.get();
+                return transport;
+            });
+        axent::AdapterControlRequest local_request;
+        local_request.device_id = "hid:0581:2582:LOCAL-PROJECTION";
+        local_request.source_endpoint_id = "ep-app-001";
+        local_request.destination_endpoint_id = "ep-device-001";
+        local_request.endpoint_delivery_mode =
+            axent::EndpointDeliveryMode::LocalProjection;
+        local_request.method = "audio.getAlgorithmConfig";
+        local_request.params = {{"detail", "business"}};
+        const auto local_result = local_adapter->call(local_request);
+        require(local_result.status == axent::ControlStatus::Ok,
+                "LocalProjection routed control should complete");
+        require(local_transport != nullptr,
+                "LocalProjection control should construct its physical transport");
+        const auto local_wire = local_transport->lastBusinessRequest();
+        require(!local_wire.endpoint.src.has_value() &&
+                    !local_wire.endpoint.dst.has_value(),
+                "LocalProjection must omit native Endpoint metadata");
+        require(nlohmann::json::parse(local_wire.body) ==
+                    nlohmann::json{{"detail", "business"}},
+                "LocalProjection params must contain business data only");
+    }
+
+    {
+        auto native_config = defaults;
+        native_config.enable_media = false;
+        native_config.enable_session_health_probe = false;
+        native_config.endpoint_delivery_mode =
+            axent::EndpointDeliveryMode::NativeRelay;
+        ScriptedAxtpTransport* native_transport = nullptr;
+        auto native_adapter = axent::testing::AxtpAdapterTestSeam::make(
+            native_config,
+            [&](const axent::transport::HidTransportOptions&) {
+                auto transport = std::make_unique<ScriptedAxtpTransport>();
+                native_transport = transport.get();
+                return transport;
+            });
+        axent::AdapterControlRequest native_request;
+        native_request.device_id = "hid:0581:2582:NATIVE-RELAY";
+        native_request.source_endpoint_id = "ep-app-001";
+        native_request.destination_endpoint_id = "ep-device-001";
+        native_request.endpoint_delivery_mode =
+            axent::EndpointDeliveryMode::NativeRelay;
+        native_request.method = "audio.getAlgorithmConfig";
+        native_request.params = {{"detail", "business"}};
+        const auto native_result = native_adapter->call(native_request);
+        require(native_result.status == axent::ControlStatus::Ok,
+                "NativeRelay control must accept a legacy response without Endpoint metadata");
+        const auto native_operation = native_adapter->call_async(native_request);
+        const auto native_async_result = native_operation->wait();
+        require(native_async_result.status == axent::ControlStatus::Ok,
+                "NativeRelay async control must retain routed metadata through the FIFO");
+        require(native_transport != nullptr,
+                "NativeRelay control should construct its physical transport");
+        const auto native_wire = native_transport->lastBusinessRequest();
+        require(native_wire.endpoint.src ==
+                    std::optional<std::string>{"ep-app-001"} &&
+                    native_wire.endpoint.dst ==
+                    std::optional<std::string>{"ep-device-001"},
+                "NativeRelay must carry source and destination through runtime metadata");
+        require(nlohmann::json::parse(native_wire.body) ==
+                    nlohmann::json{{"detail", "business"}},
+                "NativeRelay params must contain business data only");
+        const auto native_firmware = native_adapter->start_firmware_update(
+            native_request, "firmware.bin");
+        require(native_firmware.status == axent::ControlStatus::Unavailable,
+                "routed firmware must retain the existing AXTP skeleton result");
+    }
 
     // Concurrent first use of one canonical physical ID must create and open
     // exactly one leaf runtime. Both callers then share that device context.

@@ -774,6 +774,10 @@ private:
 
 struct AxtpAdapter::PendingControlCall {
     std::string device_id;
+    std::string source_endpoint_id;
+    std::string destination_endpoint_id;
+    EndpointDeliveryMode endpoint_delivery_mode =
+        EndpointDeliveryMode::LocalProjection;
     std::string method;
     std::string params;
     std::chrono::steady_clock::time_point deadline;
@@ -1331,8 +1335,17 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
 
 ControlResult AxtpAdapter::call(const std::string& device_id, const std::string& method, const nlohmann::json& params)
 {
+    AdapterControlRequest request;
+    request.device_id = device_id;
+    request.method = method;
+    request.params = params;
+    return call(request);
+}
+
+ControlResult AxtpAdapter::call(const AdapterControlRequest& request)
+{
     if (!device_context_) {
-        const auto context = device_context_for(device_id);
+        const auto context = device_context_for(request.device_id);
         if (!context || !context->adapter) {
             return {ControlStatus::NotFound,
                     {{"error", "AXTP device is not available"}}};
@@ -1342,7 +1355,7 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
             return {ControlStatus::Unavailable,
                     {{"error", "AXTP device context is being retired"}}};
         }
-        return context->adapter->call(device_id, method, params);
+        return context->adapter->call(request);
     }
     // Keep the legacy synchronous Adapter entry point convenient for direct
     // users: it may establish the first physical session.  call_async must
@@ -1353,11 +1366,12 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
     bool session_ready = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        session_ready = diagnostics_.open && active_device_id_ == device_id;
+        session_ready = diagnostics_.open &&
+            active_device_id_ == request.device_id;
     }
     if (!session_ready) {
         std::string error;
-        const auto status = open_session_status(device_id, error, false);
+        const auto status = open_session_status(request.device_id, error, false);
         if (status != ControlStatus::Ok) {
             return {status, {{"error", error}}};
         }
@@ -1368,7 +1382,7 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
     }
     ControlCallOptions options;
     options.deadline = deadline;
-    auto operation = call_async(device_id, method, params, options);
+    auto operation = call_async(request, options);
     auto result = operation
         ? operation->wait()
         : ControlResult{
@@ -1388,8 +1402,19 @@ ControlOperationPtr AxtpAdapter::call_async(
     const nlohmann::json& params,
     ControlCallOptions options)
 {
+    AdapterControlRequest request;
+    request.device_id = device_id;
+    request.method = method;
+    request.params = params;
+    return call_async(request, std::move(options));
+}
+
+ControlOperationPtr AxtpAdapter::call_async(
+    const AdapterControlRequest& routed_request,
+    ControlCallOptions options)
+{
     if (!device_context_) {
-        const auto context = device_context_for(device_id);
+        const auto context = device_context_for(routed_request.device_id);
         if (!context || !context->adapter) {
             return make_completed_control_operation(
                 {ControlStatus::NotFound,
@@ -1401,8 +1426,7 @@ ControlOperationPtr AxtpAdapter::call_async(
                 {ControlStatus::Unavailable,
                  {{"error", "AXTP device context is being retired"}}});
         }
-        return context->adapter->call_async(
-            device_id, method, params, std::move(options));
+        return context->adapter->call_async(routed_request, std::move(options));
     }
     const auto accepted_at = std::chrono::steady_clock::now();
     const auto deadline = options.deadline.value_or(
@@ -1432,9 +1456,13 @@ ControlOperationPtr AxtpAdapter::call_async(
     }
 
     auto request = std::make_shared<PendingControlCall>();
-    request->device_id = device_id;
-    request->method = method;
-    request->params = params.is_null() ? std::string("{}") : params.dump();
+    request->device_id = routed_request.device_id;
+    request->source_endpoint_id = routed_request.source_endpoint_id;
+    request->destination_endpoint_id = routed_request.destination_endpoint_id;
+    request->endpoint_delivery_mode = routed_request.endpoint_delivery_mode;
+    request->method = routed_request.method;
+    request->params = routed_request.params.is_null()
+        ? std::string("{}") : routed_request.params.dump();
     request->deadline = deadline;
     // The submitting thread deliberately does not inspect the active AXTP
     // session. The pump is the sole runtime owner; it validates the device
@@ -1569,6 +1597,14 @@ void AxtpAdapter::process_next_control_call(const std::string& device_id)
     call_options.progress = [this, &device_id]() {
         publish_runtime_progress(device_id);
     };
+    if (request->endpoint_delivery_mode == EndpointDeliveryMode::NativeRelay) {
+        if (!request->source_endpoint_id.empty()) {
+            call_options.endpoint.src = request->source_endpoint_id;
+        }
+        if (!request->destination_endpoint_id.empty()) {
+            call_options.endpoint.dst = request->destination_endpoint_id;
+        }
+    }
     const auto body = runtime_->client->callJson(
         request->method, request->params, call_options);
     const auto last_error = runtime_->client->lastError();
@@ -1679,8 +1715,18 @@ void AxtpAdapter::cancel_control_calls(
 ControlResult AxtpAdapter::start_firmware_update(const std::string& device_id,
                                                  const std::string& file_path)
 {
+    AdapterControlRequest request;
+    request.device_id = device_id;
+    request.method = "firmware.update";
+    return start_firmware_update(request, file_path);
+}
+
+ControlResult AxtpAdapter::start_firmware_update(
+    const AdapterControlRequest& request,
+    const std::string& file_path)
+{
     if (!device_context_) {
-        const auto context = device_context_for(device_id);
+        const auto context = device_context_for(request.device_id);
         if (!context || !context->adapter) {
             return {ControlStatus::NotFound,
                     {{"error", "AXTP device is not available"}}};
@@ -1690,7 +1736,7 @@ ControlResult AxtpAdapter::start_firmware_update(const std::string& device_id,
             return {ControlStatus::Unavailable,
                     {{"error", "AXTP device context is being retired"}}};
         }
-        return context->adapter->start_firmware_update(device_id, file_path);
+        return context->adapter->start_firmware_update(request, file_path);
     }
     return {ControlStatus::Unavailable, {{"error", "AXTP firmware update skeleton only"}}};
 }

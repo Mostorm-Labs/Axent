@@ -76,12 +76,19 @@ public:
     std::vector<Capability> capabilities() const override;
     std::vector<DeviceSnapshot> discover() override;
     ControlResult call(const std::string& device_id, const std::string& method, const nlohmann::json& params) override;
+    ControlResult call(const AdapterControlRequest& request) override;
     ControlOperationPtr call_async(
         const std::string& device_id,
         const std::string& method,
         const nlohmann::json& params,
         ControlCallOptions options = {}) override;
+    ControlOperationPtr call_async(
+        const AdapterControlRequest& request,
+        ControlCallOptions options = {}) override;
     ControlResult start_firmware_update(const std::string& device_id, const std::string& file_path) override;
+    ControlResult start_firmware_update(
+        const AdapterControlRequest& request,
+        const std::string& file_path) override;
 
     TransportDiagnostics diagnostics() const;
     // Return diagnostics for one physical AXTP device. The no-argument form
