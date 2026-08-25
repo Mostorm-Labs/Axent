@@ -80,6 +80,7 @@ public:
     bool running() const;
 
     std::vector<DeviceSnapshot> discover_devices() const;
+    std::vector<DeviceSnapshot> refresh_devices();
     TransportDiagnostics transport_diagnostics() const;
     // Return diagnostics for one physical device.  The no-argument form is
     // retained for compatibility and returns the adapter's aggregate view.

@@ -1657,6 +1657,39 @@ std::vector<DeviceSnapshot> AxentHost::discover_devices() const
     return impl_->devices ? impl_->devices->list() : std::vector<DeviceSnapshot>{};
 }
 
+std::vector<DeviceSnapshot> AxentHost::refresh_devices()
+{
+    std::lock_guard<std::mutex> dispatch_lock(impl_->dispatch_mutex);
+    Adapter* adapter = nullptr;
+    std::string adapter_name;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->running || !impl_->devices || !impl_->axtp_adapter) {
+            return {};
+        }
+        adapter = impl_->axtp_adapter.get();
+        adapter_name = adapter->metadata().name;
+    }
+
+    const auto discovered = adapter->discover();
+
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (const auto& device : discovered) {
+        const auto result = impl_->devices->upsert(device);
+        log_endpoint_binding_rejection(impl_->logger.get(), device, result);
+    }
+    for (const auto& device : impl_->devices->list()) {
+        const auto still_discovered = std::any_of(
+            discovered.begin(), discovered.end(), [&](const DeviceSnapshot& current) {
+                return current.adapter == device.adapter && current.id == device.id;
+            });
+        if (device.adapter == adapter_name && !still_discovered) {
+            impl_->devices->mark_offline(device.adapter, device.id, "discovery-missing");
+        }
+    }
+    return impl_->devices->list();
+}
+
 TransportDiagnostics AxentHost::transport_diagnostics() const
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);

@@ -312,6 +312,63 @@ axent::DeviceSnapshot make_second_mock_device()
     return device;
 }
 
+class StatefulInventoryAdapter final : public axent::Adapter {
+public:
+    explicit StatefulInventoryAdapter(std::shared_ptr<int> discovery_count)
+        : discovery_count_(std::move(discovery_count))
+    {
+    }
+
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"inventory", "Stateful inventory adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        switch (++*discovery_count_) {
+        case 1:
+            return {device("device-a"), device("device-b")};
+        case 2:
+            return {device("device-b"), device("device-c")};
+        default:
+            return {device("device-a"), device("device-b"), device("device-c")};
+        }
+    }
+
+    axent::ControlResult call(const std::string&,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+    axent::ControlResult start_firmware_update(const std::string&,
+                                               const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+private:
+    static axent::DeviceSnapshot device(std::string id)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "inventory";
+        snapshot.endpoint_id = "ep-" + snapshot.id;
+        snapshot.connection.online = true;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    std::shared_ptr<int> discovery_count_;
+};
+
 std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& consumer)
 {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -610,6 +667,47 @@ int main()
         broker_threw = true;
     }
     require(broker_threw, "broker should throw before start");
+
+    auto inventory_discovery_count = std::make_shared<int>(0);
+    axent::AxentHost inventory_host;
+    axent::AxentHostOptions inventory_options;
+    inventory_options.enable_mock_adapter = false;
+    inventory_options.enable_axtp_adapter = true;
+    inventory_options.axtp_adapter_factory = [inventory_discovery_count](
+                                              axent::AxtpAdapterConfig) {
+        return std::make_unique<StatefulInventoryAdapter>(inventory_discovery_count);
+    };
+    require(inventory_host.start(std::move(inventory_options)),
+            "inventory host should start");
+
+    const auto find_inventory_device = [](const std::vector<axent::DeviceSnapshot>& devices,
+                                          const char* id) -> const axent::DeviceSnapshot& {
+        const auto device = std::find_if(
+            devices.begin(), devices.end(), [id](const axent::DeviceSnapshot& candidate) {
+                return candidate.id == id;
+            });
+        require(device != devices.end(), "refreshed inventory must contain expected device");
+        return *device;
+    };
+
+    const auto refreshed = inventory_host.refresh_devices();
+    require(find_inventory_device(refreshed, "device-a").connection.online == false,
+            "missing A must be retained offline");
+    require(find_inventory_device(refreshed, "device-b").connection.online,
+            "B must remain online");
+    require(find_inventory_device(refreshed, "device-c").connection.online,
+            "new C must be inserted");
+
+    const auto restored = inventory_host.refresh_devices();
+    require(find_inventory_device(restored, "device-a").endpoint_id == "ep-device-a",
+            "reappearance must preserve the stable Endpoint");
+
+    inventory_host.stop();
+    const auto discovery_count_before_stopped_refresh = *inventory_discovery_count;
+    require(inventory_host.refresh_devices().empty(),
+            "stopped Host refresh should return an empty list");
+    require(*inventory_discovery_count == discovery_count_before_stopped_refresh,
+            "stopped Host refresh must not call discovery");
 
     axent::AxentHostOptions options;
     options.enable_mock_adapter = true;
