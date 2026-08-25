@@ -1,5 +1,6 @@
 #include <stdexcept>
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "axent/adapters/mock_adapter.hpp"
@@ -89,6 +90,67 @@ public:
     }
 };
 
+class RoutedCaptureAdapter final : public axent::Adapter {
+public:
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"routed-capture", "Routed capture adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        axent::DeviceSnapshot device;
+        device.id = "provider-device-1";
+        device.adapter = "routed-capture";
+        device.endpoint_id = "ep_device";
+        device.endpoint_delivery_mode = axent::EndpointDeliveryMode::NativeRelay;
+        device.connection.online = true;
+        return {device};
+    }
+
+    axent::ControlResult call(
+        const std::string&, const std::string&, const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::InternalError, {{"error", "legacy call used"}}};
+    }
+
+    axent::ControlResult call(const axent::AdapterControlRequest& request) override
+    {
+        captured = request;
+        return {axent::ControlStatus::Ok, {{"path", "routed"}}};
+    }
+
+    axent::ControlOperationPtr call_async(
+        const axent::AdapterControlRequest& request,
+        axent::ControlCallOptions) override
+    {
+        captured = request;
+        return axent::make_completed_control_operation(
+            {axent::ControlStatus::Ok, {{"path", "routed-async"}}});
+    }
+
+    axent::ControlResult start_firmware_update(
+        const std::string&, const std::string&) override
+    {
+        return {axent::ControlStatus::InternalError, {{"error", "legacy firmware used"}}};
+    }
+
+    axent::ControlResult start_firmware_update(
+        const axent::AdapterControlRequest& request,
+        const std::string& file_path) override
+    {
+        captured = request;
+        return {axent::ControlStatus::Accepted, {{"file", file_path}}};
+    }
+
+    std::optional<axent::AdapterControlRequest> captured;
+};
+
 void require(bool condition, const char* message)
 {
     if (!condition) {
@@ -113,6 +175,7 @@ int main()
 {
     axent::MockAdapter adapter;
     ThrowingAdapter throwing_adapter;
+    RoutedCaptureAdapter routed_capture_adapter;
     axent::DeviceManager devices;
     for (const auto& device : adapter.discover()) {
         devices.upsert(device);
@@ -120,6 +183,14 @@ int main()
     for (const auto& device : throwing_adapter.discover()) {
         devices.upsert(device);
     }
+    for (const auto& device : routed_capture_adapter.discover()) {
+        devices.upsert(device);
+    }
+    auto unavailable_endpoint_device = routed_capture_adapter.discover().front();
+    unavailable_endpoint_device.id = "provider-device-offline";
+    unavailable_endpoint_device.endpoint_id = "ep_offline";
+    unavailable_endpoint_device.connection.online = false;
+    devices.upsert(unavailable_endpoint_device);
 
     axent::RouteManager routes(devices);
     axent::Logger logger;
@@ -128,6 +199,7 @@ int main()
     axent::Broker broker(routes, middleware, flow);
     broker.register_adapter(adapter);
     broker.register_adapter(throwing_adapter);
+    broker.register_adapter(routed_capture_adapter);
     axent::ControlPlane control_plane(broker);
 
     const auto legacy_device_list = control_plane.handle_text({
@@ -141,7 +213,7 @@ int main()
     });
     require(legacy_device_list.at("d").at("status").at("result") == true,
             "legacy GetDeviceList should succeed");
-    require(legacy_device_list.at("d").at("result").at("devices").size() == 2,
+    require(legacy_device_list.at("d").at("result").at("devices").size() == 4,
             "legacy GetDeviceList should return managed devices");
     require(legacy_device_list.at("d").at("result").at("devices").at(0).contains("endpointId"),
             "managed device snapshots should expose a stable endpointId");
@@ -213,6 +285,57 @@ int main()
                 routed_status.at("dst") == "controller:nearcast",
             "endpoint-routed JSON-RPC response should reverse src and dst");
 
+    const auto routed_capture = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "endpoint-capture"},
+        {"src", "ep_app"},
+        {"dst", "ep_device"},
+        {"method", "status.get"},
+        {"params", {{"deviceId", "wrong-device"},
+                    {"serialNumber", "wrong-serial"},
+                    {"detail", "business"}}},
+    });
+    require(routed_capture.at("result").at("path") == "routed",
+            "routed overload should handle addressed control");
+    require(routed_capture_adapter.captured.has_value(),
+            "routed adapter should capture the request");
+    require(routed_capture_adapter.captured->device_id == "provider-device-1" &&
+                routed_capture_adapter.captured->source_endpoint_id == "ep_app" &&
+                routed_capture_adapter.captured->destination_endpoint_id == "ep_device" &&
+                routed_capture_adapter.captured->endpoint_delivery_mode ==
+                    axent::EndpointDeliveryMode::NativeRelay &&
+                routed_capture_adapter.captured->params ==
+                    nlohmann::json{{"detail", "business"}},
+            "broker must carry the resolved endpoint route without legacy selectors");
+    axent::ControlCommand routed_lane;
+    routed_lane.request_id = "lane";
+    routed_lane.method = "status.get";
+    routed_lane.src = "ep_app";
+    routed_lane.dst = "ep_device";
+    require(broker.route_key(routed_lane) ==
+                "physical:routed-capture:provider-device-1",
+            "endpoint aliases must share the physical device lane");
+
+    const auto routed_async = broker.dispatch_async(routed_lane)->wait();
+    require(routed_async.status == axent::ControlStatus::Ok &&
+                routed_async.body.at("path") == "routed-async",
+            "async dispatch must use the routed adapter overload");
+    require(routed_capture_adapter.captured->source_endpoint_id == "ep_app" &&
+                routed_capture_adapter.captured->destination_endpoint_id == "ep_device",
+            "async routed dispatch must retain endpoint addressing");
+
+    auto routed_firmware = routed_lane;
+    routed_firmware.method = "firmware.update";
+    routed_firmware.params = {{"file", "/tmp/routed-fw.bin"}};
+    const auto routed_firmware_result = broker.dispatch(routed_firmware);
+    require(routed_firmware_result.status == axent::ControlStatus::Accepted &&
+                routed_firmware_result.body.at("file") == "/tmp/routed-fw.bin",
+            "firmware dispatch must use the routed adapter overload");
+    require(routed_capture_adapter.captured->method == "firmware.update" &&
+                routed_capture_adapter.captured->endpoint_delivery_mode ==
+                    axent::EndpointDeliveryMode::NativeRelay,
+            "firmware routed dispatch must retain route metadata");
+
     const auto dst_takes_precedence = control_plane.handle_text({
         {"jsonrpc", "2.0"},
         {"id", "endpoint-precedence"},
@@ -237,6 +360,30 @@ int main()
     require(missing_endpoint.at("src") == "endpoint/missing" &&
                 missing_endpoint.at("dst") == "controller:nearcast",
             "unknown endpoint errors should retain the reversible routing envelope");
+
+    const auto offline_endpoint = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "offline-endpoint"},
+        {"src", "ep_app"},
+        {"dst", "ep_offline"},
+        {"method", "status.get"},
+        {"params", nlohmann::json::object()},
+    });
+    require(offline_endpoint.at("error").at("code") == -32001,
+            "known offline endpoint should report Unavailable");
+
+    axent::ControlCommand async_missing;
+    async_missing.request_id = "async-missing";
+    async_missing.method = "status.get";
+    async_missing.src = "ep_app";
+    async_missing.dst = "ep_missing_async";
+    require(broker.dispatch_async(async_missing)->wait().status ==
+                axent::ControlStatus::NotFound,
+            "async unknown endpoint should report NotFound");
+    async_missing.dst = "ep_offline";
+    require(broker.dispatch_async(async_missing)->wait().status ==
+                axent::ControlStatus::Unavailable,
+            "async offline endpoint should report Unavailable");
 
     const auto incomplete_envelope = control_plane.handle_text({
         {"jsonrpc", "2.0"},

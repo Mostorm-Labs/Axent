@@ -20,6 +20,46 @@ nlohmann::json device_list_body(const std::vector<DeviceSnapshot>& devices)
     return body;
 }
 
+struct CommandRoute {
+    std::optional<RouteTarget> target;
+    ControlStatus failure_status = ControlStatus::NotFound;
+    const char* failure_message = "route not found";
+};
+
+CommandRoute resolve_command_route(RouteManager& routes, const ControlCommand& command)
+{
+    if (command.dst.empty()) {
+        return {routes.resolve_device(command.device_id),
+                ControlStatus::NotFound,
+                "route not found"};
+    }
+
+    const auto resolution = routes.resolve_endpoint_route(command.dst);
+    switch (resolution.status) {
+    case RouteResolutionStatus::Found:
+        return {resolution.target, ControlStatus::Ok, ""};
+    case RouteResolutionStatus::NotFound:
+        return {std::nullopt, ControlStatus::NotFound, "route not found"};
+    case RouteResolutionStatus::Unavailable:
+    case RouteResolutionStatus::Conflict:
+        return {std::nullopt, ControlStatus::Unavailable, "route unavailable"};
+    }
+    return {std::nullopt, ControlStatus::Unavailable, "route unavailable"};
+}
+
+AdapterControlRequest make_adapter_request(const ControlCommand& command,
+                                           const RouteTarget& target)
+{
+    AdapterControlRequest request;
+    request.device_id = target.device_id;
+    request.source_endpoint_id = command.dst.empty() ? "" : command.src;
+    request.destination_endpoint_id = command.dst.empty() ? "" : target.endpoint_id;
+    request.endpoint_delivery_mode = target.endpoint_delivery_mode;
+    request.method = command.method;
+    request.params = command.params;
+    return request;
+}
+
 } // namespace
 
 struct Broker::AsyncState {
@@ -94,16 +134,15 @@ ControlResult Broker::dispatch(const ControlCommand& command)
         } else if (command.method == "devices.list") {
             result = {ControlStatus::Ok, device_list_body(routes_.list_devices())};
         } else {
-            const auto target = !command.dst.empty()
-                ? routes_.resolve_endpoint(command.dst)
-                : routes_.resolve_device(command.device_id);
-            if (!target) {
-                result = {ControlStatus::NotFound, {{"error", "route not found"}}};
+            const auto route = resolve_command_route(routes_, command);
+            if (!route.target) {
+                result = {route.failure_status, {{"error", route.failure_message}}};
             } else {
+                const auto routed = make_adapter_request(command, *route.target);
                 Adapter* adapter = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(adapters_mutex_);
-                    const auto found = adapters_.find(target->adapter);
+                    const auto found = adapters_.find(route.target->adapter);
                     if (found != adapters_.end()) {
                         adapter = found->second;
                     }
@@ -119,12 +158,11 @@ ControlResult Broker::dispatch(const ControlCommand& command)
                                   {{"error", "invalid firmware file"}}};
                     } else {
                         result = adapter->start_firmware_update(
-                            target->device_id,
+                            routed,
                             command.params.at("file").get<std::string>());
                     }
                 } else {
-                    result = adapter->call(
-                        target->device_id, command.method, command.params);
+                    result = adapter->call(routed);
                 }
             }
         }
@@ -168,17 +206,16 @@ ControlOperationPtr Broker::dispatch_async(
             // `dst` is the logical endpoint contract for JSON-RPC.  Route it
             // before consulting the legacy physical selector kept in
             // device_id (which may contain a serial number).
-            const auto target = !command.dst.empty()
-                ? routes_.resolve_endpoint(command.dst)
-                : routes_.resolve_device(command.device_id);
-            if (!target) {
+            const auto route = resolve_command_route(routes_, command);
+            if (!route.target) {
                 operation = make_completed_control_operation(
-                    {ControlStatus::NotFound, {{"error", "route not found"}}});
+                    {route.failure_status, {{"error", route.failure_message}}});
             } else {
+                const auto routed = make_adapter_request(command, *route.target);
                 Adapter* adapter = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(adapters_mutex_);
-                    const auto found = adapters_.find(target->adapter);
+                    const auto found = adapters_.find(route.target->adapter);
                     if (found != adapters_.end()) {
                         adapter = found->second;
                     }
@@ -196,14 +233,12 @@ ControlOperationPtr Broker::dispatch_async(
                     } else {
                         operation = make_completed_control_operation(
                             adapter->start_firmware_update(
-                                target->device_id,
+                                routed,
                                 command.params.at("file").get<std::string>()));
                     }
                 } else {
                     operation = adapter->call_async(
-                        target->device_id,
-                        command.method,
-                        command.params,
+                        routed,
                         options);
                 }
             }
