@@ -67,6 +67,9 @@ int main()
     require(json_rpc.command.request_id == "jr-1", "json-rpc request id mismatch");
     require(json_rpc.command.method == "status.get", "json-rpc method mismatch");
     require(json_rpc.command.device_id == "mock-device-001", "json-rpc device id mismatch");
+    require(json_rpc.command.device_selector_kind ==
+                axent::DeviceSelectorKind::ProviderLocalId,
+            "json-rpc deviceId must preserve its selector namespace");
     require(json_rpc.command.source == axent::ProtocolSource::JsonRpc, "json-rpc source mismatch");
     require(json_rpc.wire_method == "status.get", "json-rpc wire method mismatch");
     require_eq(json_rpc.command.params, {{"deviceId", "mock-device-001"}}, "json-rpc params mismatch");
@@ -122,6 +125,9 @@ int main()
     require(legacy.command.request_id == "legacy-1", "legacy request id mismatch");
     require(legacy.command.method == "devices.list", "legacy method mapping mismatch");
     require(legacy.command.device_id == "MOCK001", "legacy serialNumber device id mismatch");
+    require(legacy.command.device_selector_kind ==
+                axent::DeviceSelectorKind::SerialNumber,
+            "legacy serialNumber must preserve its selector namespace");
     require(legacy.command.source == axent::ProtocolSource::LegacyOp, "legacy source mismatch");
     require(legacy.wire_method == "GetDeviceList", "legacy wire method mismatch");
 
@@ -135,6 +141,9 @@ int main()
     });
     require(legacy_address_precedence.command.device_id == "SERIAL-WINS",
             "legacy serialNumber precedence must remain compatible");
+    require(legacy_address_precedence.command.device_selector_kind ==
+                axent::DeviceSelectorKind::SerialNumber,
+            "legacy precedence must retain the selected serial namespace");
 
     const auto legacy_device_id = axent::decode_control_message({
         {"op", 7},
@@ -146,6 +155,9 @@ int main()
     });
     require(legacy_device_id.command.method == "device.info", "legacy GetDeviceInfo mapping mismatch");
     require(legacy_device_id.command.device_id == "mock-device-001", "legacy deviceId fallback mismatch");
+    require(legacy_device_id.command.device_selector_kind ==
+                axent::DeviceSelectorKind::ProviderLocalId,
+            "legacy deviceId fallback must retain the selected ID namespace");
 
     axent::ControlResult result;
     result.status = axent::ControlStatus::Ok;

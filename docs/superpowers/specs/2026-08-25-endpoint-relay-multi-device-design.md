@@ -324,6 +324,9 @@ bindings, maintaining indexes, and enforcing invariants:
   alone;
 - legacy ID-only or serial-only lookups return no result when multiple
   adapters match, while adapter-scoped lookup remains available;
+- control decoding preserves whether a legacy selector came from `deviceId`
+  or `serialNumber`; explicit selectors never fall through into the other
+  namespace after an ambiguous or missing lookup;
 - a new snapshot with an empty Endpoint ID is valid but cannot be routed by
   Endpoint ID;
 - refreshing an existing device with an empty Endpoint ID preserves an

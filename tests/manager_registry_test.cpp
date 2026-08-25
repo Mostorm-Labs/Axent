@@ -112,6 +112,32 @@ int main()
         adapter_scoped_routes.resolve_endpoint("ep_mock_shared")->adapter != "mock") {
         throw std::runtime_error(
             "ambiguous legacy routing must fail while endpoint routing remains scoped");
+
+    axent::DeviceSnapshot serial_alias = mock_shared;
+    serial_alias.adapter = "external";
+    serial_alias.id = "serial-alias-owner";
+    serial_alias.endpoint_id = "ep_serial_alias";
+    serial_alias.identity.serial_number = "shared-local-id";
+    if (!adapter_scoped_devices.upsert(serial_alias).accepted()) {
+        throw std::runtime_error("serial alias fixture must be accepted");
+    }
+    if (adapter_scoped_routes.resolve_device(
+            "shared-local-id", axent::DeviceSelectorKind::ProviderLocalId)
+            .has_value()) {
+        throw std::runtime_error(
+            "ambiguous provider-local deviceId must not fall through to serial");
+    }
+    const auto exact_serial_route = adapter_scoped_routes.resolve_device(
+        "shared-local-id", axent::DeviceSelectorKind::SerialNumber);
+    if (!exact_serial_route || exact_serial_route->adapter != "external" ||
+        exact_serial_route->device_id != "serial-alias-owner") {
+        throw std::runtime_error(
+            "explicit serialNumber must resolve only in the serial namespace");
+    }
+    if (adapter_scoped_routes.resolve_device("shared-local-id").has_value()) {
+        throw std::runtime_error(
+            "unspecified compatibility selector must fail on the union ambiguity");
+    }
     }
     if (!adapter_scoped_devices.get("mock", "shared-local-id") ||
         adapter_scoped_devices.get("mock", "shared-local-id")->endpoint_id !=

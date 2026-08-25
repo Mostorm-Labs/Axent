@@ -29,7 +29,8 @@ struct CommandRoute {
 CommandRoute resolve_command_route(RouteManager& routes, const ControlCommand& command)
 {
     if (command.dst.empty()) {
-        return {routes.resolve_device(command.device_id),
+        return {routes.resolve_device(
+                    command.device_id, command.device_selector_kind),
                 ControlStatus::NotFound,
                 "route not found"};
     }
@@ -101,7 +102,8 @@ std::string Broker::route_key(const ControlCommand& command) const
     }
     const auto target = !command.dst.empty()
         ? routes_.resolve_endpoint(command.dst)
-        : routes_.resolve_device(command.device_id);
+        : routes_.resolve_device(
+              command.device_id, command.device_selector_kind);
     if (target.has_value()) {
         return "physical:" + target->adapter + ":" + target->device_id;
     }

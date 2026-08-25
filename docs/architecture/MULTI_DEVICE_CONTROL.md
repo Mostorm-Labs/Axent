@@ -92,6 +92,11 @@ publish the same local ID without overwriting one another. Compatibility
 lookups that provide only an ID or serial fail closed when more than one
 adapter matches.
 
+The control codec preserves whether a legacy selector came from `deviceId` or
+`serialNumber`; each field resolves only in its own namespace. Manually built
+commands that do not declare a selector kind use the union of both namespaces
+and succeed only when exactly one physical `(adapter, device.id)` matches.
+
 If HID enumeration reports the same canonical VID/PID/serial identity on
 different paths or interfaces, `AxtpAdapter` treats the evidence as ambiguous
 before it reaches `DeviceManager`. It publishes neither snapshot nor routable

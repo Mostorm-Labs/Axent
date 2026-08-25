@@ -91,9 +91,18 @@ void fill_legacy_destination(ControlCommand& command,
     // normalizing them into device_id so existing adapters continue to work.
     const auto device_id = optional_string(params, "deviceId");
     const auto serial_number = optional_string(params, "serialNumber");
-    command.device_id = prefer_serial_number ? serial_number : device_id;
-    if (command.device_id.empty()) {
-        command.device_id = prefer_serial_number ? device_id : serial_number;
+    if (prefer_serial_number && !serial_number.empty()) {
+        command.device_id = serial_number;
+        command.device_selector_kind = DeviceSelectorKind::SerialNumber;
+    } else if (!prefer_serial_number && !device_id.empty()) {
+        command.device_id = device_id;
+        command.device_selector_kind = DeviceSelectorKind::ProviderLocalId;
+    } else if (!device_id.empty()) {
+        command.device_id = device_id;
+        command.device_selector_kind = DeviceSelectorKind::ProviderLocalId;
+    } else if (!serial_number.empty()) {
+        command.device_id = serial_number;
+        command.device_selector_kind = DeviceSelectorKind::SerialNumber;
     }
 }
 

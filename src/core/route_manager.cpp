@@ -61,10 +61,40 @@ std::optional<RouteTarget> RouteManager::resolve_endpoint(const std::string& end
 
 std::optional<RouteTarget> RouteManager::resolve_device(const std::string& device_id) const
 {
-    auto device = devices_.get(device_id);
-    if (!device) {
-        device = devices_.find_by_serial_number(device_id);
+    if (device_id.empty()) {
+        return std::nullopt;
     }
+    const auto devices = devices_.list();
+    auto found = devices.end();
+    for (auto current = devices.begin(); current != devices.end(); ++current) {
+        if (current->id != device_id &&
+            current->identity.serial_number != device_id) {
+            continue;
+        }
+        if (found != devices.end()) {
+            return std::nullopt;
+        }
+        found = current;
+    }
+    if (found == devices.end() || !found->connection.online) {
+        return std::nullopt;
+    }
+    return RouteTarget{found->adapter,
+                       found->id,
+                       found->endpoint_id,
+                       found->endpoint_delivery_mode};
+}
+
+std::optional<RouteTarget> RouteManager::resolve_device(
+    const std::string& selector,
+    DeviceSelectorKind selector_kind) const
+{
+    if (selector_kind == DeviceSelectorKind::Unspecified) {
+        return resolve_device(selector);
+    }
+    const auto device = selector_kind == DeviceSelectorKind::ProviderLocalId
+        ? devices_.get(selector)
+        : devices_.find_by_serial_number(selector);
     if (!device || !device->connection.online) {
         return std::nullopt;
     }

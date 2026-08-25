@@ -37,6 +37,12 @@ enum class EndpointDeliveryMode {
     NativeRelay,
 };
 
+enum class DeviceSelectorKind {
+    Unspecified,
+    ProviderLocalId,
+    SerialNumber,
+};
+
 struct DeviceIdentity {
     std::string vendor;
     std::string model;
@@ -98,6 +104,10 @@ struct ControlCommand {
     // Kept at the end so existing aggregate initializers remain compatible.
     std::string src;
     std::string dst;
+    // Legacy physical selectors live in distinct namespaces. Unspecified is
+    // retained for source compatibility with manually constructed commands
+    // and resolves only when the union identifies one physical provider.
+    DeviceSelectorKind device_selector_kind = DeviceSelectorKind::Unspecified;
 };
 
 struct ControlResult {
