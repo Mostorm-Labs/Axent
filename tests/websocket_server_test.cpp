@@ -318,5 +318,62 @@ int main()
             "legacy alias response should retain legacy envelope semantics");
 
     server.stop();
+
+    // Saturate one route while its active request is blocked. Validation is
+    // part of the wire contract and must still win over the queue-full fast
+    // path for a malformed half-routing envelope.
+    BlockingAdapter saturation_adapter;
+    axent::DeviceManager saturation_devices;
+    for (const auto& device : saturation_adapter.discover()) {
+        saturation_devices.upsert(device);
+    }
+    axent::RouteManager saturation_routes(saturation_devices);
+    axent::Middleware saturation_middleware(logger);
+    axent::FlowControl saturation_flow;
+    axent::Broker saturation_broker(
+        saturation_routes, saturation_middleware, saturation_flow);
+    saturation_broker.register_adapter(saturation_adapter);
+    axent::ControlPlane saturation_control_plane(saturation_broker);
+    axent::WebSocketServer saturation_server;
+    require(saturation_server.start(
+                saturation_control_plane, "127.0.0.1", 0),
+            "queue saturation server should start");
+    TestClient saturation_client(saturation_server.local_port());
+    saturation_client.start();
+    require(saturation_client.wait_until_open(std::chrono::seconds(3)),
+            "queue saturation client should connect");
+    saturation_client.send_text(
+        R"({"jsonrpc":"2.0","id":1000,"src":"controller:nearcast","dst":"endpoint/controlled-a","method":"control.block","params":{}})");
+    if (!saturation_adapter.wait_until_blocked(std::chrono::seconds(3))) {
+        saturation_adapter.release();
+        require(false, "queue saturation request should block its route");
+    }
+    for (int id = 1001; id <= 1256; ++id) {
+        saturation_client.send_text(
+            nlohmann::json{
+                {"jsonrpc", "2.0"},
+                {"id", id},
+                {"src", "controller:nearcast"},
+                {"dst", "endpoint/controlled-a"},
+                {"method", "status.get"},
+                {"params", nlohmann::json::object()},
+            }.dump());
+    }
+    saturation_client.send_text(
+        R"({"jsonrpc":"2.0","id":2000,"src":"controller:nearcast","method":"status.get","params":{}})");
+    if (!saturation_client.wait_for_messages(1, std::chrono::seconds(3))) {
+        saturation_adapter.release();
+        require(false, "queue-full malformed request should receive a response");
+    }
+    const auto malformed_queue_full =
+        response_with_id(saturation_client.messages(), 2000);
+    if (malformed_queue_full.empty() ||
+        malformed_queue_full.at("error").at("code") != -32602) {
+        saturation_adapter.release();
+        require(false,
+                "routing validation must take precedence over queue saturation");
+    }
+    saturation_adapter.release();
+    saturation_server.stop();
     return 0;
 }

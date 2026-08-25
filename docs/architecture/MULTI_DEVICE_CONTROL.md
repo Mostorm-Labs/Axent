@@ -86,6 +86,17 @@ endpointId     = "ep_" + lowerHex(digest[0..15])
 The serial bytes are not case-folded. HID path, interface number, USB port,
 and discovery order never participate in the key.
 
+Provider-local IDs are scoped by their adapter. `DeviceManager` stores a
+physical binding as `(adapter, device.id)`; different adapters may therefore
+publish the same local ID without overwriting one another. Compatibility
+lookups that provide only an ID or serial fail closed when more than one
+adapter matches.
+
+If HID enumeration reports the same canonical VID/PID/serial identity on
+different paths or interfaces, `AxtpAdapter` treats the evidence as ambiguous
+before it reaches `DeviceManager`. It publishes neither snapshot nor routable
+transport descriptor for that ID, so enumeration order cannot select a unit.
+
 Endpoint bindings are fail-closed. A duplicate binding is rejected as
 `EndpointConflict`; changing an existing non-empty binding is rejected as
 `EndpointChangeRejected`. Refreshes that omit an already bound Endpoint retain

@@ -41,13 +41,14 @@ DeviceUpsertResult DeviceManager::upsert(DeviceSnapshot snapshot)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto existing = std::find_if(devices_.begin(), devices_.end(), [&](const auto& current) {
-        return current.id == snapshot.id;
+        return current.adapter == snapshot.adapter && current.id == snapshot.id;
     });
 
     if (!snapshot.endpoint_id.empty()) {
         const auto conflict = std::find_if(
             devices_.begin(), devices_.end(), [&](const auto& current) {
-                return current.id != snapshot.id &&
+                return (current.adapter != snapshot.adapter ||
+                        current.id != snapshot.id) &&
                        current.endpoint_id == snapshot.endpoint_id;
             });
         if (conflict != devices_.end()) {
@@ -74,11 +75,13 @@ DeviceUpsertResult DeviceManager::upsert(DeviceSnapshot snapshot)
                            : DeviceUpsertStatus::Refreshed};
 }
 
-void DeviceManager::mark_offline(const std::string& id, const std::string& reason)
+void DeviceManager::mark_offline(const std::string& adapter,
+                                 const std::string& id,
+                                 const std::string& reason)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto existing = std::find_if(devices_.begin(), devices_.end(), [&](const auto& current) {
-        return current.id == id;
+        return current.adapter == adapter && current.id == id;
     });
     if (existing != devices_.end()) {
         existing->connection.online = false;
@@ -86,12 +89,53 @@ void DeviceManager::mark_offline(const std::string& id, const std::string& reaso
     }
 }
 
+void DeviceManager::mark_offline(const std::string& id, const std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto existing = devices_.end();
+    for (auto current = devices_.begin(); current != devices_.end(); ++current) {
+        if (current->id != id) {
+            continue;
+        }
+        if (existing != devices_.end()) {
+            return;
+        }
+        existing = current;
+    }
+    if (existing == devices_.end()) {
+        return;
+    }
+    existing->connection.online = false;
+    existing->connection.last_change_reason = reason;
+}
+
+std::optional<DeviceSnapshot> DeviceManager::get(const std::string& adapter,
+                                                  const std::string& id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto existing = std::find_if(
+        devices_.begin(), devices_.end(), [&](const auto& current) {
+            return current.adapter == adapter && current.id == id;
+        });
+    if (existing == devices_.end()) {
+        return std::nullopt;
+    }
+    return *existing;
+}
+
 std::optional<DeviceSnapshot> DeviceManager::get(const std::string& id) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto existing = std::find_if(devices_.begin(), devices_.end(), [&](const auto& current) {
-        return current.id == id;
-    });
+    auto existing = devices_.end();
+    for (auto current = devices_.begin(); current != devices_.end(); ++current) {
+        if (current->id != id) {
+            continue;
+        }
+        if (existing != devices_.end()) {
+            return std::nullopt;
+        }
+        existing = current;
+    }
     if (existing == devices_.end()) {
         return std::nullopt;
     }
@@ -104,9 +148,16 @@ std::optional<DeviceSnapshot> DeviceManager::find_by_serial_number(const std::st
     if (serial_number.empty()) {
         return std::nullopt;
     }
-    auto existing = std::find_if(devices_.begin(), devices_.end(), [&](const auto& current) {
-        return current.identity.serial_number == serial_number;
-    });
+    auto existing = devices_.end();
+    for (auto current = devices_.begin(); current != devices_.end(); ++current) {
+        if (current->identity.serial_number != serial_number) {
+            continue;
+        }
+        if (existing != devices_.end()) {
+            return std::nullopt;
+        }
+        existing = current;
+    }
     if (existing == devices_.end()) {
         return std::nullopt;
     }

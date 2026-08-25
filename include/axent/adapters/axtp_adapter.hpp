@@ -250,6 +250,9 @@ private:
     // transport before the old one has fully closed.
     mutable std::set<std::string> retiring_device_ids_;
     mutable std::map<std::string, TransportDescriptor> transport_descriptors_;
+    // Canonical HID identities observed on more than one physical
+    // path/interface are withheld until discovery becomes unambiguous.
+    mutable std::set<std::string> ambiguous_device_ids_;
     // A selector that already names one serial/path is a single-device
     // configuration. Reserve its first logical ID when discovery metadata is
     // unavailable so a second ID cannot accidentally reopen the same handle.

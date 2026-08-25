@@ -60,6 +60,24 @@ TransportDescriptor AxtpAdapterTestSeam::descriptor_from_hid_device(
     return detail::descriptor_from_hid_device(device);
 }
 
+AxtpAdapterTestSeam::DiscoveryProjection
+AxtpAdapterTestSeam::project_hid_devices(
+    const TransportSelector& selector,
+    const std::vector<transport::HidDeviceInfo>& hid_devices,
+    EndpointDeliveryMode endpoint_delivery_mode)
+{
+    auto projected = detail::project_hid_devices(
+        selector, hid_devices, endpoint_delivery_mode);
+    DiscoveryProjection result;
+    result.devices = std::move(projected.devices);
+    for (const auto& [device_id, descriptor] : projected.descriptors) {
+        (void)descriptor;
+        result.routable_device_ids.insert(device_id);
+    }
+    result.ambiguous_device_ids = std::move(projected.ambiguous_device_ids);
+    return result;
+}
+
 bool AxtpAdapterTestSeam::matches_selector(const AxtpAdapter& adapter,
                                            const axent::transport::HidDeviceInfo& device)
 {

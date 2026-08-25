@@ -146,6 +146,13 @@ struct WebSocketServer::Impl {
     {
         try {
             const auto decoded = decode_control_message(request);
+            if (decoded.validation_error.has_value()) {
+                return encode_control_response(
+                    decoded,
+                    {ControlStatus::InvalidArgument,
+                     {{"error", *decoded.validation_error}}})
+                    .dump();
+            }
             const ControlResult result{
                 ControlStatus::Unavailable,
                 {{"error", "control request queue full"}},

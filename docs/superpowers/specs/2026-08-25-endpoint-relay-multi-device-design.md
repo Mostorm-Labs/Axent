@@ -320,6 +320,10 @@ logical Endpoint and may produce a new ID.
 `adapter + device.id`. Its responsibilities are limited to storing explicit
 bindings, maintaining indexes, and enforcing invariants:
 
+- the storage key is `(adapter, provider-local device.id)`, not `device.id`
+  alone;
+- legacy ID-only or serial-only lookups return no result when multiple
+  adapters match, while adapter-scoped lookup remains available;
 - a new snapshot with an empty Endpoint ID is valid but cannot be routed by
   Endpoint ID;
 - refreshing an existing device with an empty Endpoint ID preserves an

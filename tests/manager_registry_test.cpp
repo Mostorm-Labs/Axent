@@ -4,6 +4,7 @@
 #include "axent/core/adapter_registry.hpp"
 #include "axent/core/capability_registry.hpp"
 #include "axent/core/device_manager.hpp"
+#include "axent/core/route_manager.hpp"
 #include "axent/core/session_manager.hpp"
 
 int main()
@@ -79,6 +80,67 @@ int main()
     if (devices.upsert(managed).status != axent::DeviceUpsertStatus::Inserted ||
         devices.get(managed.id)->endpoint_id != managed.endpoint_id) {
         throw std::runtime_error("deployment-owned endpoint binding must be accepted");
+    }
+
+    axent::DeviceManager adapter_scoped_devices;
+    axent::DeviceSnapshot mock_shared;
+    mock_shared.id = "shared-local-id";
+    mock_shared.adapter = "mock";
+    mock_shared.endpoint_id = "ep_mock_shared";
+    mock_shared.identity.serial_number = "SHARED-SERIAL";
+    mock_shared.connection.online = true;
+    axent::DeviceSnapshot axtp_shared = mock_shared;
+    axtp_shared.adapter = "axtp";
+    axtp_shared.endpoint_id = "ep_axtp_shared";
+    if (!adapter_scoped_devices.upsert(mock_shared).accepted() ||
+        !adapter_scoped_devices.upsert(axtp_shared).accepted() ||
+        adapter_scoped_devices.list().size() != 2) {
+        throw std::runtime_error(
+            "different adapters must retain the same provider-local device id");
+    }
+    if (adapter_scoped_devices.get("shared-local-id").has_value()) {
+        throw std::runtime_error(
+            "legacy id-only lookup must fail closed when adapters make it ambiguous");
+    }
+    if (adapter_scoped_devices.find_by_serial_number("SHARED-SERIAL").has_value()) {
+        throw std::runtime_error(
+            "legacy serial lookup must fail closed when providers make it ambiguous");
+    }
+    axent::RouteManager adapter_scoped_routes(adapter_scoped_devices);
+    if (adapter_scoped_routes.resolve_device("shared-local-id").has_value() ||
+        !adapter_scoped_routes.resolve_endpoint("ep_mock_shared") ||
+        adapter_scoped_routes.resolve_endpoint("ep_mock_shared")->adapter != "mock") {
+        throw std::runtime_error(
+            "ambiguous legacy routing must fail while endpoint routing remains scoped");
+    }
+    if (!adapter_scoped_devices.get("mock", "shared-local-id") ||
+        adapter_scoped_devices.get("mock", "shared-local-id")->endpoint_id !=
+            "ep_mock_shared" ||
+        !adapter_scoped_devices.get("axtp", "shared-local-id") ||
+        adapter_scoped_devices.get("axtp", "shared-local-id")->endpoint_id !=
+            "ep_axtp_shared") {
+        throw std::runtime_error("adapter-scoped lookup selected the wrong provider");
+    }
+    adapter_scoped_devices.mark_offline("shared-local-id", "ambiguous-legacy-call");
+    if (!adapter_scoped_devices.get("mock", "shared-local-id")->connection.online ||
+        !adapter_scoped_devices.get("axtp", "shared-local-id")->connection.online) {
+        throw std::runtime_error(
+            "ambiguous legacy lifecycle operations must not mutate either provider");
+    }
+    adapter_scoped_devices.mark_offline(
+        "axtp", "shared-local-id", "adapter-scoped-call");
+    if (!adapter_scoped_devices.get("mock", "shared-local-id")->connection.online ||
+        adapter_scoped_devices.get("axtp", "shared-local-id")->connection.online) {
+        throw std::runtime_error(
+            "adapter-scoped lifecycle operation must mutate only its provider");
+    }
+
+    axent::DeviceSnapshot cross_adapter_conflict = mock_shared;
+    cross_adapter_conflict.adapter = "external";
+    if (adapter_scoped_devices.upsert(cross_adapter_conflict).status !=
+        axent::DeviceUpsertStatus::EndpointConflict) {
+        throw std::runtime_error(
+            "one endpoint must not bind to the same local id from another adapter");
     }
 
     axent::CapabilityRegistry capabilities;

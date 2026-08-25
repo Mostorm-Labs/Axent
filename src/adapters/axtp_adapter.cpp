@@ -941,6 +941,10 @@ std::shared_ptr<AxtpAdapter::DeviceContext> AxtpAdapter::device_context_for(
             // closed. Do not let a caller create a replacement in the gap.
             return nullptr;
         }
+        if (ambiguous_device_ids_.find(device_id) !=
+            ambiguous_device_ids_.end()) {
+            return nullptr;
+        }
         const auto found = transport_descriptors_.find(device_id);
         if (found != transport_descriptors_.end()) {
             descriptor = found->second;
@@ -976,18 +980,20 @@ std::shared_ptr<AxtpAdapter::DeviceContext> AxtpAdapter::device_context_for(
         if (selector.kind == TransportKind::Hid) {
             const auto hid_devices = axent::transport::enumerateHidDevices(
                 selector.vendor_id, selector.product_id);
-            for (const auto& device : hid_devices) {
-                if (!detail::matches_selector(selector, device)) {
-                    continue;
-                }
-                auto candidate = detail::descriptor_from_hid_device(device);
-                if (candidate.id == device_id) {
-                    descriptor = std::move(candidate);
-                    descriptor_known = true;
-                    std::lock_guard<std::mutex> lock(device_context_mutex_);
-                    transport_descriptors_[device_id] = descriptor;
-                    break;
-                }
+            auto projection = detail::project_hid_devices(
+                selector, hid_devices, config_.endpoint_delivery_mode);
+            std::lock_guard<std::mutex> lock(device_context_mutex_);
+            ambiguous_device_ids_ = projection.ambiguous_device_ids;
+            if (ambiguous_device_ids_.find(device_id) !=
+                ambiguous_device_ids_.end()) {
+                transport_descriptors_.erase(device_id);
+                return nullptr;
+            }
+            const auto candidate = projection.descriptors.find(device_id);
+            if (candidate != projection.descriptors.end()) {
+                descriptor = candidate->second;
+                descriptor_known = true;
+                transport_descriptors_[device_id] = descriptor;
             }
         }
     }
@@ -1124,6 +1130,7 @@ AxtpAdapter::~AxtpAdapter()
             std::lock_guard<std::mutex> lock(device_context_mutex_);
             contexts.swap(device_contexts_);
             transport_descriptors_.clear();
+            ambiguous_device_ids_.clear();
             retiring_device_ids_.clear();
             fixed_selector_device_id_.clear();
         }
@@ -1259,6 +1266,46 @@ DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(
     return snapshot;
 }
 
+detail::AxtpDiscoveryProjection detail::project_hid_devices(
+    const TransportSelector& selector,
+    const std::vector<axent::transport::HidDeviceInfo>& hid_devices,
+    EndpointDeliveryMode endpoint_delivery_mode)
+{
+    AxtpDiscoveryProjection projection;
+    for (const auto& device : hid_devices) {
+        if (!matches_selector(selector, device)) {
+            continue;
+        }
+        auto descriptor = descriptor_from_hid_device(device);
+        if (projection.ambiguous_device_ids.find(descriptor.id) !=
+            projection.ambiguous_device_ids.end()) {
+            continue;
+        }
+        const auto existing = projection.descriptors.find(descriptor.id);
+        if (existing == projection.descriptors.end()) {
+            projection.descriptors.emplace(descriptor.id, std::move(descriptor));
+            continue;
+        }
+        // Some platforms can report the exact same HID interface more than
+        // once. That is a harmless duplicate. A different path or interface
+        // with the same canonical VID/PID/serial evidence is not: choosing
+        // either provider would make the Endpoint nondeterministic.
+        if (!descriptor.path.empty() &&
+            existing->second.path == descriptor.path &&
+            existing->second.interface_number == descriptor.interface_number) {
+            continue;
+        }
+        projection.descriptors.erase(existing);
+        projection.ambiguous_device_ids.insert(descriptor.id);
+    }
+    for (const auto& [device_id, descriptor] : projection.descriptors) {
+        (void)device_id;
+        projection.devices.push_back(AxtpAdapter::snapshot_from_descriptor(
+            descriptor, endpoint_delivery_mode));
+    }
+    return projection;
+}
+
 AdapterMetadata AxtpAdapter::metadata() const
 {
     return {"axtp", "AXTP Runtime Adapter", true, ""};
@@ -1293,21 +1340,18 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
 #if AXENT_HAS_AXTP_HID_TRANSPORT
     const auto hid_devices = axent::transport::enumerateHidDevices(
         selector.vendor_id, selector.product_id);
-    std::map<std::string, TransportDescriptor> descriptors;
-    for (const auto& device : hid_devices) {
-        if (detail::matches_selector(selector, device)) {
-            auto descriptor = detail::descriptor_from_hid_device(device);
-            devices.push_back(snapshot_from_descriptor(
-                descriptor, config_.endpoint_delivery_mode));
-            descriptors[descriptor.id] = std::move(descriptor);
-        }
-    }
+    auto projection = detail::project_hid_devices(
+        selector, hid_devices, config_.endpoint_delivery_mode);
+    devices = std::move(projection.devices);
+    auto& descriptors = projection.descriptors;
     if (!device_context_) {
         std::vector<std::pair<std::shared_ptr<DeviceContext>, TransportDescriptor>>
             selector_updates;
         {
             std::lock_guard<std::mutex> lock(device_context_mutex_);
-            if (!descriptors.empty() || transport_descriptors_.empty()) {
+            ambiguous_device_ids_ = projection.ambiguous_device_ids;
+            if (!descriptors.empty() || transport_descriptors_.empty() ||
+                !ambiguous_device_ids_.empty()) {
                 transport_descriptors_ = descriptors;
             }
             for (const auto& [device_id, descriptor] : descriptors) {

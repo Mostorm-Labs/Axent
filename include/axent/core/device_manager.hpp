@@ -37,7 +37,16 @@ public:
     DeviceManager& operator=(DeviceManager&& other) noexcept;
 
     DeviceUpsertResult upsert(DeviceSnapshot snapshot);
+    void mark_offline(const std::string& adapter,
+                      const std::string& id,
+                      const std::string& reason);
+    // Compatibility operation for hosts that only have a provider-local ID.
+    // It is a no-op when more than one adapter owns that ID.
     void mark_offline(const std::string& id, const std::string& reason);
+    std::optional<DeviceSnapshot> get(const std::string& adapter,
+                                      const std::string& id) const;
+    // Compatibility lookup. It fails closed when the ID is ambiguous across
+    // adapters; callers resolving an Endpoint receive an adapter-scoped target.
     std::optional<DeviceSnapshot> get(const std::string& id) const;
     std::optional<DeviceSnapshot> find_by_serial_number(const std::string& serial_number) const;
     std::vector<DeviceSnapshot> list() const;

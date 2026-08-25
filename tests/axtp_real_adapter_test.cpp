@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "axent/adapters/axtp_adapter.hpp"
+#include "axent/core/device_manager.hpp"
 #include "axtp_adapter_test_seam.hpp"
 
 #include "core/protocol/wire/inbound_processor.hpp"
@@ -669,6 +670,32 @@ int main()
     axent::AxtpAdapter adapter(defaults);
     require(axent::testing::AxtpAdapterTestSeam::matches_selector(adapter, hid_device),
             "default adapter should match NA20 device");
+
+    const auto unique_projection =
+        axent::testing::AxtpAdapterTestSeam::project_hid_devices(
+            defaults.selector, {hid_device});
+    require(unique_projection.devices.size() == 1 &&
+                unique_projection.routable_device_ids.count(descriptor.id) == 1 &&
+                unique_projection.ambiguous_device_ids.empty(),
+            "a unique HID identity must remain discoverable and routable");
+
+    auto duplicate_serial_device = hid_device;
+    duplicate_serial_device.path = "hid-path-duplicate-serial";
+    duplicate_serial_device.interfaceNumber = 4;
+    const auto ambiguous_projection =
+        axent::testing::AxtpAdapterTestSeam::project_hid_devices(
+            defaults.selector, {hid_device, duplicate_serial_device});
+    require(ambiguous_projection.devices.empty() &&
+                ambiguous_projection.routable_device_ids.empty() &&
+                ambiguous_projection.ambiguous_device_ids.count(descriptor.id) == 1,
+            "distinct HID providers sharing canonical serial evidence must fail closed");
+    axent::DeviceManager ambiguous_devices;
+    for (const auto& projected : ambiguous_projection.devices) {
+        ambiguous_devices.upsert(projected);
+    }
+    require(ambiguous_devices.list().empty(),
+            "ambiguous HID discovery must not reach DeviceManager as a refresh");
+
     auto wrong_usage = hid_device;
     wrong_usage.usagePage = 0x1234;
     require(!axent::testing::AxtpAdapterTestSeam::matches_selector(adapter, wrong_usage),
