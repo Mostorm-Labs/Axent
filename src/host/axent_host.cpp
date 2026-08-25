@@ -27,6 +27,16 @@ namespace {
 
 thread_local bool g_in_media_stream_sink_callback = false;
 
+std::string session_operation_key(const std::string& session_id)
+{
+    return "session:" + session_id;
+}
+
+std::string endpoint_operation_key(const std::string& endpoint_id)
+{
+    return "endpoint:" + endpoint_id;
+}
+
 void log_endpoint_binding_rejection(Logger* logger,
                                     const DeviceSnapshot& device,
                                     DeviceUpsertResult result)
@@ -1290,7 +1300,7 @@ struct AxentHost::Impl {
     std::vector<std::shared_ptr<MediaStreamSubscriptionState>> stream_subscriptions_for_session_locked(
         const std::string& session_id);
     std::vector<ControlOperationPtr> take_control_operations_locked(
-        const std::optional<std::string>& session_id = std::nullopt);
+        const std::optional<std::string>& operation_key = std::nullopt);
     bool is_axtp_device_locked(const std::string& device_id) const;
     bool has_lease_for_device_locked(const std::string& device_id) const;
 
@@ -1364,7 +1374,7 @@ AxentHost::Impl::ResetSubscriptions AxentHost::Impl::reset()
 }
 
 std::vector<ControlOperationPtr> AxentHost::Impl::take_control_operations_locked(
-    const std::optional<std::string>& session_id)
+    const std::optional<std::string>& operation_key)
 {
     std::vector<ControlOperationPtr> operations;
     const auto take = [&operations](auto& weak_operations) {
@@ -1374,8 +1384,8 @@ std::vector<ControlOperationPtr> AxentHost::Impl::take_control_operations_locked
             }
         }
     };
-    if (session_id.has_value()) {
-        const auto entry = control_operations.find(*session_id);
+    if (operation_key.has_value()) {
+        const auto entry = control_operations.find(*operation_key);
         if (entry != control_operations.end()) {
             take(entry->second);
             control_operations.erase(entry);
@@ -1845,7 +1855,7 @@ void AxentHost::release_session(const std::string& session_id, const std::string
             impl_->take_session_stream_subscriptions_locked(session_id);
         impl_->active_media_streams.erase(session_id);
         operations_to_cancel =
-            impl_->take_control_operations_locked(session_id);
+            impl_->take_control_operations_locked(session_operation_key(session_id));
         if (lease.has_value()) {
             impl_->sessions.close_device_session(session_id);
         }
@@ -2313,7 +2323,7 @@ ControlOperationPtr AxentHost::call_async(
             return make_completed_control_operation(
                 {ControlStatus::NotFound, {{"error", "session released"}}});
         }
-        auto& operations = impl_->control_operations[session_id];
+        auto& operations = impl_->control_operations[session_operation_key(session_id)];
         operations.erase(
             std::remove_if(
                 operations.begin(),
@@ -2375,7 +2385,7 @@ ControlOperationPtr AxentHost::call_endpoint(
     auto operation = broker->dispatch_async(command, options);
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        auto& operations = impl_->control_operations[command.dst];
+        auto& operations = impl_->control_operations[endpoint_operation_key(command.dst)];
         operations.erase(
             std::remove_if(
                 operations.begin(),

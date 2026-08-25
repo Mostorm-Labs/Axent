@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -173,6 +172,45 @@ public:
         block_cv_.notify_all();
     }
 
+    void blockNextBusinessRequest()
+    {
+        std::lock_guard<std::mutex> lock(block_mutex_);
+        block_next_business_request_ = true;
+        business_request_blocked_ = false;
+        unblock_business_request_ = false;
+    }
+
+    bool waitForBusinessRequestBlocked()
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        return block_cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            return business_request_blocked_;
+        });
+    }
+
+    bool waitForBusinessRequests(std::size_t count)
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        return block_cv_.wait_for(lock, std::chrono::seconds(1), [this, count]() {
+            return business_request_count_ >= count;
+        });
+    }
+
+    std::size_t businessRequestCount() const
+    {
+        std::lock_guard<std::mutex> lock(block_mutex_);
+        return business_request_count_;
+    }
+
+    void unblockBusinessRequest()
+    {
+        {
+            std::lock_guard<std::mutex> lock(block_mutex_);
+            unblock_business_request_ = true;
+        }
+        block_cv_.notify_all();
+    }
+
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
         CapturingPayloadSink payload_sink;
@@ -197,6 +235,18 @@ public:
             }
             if (rpc.op == axtp::RpcOp::Request) {
                 saw_business_request = true;
+                {
+                    std::unique_lock<std::mutex> lock(block_mutex_);
+                    ++business_request_count_;
+                    if (block_next_business_request_) {
+                        block_next_business_request_ = false;
+                        business_request_blocked_ = true;
+                        block_cv_.notify_all();
+                        block_cv_.wait(lock, [this]() {
+                            return unblock_business_request_;
+                        });
+                    }
+                }
                 std::optional<axtp::Bytes> request_stream;
                 {
                     std::lock_guard<std::mutex> lock(rx_mutex_);
@@ -276,11 +326,15 @@ private:
     std::mutex rx_mutex_;
     std::queue<axtp::Bytes> rx_queue_;
     std::optional<axtp::Bytes> stream_on_next_request_;
-    std::mutex block_mutex_;
+    mutable std::mutex block_mutex_;
     std::condition_variable block_cv_;
     bool block_after_next_stream_ = false;
     bool stream_blocked_ = false;
     bool unblock_stream_ = false;
+    bool block_next_business_request_ = false;
+    bool business_request_blocked_ = false;
+    bool unblock_business_request_ = false;
+    std::size_t business_request_count_ = 0;
     bool open_ = false;
 };
 
@@ -372,11 +426,30 @@ private:
     std::shared_ptr<int> discovery_count_;
 };
 
-class EndpointGateAdapter final : public axent::Adapter {
+struct EndpointCancellationState {
+    bool wait_for_cancellations(std::size_t count)
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        return cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return cancellations >= count;
+        });
+    }
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::size_t cancellations = 0;
+};
+
+class EndpointRecordingAdapter final : public axent::Adapter {
 public:
+    explicit EndpointRecordingAdapter(std::shared_ptr<EndpointCancellationState> cancellation_state)
+        : cancellation_state_(std::move(cancellation_state))
+    {
+    }
+
     axent::AdapterMetadata metadata() const override
     {
-        return {"endpoint-gate", "Endpoint host bridge test adapter", true, ""};
+        return {"endpoint-recording", "Endpoint host bridge test adapter", true, ""};
     }
 
     std::vector<axent::Capability> capabilities() const override
@@ -388,7 +461,6 @@ public:
     {
         return {
             device("physical-primary", "endpoint/mock-primary", true),
-            device("physical-secondary", "endpoint/mock-secondary", true),
             device("physical-offline", "endpoint/mock-offline", false),
         };
     }
@@ -404,17 +476,26 @@ public:
         const axent::AdapterControlRequest& request,
         axent::ControlCallOptions) override
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        requests_.push_back(request);
-        if (request.method != "gate") {
+        if (request.method != "hold") {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->requests.push_back(request);
             return axent::make_completed_control_operation(
                 {axent::ControlStatus::Ok, {{"path", "endpoint-routed"}}});
         }
 
         auto pending = std::make_shared<PendingCall>();
         pending->request = request;
-        pending_by_device_[request.device_id].push_back(pending);
-        start_next_locked(request.device_id);
+        const auto cancellation_state = cancellation_state_;
+        pending->source.set_cancel_handler([cancellation_state]() {
+            std::lock_guard<std::mutex> lock(cancellation_state->mutex);
+            ++cancellation_state->cancellations;
+            cancellation_state->cv.notify_all();
+        });
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->requests.push_back(request);
+            state_->held.push_back(pending);
+        }
         return pending->source.operation();
     }
 
@@ -426,33 +507,20 @@ public:
 
     std::vector<axent::AdapterControlRequest> requests() const
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return requests_;
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return state_->requests;
     }
 
-    bool wait_for_entries(const std::string& device_id, std::size_t count)
+    void complete_held()
     {
-        std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, std::chrono::seconds(1), [&]() {
-            return entered_by_device_[device_id] >= count;
-        });
-    }
-
-    void release_next(const std::string& device_id)
-    {
-        std::shared_ptr<PendingCall> active;
+        std::vector<std::shared_ptr<PendingCall>> held;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto entry = active_by_device_.find(device_id);
-            require(entry != active_by_device_.end(), "gate release requires an active call");
-            active = entry->second;
-            active_by_device_.erase(entry);
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            held.swap(state_->held);
         }
-        active->source.complete(
-            {axent::ControlStatus::Ok, {{"path", "endpoint-gated"}}});
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            start_next_locked(device_id);
+        for (const auto& pending : held) {
+            pending->source.complete(
+                {axent::ControlStatus::Ok, {{"path", "endpoint-held"}}});
         }
     }
 
@@ -462,39 +530,26 @@ private:
         axent::ControlOperationSource source;
     };
 
+    struct State {
+        std::mutex mutex;
+        std::vector<axent::AdapterControlRequest> requests;
+        std::vector<std::shared_ptr<PendingCall>> held;
+    };
+
     static axent::DeviceSnapshot device(
         std::string id, std::string endpoint_id, bool online)
     {
         axent::DeviceSnapshot snapshot;
         snapshot.id = std::move(id);
-        snapshot.adapter = "endpoint-gate";
+        snapshot.adapter = "endpoint-recording";
         snapshot.endpoint_id = std::move(endpoint_id);
         snapshot.connection.online = online;
         snapshot.connection.transport = "test";
         return snapshot;
     }
 
-    void start_next_locked(const std::string& device_id)
-    {
-        if (active_by_device_.find(device_id) != active_by_device_.end()) {
-            return;
-        }
-        auto& pending = pending_by_device_[device_id];
-        if (pending.empty()) {
-            return;
-        }
-        active_by_device_[device_id] = pending.front();
-        pending.erase(pending.begin());
-        ++entered_by_device_[device_id];
-        cv_.notify_all();
-    }
-
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    std::vector<axent::AdapterControlRequest> requests_;
-    std::map<std::string, std::vector<std::shared_ptr<PendingCall>>> pending_by_device_;
-    std::map<std::string, std::shared_ptr<PendingCall>> active_by_device_;
-    std::map<std::string, std::size_t> entered_by_device_;
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::shared_ptr<EndpointCancellationState> cancellation_state_;
 };
 
 std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& consumer)
@@ -837,13 +892,15 @@ int main()
     require(*inventory_discovery_count == discovery_count_before_stopped_refresh,
             "stopped Host refresh must not call discovery");
 
-    EndpointGateAdapter* endpoint_adapter = nullptr;
+    EndpointRecordingAdapter* endpoint_adapter = nullptr;
+    auto endpoint_cancellations = std::make_shared<EndpointCancellationState>();
     axent::AxentHost endpoint_host;
     axent::AxentHostOptions endpoint_options;
     endpoint_options.enable_mock_adapter = false;
     endpoint_options.enable_axtp_adapter = true;
-    endpoint_options.axtp_adapter_factory = [&endpoint_adapter](axent::AxtpAdapterConfig) {
-        auto adapter = std::make_unique<EndpointGateAdapter>();
+    endpoint_options.axtp_adapter_factory = [&endpoint_adapter, endpoint_cancellations](
+                                              axent::AxtpAdapterConfig) {
+        auto adapter = std::make_unique<EndpointRecordingAdapter>(endpoint_cancellations);
         endpoint_adapter = adapter.get();
         return adapter;
     };
@@ -900,36 +957,44 @@ int main()
                 "endpoint calls require source, destination, and method");
     }
 
-    const auto primary_first = endpoint_host.call_endpoint({
-        "ep-client-a", "endpoint/mock-primary", "gate", nlohmann::json::object()});
-    const auto primary_second = endpoint_host.call_endpoint({
-        "ep-client-b", "endpoint/mock-primary", "gate", nlohmann::json::object()});
-    require(endpoint_adapter->wait_for_entries("physical-primary", 1),
-            "first endpoint alias should enter its physical lane");
-    require(!primary_first->ready() && !primary_second->ready(),
-            "same-physical endpoint aliases should remain asynchronous");
+    axent::SessionAcquireRequest endpoint_collision_session_request;
+    endpoint_collision_session_request.client_id = "endpoint-collision-client";
+    endpoint_collision_session_request.device_id = "physical-primary";
+    const auto endpoint_collision_session =
+        endpoint_host.acquire_session(endpoint_collision_session_request);
+    require(endpoint_collision_session.acquired,
+            "collision test should acquire a Host session");
+    axent::DeviceSnapshot endpoint_collision_device;
+    endpoint_collision_device.id = "physical-session-collision";
+    endpoint_collision_device.adapter = "endpoint-recording";
+    endpoint_collision_device.endpoint_id = endpoint_collision_session.session_id;
+    endpoint_collision_device.connection.online = true;
+    endpoint_host.upsert_device(endpoint_collision_device);
+    const auto endpoint_collision_operation = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        endpoint_collision_session.session_id,
+        "hold",
+        nlohmann::json::object(),
+    });
+    require(endpoint_collision_operation != nullptr && !endpoint_collision_operation->ready(),
+            "endpoint operation should remain pending before unrelated session release");
+    endpoint_host.release_session(
+        endpoint_collision_session.session_id, "session and endpoint key collision");
+    require(!endpoint_collision_operation->ready(),
+            "releasing a matching session ID must not cancel an endpoint operation");
+    endpoint_adapter->complete_held();
+    require(endpoint_collision_operation->wait().status == axent::ControlStatus::Ok,
+            "endpoint operation should complete after its own adapter releases it");
 
-    const auto secondary = endpoint_host.call_endpoint({
-        "ep-client-c", "endpoint/mock-secondary", "gate", nlohmann::json::object()});
-    require(endpoint_adapter->wait_for_entries("physical-secondary", 1),
-            "different physical device should enter while primary is gated");
-    endpoint_adapter->release_next("physical-primary");
-    require(endpoint_adapter->wait_for_entries("physical-primary", 2),
-            "same-physical endpoint aliases should enter FIFO");
-    endpoint_adapter->release_next("physical-primary");
-    endpoint_adapter->release_next("physical-secondary");
-    require(primary_first->wait().status == axent::ControlStatus::Ok &&
-                primary_second->wait().status == axent::ControlStatus::Ok &&
-                secondary->wait().status == axent::ControlStatus::Ok,
-            "gated endpoint calls should complete after their physical lanes release");
-
-    const auto cancelled_by_stop = endpoint_host.call_endpoint({
-        "ep-nearcast-source", "endpoint/mock-primary", "gate", nlohmann::json::object()});
-    require(endpoint_adapter->wait_for_entries("physical-primary", 3),
-            "endpoint operation should be tracked before stop");
+    {
+        const auto discarded_operation = endpoint_host.call_endpoint({
+            "ep-nearcast-source", "endpoint/mock-primary", "hold", nlohmann::json::object()});
+        require(discarded_operation != nullptr && !discarded_operation->ready(),
+                "Adapter should retain the pending endpoint operation");
+    }
     endpoint_host.stop();
-    require(cancelled_by_stop->wait().status == axent::ControlStatus::Unavailable,
-            "Host stop should cancel tracked endpoint operations");
+    require(endpoint_cancellations->wait_for_cancellations(1),
+            "Host stop should cancel a producer-owned endpoint operation after caller release");
     const auto stopped_endpoint = endpoint_host.call_endpoint({
         "ep-nearcast-source", "endpoint/mock-primary", "status.get", nlohmann::json::object()});
     require(stopped_endpoint != nullptr &&
@@ -1389,6 +1454,47 @@ int main()
         real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
     require(original_after_second_open.status == axent::ControlStatus::Ok,
             "opening a second AXTP device must not disconnect the first");
+
+    auto endpoint_real_device = real_device;
+    endpoint_real_device.endpoint_id = "endpoint/real-primary";
+    real_host.upsert_device(endpoint_real_device);
+    auto endpoint_second_real_device = second_real_device;
+    endpoint_second_real_device.endpoint_id = "endpoint/real-secondary";
+    real_host.upsert_device(endpoint_second_real_device);
+
+    const auto primary_requests_before_lane_gate = scripted->businessRequestCount();
+    scripted->blockNextBusinessRequest();
+    const auto primary_endpoint_operation = real_host.call_endpoint({
+        "ep-test-source",
+        "endpoint/real-primary",
+        "audio.getAlgorithmConfig",
+        nlohmann::json::object(),
+    });
+    require(scripted->waitForBusinessRequestBlocked(),
+            "first real endpoint call should enter the primary physical AXTP lane");
+    const auto primary_session_operation = real_host.call_async(
+        real_lease.session_id, "audio.getAlgorithmConfig", {});
+    const auto secondary_endpoint_operation = real_host.call_endpoint({
+        "ep-test-source",
+        "endpoint/real-secondary",
+        "audio.getAlgorithmConfig",
+        nlohmann::json::object(),
+    });
+    const auto secondary_result = secondary_endpoint_operation->wait_for(
+        std::chrono::seconds(1));
+    require(secondary_result.has_value() &&
+                secondary_result->status == axent::ControlStatus::Ok,
+            "B must complete while A1 remains blocked");
+    require(!primary_session_operation->ready() &&
+                scripted->businessRequestCount() == primary_requests_before_lane_gate + 1,
+            "A2 must not bypass blocked A1 on the same real physical lane");
+    scripted->unblockBusinessRequest();
+    require(scripted->waitForBusinessRequests(primary_requests_before_lane_gate + 2),
+            "A2 should enter only after A1 releases the real physical lane");
+    require(primary_endpoint_operation->wait().status == axent::ControlStatus::Ok &&
+                primary_session_operation->wait().status == axent::ControlStatus::Ok,
+            "real primary calls should complete FIFO after the physical lane releases");
+
     real_host.release_session(second_real_lease.session_id,
                               "second device isolation verified");
     const auto original_after_second_release =
