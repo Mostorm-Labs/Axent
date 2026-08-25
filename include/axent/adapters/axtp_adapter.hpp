@@ -51,6 +51,8 @@ struct AxtpAdapterConfig {
     std::uint32_t session_health_failure_threshold = 3;
     std::uint32_t session_recovery_backoff_initial_ms = 1000;
     std::uint32_t session_recovery_backoff_max_ms = 5000;
+    EndpointDeliveryMode endpoint_delivery_mode =
+        EndpointDeliveryMode::LocalProjection;
 };
 
 class AxentHost;
@@ -65,7 +67,10 @@ public:
     ~AxtpAdapter() override;
 
     static AxtpAdapterConfig na20_defaults();
-    static DeviceSnapshot snapshot_from_descriptor(const TransportDescriptor& descriptor);
+    static DeviceSnapshot snapshot_from_descriptor(
+        const TransportDescriptor& descriptor,
+        EndpointDeliveryMode endpoint_delivery_mode =
+            EndpointDeliveryMode::LocalProjection);
 
     AdapterMetadata metadata() const override;
     std::vector<Capability> capabilities() const override;

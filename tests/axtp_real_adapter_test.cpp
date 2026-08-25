@@ -570,6 +570,8 @@ int main()
     require(defaults.selector.report_id == 0x05, "NA20 report id mismatch");
     require(defaults.selector.input_report_size == 0, "NA20 input report size should be auto");
     require(defaults.selector.output_report_size == 0, "NA20 output report size should be auto");
+    require(defaults.endpoint_delivery_mode == axent::EndpointDeliveryMode::LocalProjection,
+            "NA20 must default to legacy local Endpoint projection");
 
     axent::transport::HidDeviceInfo hid_device;
     hid_device.path = "hid-path-001";
@@ -599,6 +601,51 @@ int main()
     require(snapshot.connection.online, "snapshot should be online");
     require(snapshot.connection.transport == "hid", "snapshot transport mismatch");
     require(snapshot.status.health == "ready", "snapshot health mismatch");
+
+    auto canonical_descriptor = descriptor;
+    canonical_descriptor.vendor_id = 0x1234;
+    canonical_descriptor.product_id = 0x5678;
+    canonical_descriptor.serial_number = "SERIAL-1";
+    canonical_descriptor.path = "hid-path-a";
+    const auto canonical_snapshot =
+        axent::AxtpAdapter::snapshot_from_descriptor(canonical_descriptor);
+    require(canonical_snapshot.endpoint_id == "ep_3340a334b47934f471968db6b1470da6",
+            "serial-backed HID identity must use the canonical Endpoint algorithm");
+    require(canonical_snapshot.endpoint_delivery_mode ==
+                axent::EndpointDeliveryMode::LocalProjection,
+            "legacy HID projection must default to local delivery");
+
+    canonical_descriptor.path = "hid-path-b";
+    const auto moved_path_snapshot =
+        axent::AxtpAdapter::snapshot_from_descriptor(canonical_descriptor);
+    require(moved_path_snapshot.endpoint_id == canonical_snapshot.endpoint_id,
+            "HID path churn must not change a serial-backed Endpoint");
+
+    canonical_descriptor.serial_number = "serial-1";
+    const auto changed_serial_snapshot =
+        axent::AxtpAdapter::snapshot_from_descriptor(canonical_descriptor);
+    require(changed_serial_snapshot.endpoint_id != canonical_snapshot.endpoint_id,
+            "serial bytes must remain case-sensitive Endpoint evidence");
+
+    canonical_descriptor.serial_number.clear();
+    canonical_descriptor.path = "hid-path-without-serial-a";
+    const auto path_only_snapshot_a =
+        axent::AxtpAdapter::snapshot_from_descriptor(canonical_descriptor);
+    canonical_descriptor.path = "hid-path-without-serial-b";
+    const auto path_only_snapshot_b =
+        axent::AxtpAdapter::snapshot_from_descriptor(canonical_descriptor);
+    require(path_only_snapshot_a.endpoint_id.empty() &&
+                path_only_snapshot_b.endpoint_id.empty(),
+            "path-only HID devices must not receive a synthesized stable Endpoint");
+
+    canonical_descriptor.serial_number = "SERIAL-1";
+    const auto native_relay_snapshot = axent::AxtpAdapter::snapshot_from_descriptor(
+        canonical_descriptor, axent::EndpointDeliveryMode::NativeRelay);
+    require(native_relay_snapshot.endpoint_id == canonical_snapshot.endpoint_id,
+            "delivery mode must not change canonical Endpoint identity");
+    require(native_relay_snapshot.endpoint_delivery_mode ==
+                axent::EndpointDeliveryMode::NativeRelay,
+            "explicit NativeRelay projection must be recorded on the snapshot");
 
     axent::AxtpAdapter adapter(defaults);
     require(axent::testing::AxtpAdapterTestSeam::matches_selector(adapter, hid_device),

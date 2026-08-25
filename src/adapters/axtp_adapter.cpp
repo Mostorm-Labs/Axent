@@ -1,4 +1,5 @@
 #include "axent/adapters/axtp_adapter.hpp"
+#include "axent/adapters/axtp_endpoint_identity.hpp"
 #include "axtp_adapter_test_seam.hpp"
 
 #include "axtp_adapter_internal.hpp"
@@ -1230,7 +1231,9 @@ TransportDescriptor detail::descriptor_from_hid_device(const axent::transport::H
     return descriptor;
 }
 
-DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(const TransportDescriptor& descriptor)
+DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(
+    const TransportDescriptor& descriptor,
+    EndpointDeliveryMode endpoint_delivery_mode)
 {
     DeviceSnapshot snapshot;
     snapshot.id = descriptor.id;
@@ -1242,6 +1245,13 @@ DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(const TransportDescriptor& 
     snapshot.connection.transport = "hid";
     snapshot.connection.last_change_reason = "hid-discovered";
     snapshot.status.health = descriptor.online ? "ready" : "offline";
+    snapshot.endpoint_delivery_mode = endpoint_delivery_mode;
+    if (descriptor.kind == TransportKind::Hid &&
+        !descriptor.serial_number.empty()) {
+        snapshot.endpoint_id = axtp_endpoint_id_from_key(
+            "device:axtp:hid:" + hex4(descriptor.vendor_id) + ":" +
+            hex4(descriptor.product_id) + ":" + descriptor.serial_number);
+    }
     return snapshot;
 }
 
@@ -1283,7 +1293,8 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
     for (const auto& device : hid_devices) {
         if (detail::matches_selector(selector, device)) {
             auto descriptor = detail::descriptor_from_hid_device(device);
-            devices.push_back(snapshot_from_descriptor(descriptor));
+            devices.push_back(snapshot_from_descriptor(
+                descriptor, config_.endpoint_delivery_mode));
             descriptors[descriptor.id] = std::move(descriptor);
         }
     }
