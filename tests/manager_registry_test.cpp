@@ -14,31 +14,71 @@ int main()
     device.adapter = "mock";
     device.identity.serial_number = "SERIAL-1";
     device.connection.online = true;
-    devices.upsert(device);
+    if (devices.upsert(device).status != axent::DeviceUpsertStatus::Inserted) {
+        throw std::runtime_error("device insert status mismatch");
+    }
     if (devices.list().size() != 1) {
         throw std::runtime_error("device list size mismatch");
     }
     if (!devices.get("dev-1") || devices.get("dev-1")->adapter != "mock") {
         throw std::runtime_error("device lookup mismatch");
     }
-    const auto generated_endpoint = devices.get("dev-1")->endpoint_id;
-    if (generated_endpoint.rfind("endpoint/", 0) != 0 ||
-        generated_endpoint.find("dev-1") != std::string::npos ||
-        generated_endpoint.find("SERIAL-1") != std::string::npos) {
-        throw std::runtime_error("device endpoint fallback must be opaque");
+    if (!devices.get("dev-1")->endpoint_id.empty()) {
+        throw std::runtime_error("device manager must not synthesize an endpoint");
     }
-    auto refreshed = device;
+
+    auto bound = device;
+    bound.endpoint_id = "ep_explicit";
+    if (devices.upsert(bound).status != axent::DeviceUpsertStatus::EndpointBound) {
+        throw std::runtime_error("explicit endpoint binding status mismatch");
+    }
+
+    auto refreshed = bound;
+    refreshed.endpoint_id.clear();
     refreshed.status.health = "healthy";
-    devices.upsert(refreshed);
-    if (!devices.get("dev-1") || devices.get("dev-1")->endpoint_id != generated_endpoint) {
+    if (devices.upsert(refreshed).status != axent::DeviceUpsertStatus::Refreshed) {
+        throw std::runtime_error("endpoint-preserving refresh status mismatch");
+    }
+    if (!devices.get("dev-1") || devices.get("dev-1")->endpoint_id != "ep_explicit") {
         throw std::runtime_error("device endpoint must remain stable across refreshes");
+    }
+
+    auto changed = bound;
+    changed.endpoint_id = "ep_changed";
+    if (devices.upsert(changed).status !=
+        axent::DeviceUpsertStatus::EndpointChangeRejected) {
+        throw std::runtime_error("endpoint change must be rejected");
+    }
+    if (devices.get("dev-1")->endpoint_id != "ep_explicit" ||
+        devices.get("dev-1")->status.health != "healthy") {
+        throw std::runtime_error("rejected endpoint change must not mutate stored state");
+    }
+
+    axent::DeviceSnapshot conflict = bound;
+    conflict.id = "dev-2";
+    conflict.identity.serial_number = "SERIAL-2";
+    if (devices.upsert(conflict).status != axent::DeviceUpsertStatus::EndpointConflict) {
+        throw std::runtime_error("duplicate endpoint must be rejected");
+    }
+    if (devices.get("dev-2").has_value() || devices.list().size() != 1) {
+        throw std::runtime_error("endpoint conflict must not insert or mutate devices");
     }
     if (!devices.find_by_serial_number("SERIAL-1") || devices.find_by_serial_number("SERIAL-1")->id != "dev-1") {
         throw std::runtime_error("device serial lookup mismatch");
     }
     devices.mark_offline("dev-1", "test-remove");
-    if (!devices.get("dev-1") || devices.get("dev-1")->connection.online) {
+    if (!devices.get("dev-1") || devices.get("dev-1")->connection.online ||
+        devices.get("dev-1")->endpoint_id != "ep_explicit") {
         throw std::runtime_error("device must be marked offline");
+    }
+
+    axent::DeviceSnapshot managed;
+    managed.id = "deployment-slot-a";
+    managed.adapter = "external";
+    managed.endpoint_id = "ep_20d54d9fc87018d571995be978620d21";
+    if (devices.upsert(managed).status != axent::DeviceUpsertStatus::Inserted ||
+        devices.get(managed.id)->endpoint_id != managed.endpoint_id) {
+        throw std::runtime_error("deployment-owned endpoint binding must be accepted");
     }
 
     axent::CapabilityRegistry capabilities;

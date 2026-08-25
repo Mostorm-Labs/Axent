@@ -623,6 +623,16 @@ int main()
     const auto devices_after_upsert = host.discover_devices();
     require(devices_after_upsert.size() == 2, "host should allow upserting a second device");
 
+    auto conflicting_device = make_second_mock_device();
+    conflicting_device.id = "mock-device-conflict";
+    conflicting_device.endpoint_id = "endpoint/mock-primary";
+    host.upsert_device(conflicting_device);
+    const auto devices_after_conflict = host.discover_devices();
+    require(devices_after_conflict.size() == 2,
+            "host must not store a conflicting endpoint binding");
+    require(devices_after_conflict.front().endpoint_id == "endpoint/mock-primary",
+            "host conflict must preserve the original endpoint owner");
+
     // Host lease ownership is device-scoped even when the concrete AXTP
     // adapter is supplied later by an embedded product host.  Keeping this
     // gate test independent of transport setup makes a regression back to a

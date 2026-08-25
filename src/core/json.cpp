@@ -57,8 +57,8 @@ nlohmann::json to_json(const DeviceSnapshot& device)
         }},
         {"status", {{"health", device.status.health}}}
     };
-    // Omit the extension for hand-built legacy snapshots that have not gone
-    // through DeviceManager; managed snapshots always carry endpoint_id.
+    // Emit Endpoint identity only for an explicit stable/projected binding.
+    // Unbound legacy devices intentionally retain only their provider-local ID.
     if (!device.endpoint_id.empty()) {
         result["endpointId"] = device.endpoint_id;
     }

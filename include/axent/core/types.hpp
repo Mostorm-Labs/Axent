@@ -32,6 +32,11 @@ enum class ControlStatus {
     Busy,
 };
 
+enum class EndpointDeliveryMode {
+    LocalProjection,
+    NativeRelay,
+};
+
 struct DeviceIdentity {
     std::string vendor;
     std::string model;
@@ -56,13 +61,13 @@ struct DeviceSnapshot {
     DeviceIdentity identity;
     DeviceConnection connection;
     DeviceStatus status;
-    // Stable logical endpoint used by control-plane routing.  Adapters may
-    // provide an explicit value; DeviceManager supplies a deterministic,
-    // opaque endpoint/<token> fallback for snapshots that omit it. Existing
-    // IDs/serial metadata remains available for compatibility, but is not the
-    // endpoint-aware routing contract. Kept at the end so existing aggregate
-    // initializers remain source-compatible.
+    // Stable logical endpoint used by control-plane routing. The Endpoint
+    // owner (an adapter or deployment Host) supplies this binding only from
+    // persistent identity evidence; DeviceManager never synthesizes it from a
+    // provider-local ID or transport path. Kept at the end so existing
+    // aggregate initializers remain source-compatible.
     std::string endpoint_id;
+    EndpointDeliveryMode endpoint_delivery_mode = EndpointDeliveryMode::LocalProjection;
 };
 
 struct CapabilityMethod {

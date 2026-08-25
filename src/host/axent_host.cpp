@@ -27,6 +27,25 @@ namespace {
 
 thread_local bool g_in_media_stream_sink_callback = false;
 
+void log_endpoint_binding_rejection(Logger* logger,
+                                    const DeviceSnapshot& device,
+                                    DeviceUpsertResult result)
+{
+    if (logger == nullptr || result.accepted()) {
+        return;
+    }
+    logger->write(
+        LogLevel::Error,
+        LogCategory::Diagnostics,
+        "device.endpoint.binding_rejected",
+        {{"deviceId", device.id},
+         {"adapter", device.adapter},
+         {"endpointId", device.endpoint_id},
+         {"status", result.status == DeviceUpsertStatus::EndpointConflict
+                        ? "endpoint_conflict"
+                        : "endpoint_change_rejected"}});
+}
+
 class MediaStreamSinkCallbackMarker final {
 public:
     MediaStreamSinkCallbackMarker()
@@ -1557,7 +1576,8 @@ bool AxentHost::start(AxentHostOptions options)
     if (impl_->options.enable_mock_adapter) {
         impl_->mock_adapter = std::make_unique<MockAdapter>();
         for (const auto& device : impl_->mock_adapter->discover()) {
-            impl_->devices->upsert(device);
+            const auto result = impl_->devices->upsert(device);
+            log_endpoint_binding_rejection(impl_->logger.get(), device, result);
         }
         impl_->broker->register_adapter(*impl_->mock_adapter);
     }
@@ -1578,7 +1598,8 @@ bool AxentHost::start(AxentHostOptions options)
                 });
         }
         for (const auto& device : impl_->axtp_adapter->discover()) {
-            impl_->devices->upsert(device);
+            const auto result = impl_->devices->upsert(device);
+            log_endpoint_binding_rejection(impl_->logger.get(), device, result);
         }
         impl_->broker->register_adapter(*impl_->axtp_adapter);
     }
@@ -1658,7 +1679,8 @@ void AxentHost::upsert_device(DeviceSnapshot snapshot)
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->devices) {
-        impl_->devices->upsert(std::move(snapshot));
+        const auto result = impl_->devices->upsert(snapshot);
+        log_endpoint_binding_rejection(impl_->logger.get(), snapshot, result);
     }
 }
 

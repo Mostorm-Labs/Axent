@@ -1,44 +1,9 @@
 #include "axent/core/device_manager.hpp"
 
 #include <algorithm>
-#include <cstdint>
-#include <iomanip>
-#include <sstream>
 #include <utility>
 
 namespace axent {
-namespace {
-
-std::string default_endpoint_id(const DeviceSnapshot& snapshot)
-{
-    // The control-plane identity must not require a physical device ID, HID
-    // path, or serial number. Hash the internal binding into a stable endpoint
-    // token which does not embed those values; callers may still provide a
-    // product-friendly explicit endpoint_id (for example endpoint/receiver-a).
-    if (snapshot.id.empty() && snapshot.identity.serial_number.empty()) {
-        return {};
-    }
-    std::string binding = snapshot.adapter;
-    binding.push_back('\0');
-    binding += snapshot.id;
-    if (snapshot.id.empty()) {
-        binding.push_back('\0');
-        binding += snapshot.identity.serial_number;
-    }
-    constexpr std::uint64_t kFnvOffset = 14695981039346656037ULL;
-    constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
-    std::uint64_t hash = kFnvOffset;
-    for (const unsigned char byte : binding) {
-        hash ^= byte;
-        hash *= kFnvPrime;
-    }
-    std::ostringstream endpoint;
-    endpoint << "endpoint/" << std::hex << std::nouppercase
-             << std::setfill('0') << std::setw(16) << hash;
-    return endpoint.str();
-}
-
-} // namespace
 
 DeviceManager::DeviceManager(const DeviceManager& other)
 {
@@ -72,29 +37,41 @@ DeviceManager& DeviceManager::operator=(DeviceManager&& other) noexcept
     return *this;
 }
 
-void DeviceManager::upsert(DeviceSnapshot snapshot)
+DeviceUpsertResult DeviceManager::upsert(DeviceSnapshot snapshot)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto existing = std::find_if(devices_.begin(), devices_.end(), [&](const auto& current) {
         return current.id == snapshot.id;
     });
 
-    // Keep an adapter-provided endpoint stable across refreshes.  For normal
-    // devices the internal binding is stable and gives us a deterministic,
-    // opaque fallback.
-    if (snapshot.endpoint_id.empty()) {
-        if (existing != devices_.end() && !existing->endpoint_id.empty()) {
-            snapshot.endpoint_id = existing->endpoint_id;
-        } else {
-            snapshot.endpoint_id = default_endpoint_id(snapshot);
+    if (!snapshot.endpoint_id.empty()) {
+        const auto conflict = std::find_if(
+            devices_.begin(), devices_.end(), [&](const auto& current) {
+                return current.id != snapshot.id &&
+                       current.endpoint_id == snapshot.endpoint_id;
+            });
+        if (conflict != devices_.end()) {
+            return {DeviceUpsertStatus::EndpointConflict};
         }
     }
 
     if (existing == devices_.end()) {
         devices_.push_back(std::move(snapshot));
-        return;
+        return {DeviceUpsertStatus::Inserted};
     }
+
+    const bool binds_endpoint = existing->endpoint_id.empty() && !snapshot.endpoint_id.empty();
+    if (!existing->endpoint_id.empty()) {
+        if (snapshot.endpoint_id.empty()) {
+            snapshot.endpoint_id = existing->endpoint_id;
+        } else if (snapshot.endpoint_id != existing->endpoint_id) {
+            return {DeviceUpsertStatus::EndpointChangeRejected};
+        }
+    }
+
     *existing = std::move(snapshot);
+    return {binds_endpoint ? DeviceUpsertStatus::EndpointBound
+                           : DeviceUpsertStatus::Refreshed};
 }
 
 void DeviceManager::mark_offline(const std::string& id, const std::string& reason)
