@@ -1,5 +1,6 @@
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "axent/control/protocol_codecs.hpp"
 
@@ -51,6 +52,8 @@ int main()
             "json-rpc dst endpoint mismatch");
     require(routed_json_rpc.command.device_id.empty(),
             "endpoint-routed json-rpc must not invent a physical device id");
+    require(!routed_json_rpc.validation_error.has_value(),
+            "valid endpoint routing must not report a validation error");
     require_eq(routed_json_rpc.command.params,
                {{"detail", "business-value"}},
                "endpoint-routed json-rpc must remove legacy physical selectors");
@@ -67,6 +70,45 @@ int main()
     require(json_rpc.command.source == axent::ProtocolSource::JsonRpc, "json-rpc source mismatch");
     require(json_rpc.wire_method == "status.get", "json-rpc wire method mismatch");
     require_eq(json_rpc.command.params, {{"deviceId", "mock-device-001"}}, "json-rpc params mismatch");
+    require(!json_rpc.validation_error.has_value(),
+            "legacy-compatible json-rpc must not require an endpoint envelope");
+
+    const std::vector<nlohmann::json> malformed_routing = {
+        {{"src", "ep_app"}},
+        {{"dst", "ep_device"}},
+        {{"src", 7}, {"dst", "ep_device"}},
+        {{"src", "ep_app"}, {"dst", false}},
+        {{"src", ""}, {"dst", "ep_device"}},
+        {{"src", "ep_app"}, {"dst", ""}},
+        {{"src", 7}, {"dst", false}},
+    };
+    for (std::size_t index = 0; index < malformed_routing.size(); ++index) {
+        auto message = malformed_routing[index];
+        message["jsonrpc"] = "2.0";
+        message["id"] = static_cast<int>(100 + index);
+        message["method"] = "status.get";
+        message["params"] = {{"deviceId", "legacy-selector"},
+                             {"serialNumber", "legacy-serial"}};
+        const auto decoded = axent::decode_control_message(message);
+        require(decoded.validation_error ==
+                    "JSON-RPC src and dst must be provided together as non-empty strings",
+                "malformed endpoint routing must report the canonical validation error");
+        require(decoded.command.src.empty() && decoded.command.dst.empty(),
+                "malformed endpoint routing must not create a half envelope");
+        require(decoded.command.device_id.empty(),
+                "malformed endpoint routing must not fall back to a legacy selector");
+        require(decoded.command.params.contains("deviceId") &&
+                    decoded.command.params.contains("serialNumber"),
+                "malformed routing must not rewrite params before rejection");
+        const auto response = axent::encode_control_response(
+            decoded,
+            {axent::ControlStatus::InvalidArgument,
+             {{"error", *decoded.validation_error}}});
+        require(response.at("error").at("code") == -32602,
+                "malformed endpoint routing must map to InvalidArgument");
+        require(!response.contains("src") && !response.contains("dst"),
+                "malformed endpoint routing response must not invent addresses");
+    }
 
     const auto legacy = axent::decode_control_message({
         {"op", 7},

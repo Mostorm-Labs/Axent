@@ -121,6 +121,7 @@ public:
 
     axent::ControlResult call(const axent::AdapterControlRequest& request) override
     {
+        ++call_count;
         captured = request;
         return {axent::ControlStatus::Ok, {{"path", "routed"}}};
     }
@@ -149,6 +150,7 @@ public:
     }
 
     std::optional<axent::AdapterControlRequest> captured;
+    std::size_t call_count = 0;
 };
 
 void require(bool condition, const char* message)
@@ -394,6 +396,31 @@ int main()
     });
     require(incomplete_envelope.at("error").at("code") == -32602,
             "endpoint-routed JSON-RPC must provide src and dst together");
+
+    const auto capture_calls_before_malformed = routed_capture_adapter.call_count;
+    for (const auto& malformed_fields : std::vector<nlohmann::json>{
+             {{"src", "ep_app"}},
+             {{"dst", "ep_device"}},
+             {{"src", 7}, {"dst", "ep_device"}},
+             {{"src", "ep_app"}, {"dst", false}},
+             {{"src", ""}, {"dst", "ep_device"}},
+             {{"src", "ep_app"}, {"dst", ""}},
+             {{"src", 7}, {"dst", false}},
+         }) {
+        auto malformed = malformed_fields;
+        malformed["jsonrpc"] = "2.0";
+        malformed["id"] = "malformed-routing";
+        malformed["method"] = "status.get";
+        malformed["params"] = {{"deviceId", "provider-device-1"}};
+        const auto malformed_response = control_plane.handle_text(malformed);
+        require(malformed_response.at("error").at("code") == -32602,
+                "malformed endpoint envelope must be rejected before Broker dispatch");
+        require(!malformed_response.contains("src") &&
+                    !malformed_response.contains("dst"),
+                "malformed endpoint envelope must not produce a half response envelope");
+    }
+    require(routed_capture_adapter.call_count == capture_calls_before_malformed,
+            "malformed endpoint envelopes must not invoke an adapter");
 
     // WebSocket/ControlPlane dispatch is the synchronous lazy-connect
     // boundary. A real AxtpAdapter uses this path to open the destination's

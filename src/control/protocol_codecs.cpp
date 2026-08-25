@@ -65,10 +65,22 @@ nlohmann::json object_or_empty(const nlohmann::json& object, const char* key)
     return *found;
 }
 
-void decode_routing_fields(const nlohmann::json& object, ControlCommand& command)
+std::optional<std::string> decode_routing_fields(const nlohmann::json& object,
+                                                 ControlCommand& command)
 {
-    command.src = optional_string(object, "src");
-    command.dst = optional_string(object, "dst");
+    const bool has_src = object.is_object() && object.contains("src");
+    const bool has_dst = object.is_object() && object.contains("dst");
+    if (!has_src && !has_dst) {
+        return std::nullopt;
+    }
+    if (!has_src || !has_dst || !object.at("src").is_string() ||
+        !object.at("dst").is_string() || object.at("src").get<std::string>().empty() ||
+        object.at("dst").get<std::string>().empty()) {
+        return "JSON-RPC src and dst must be provided together as non-empty strings";
+    }
+    command.src = object.at("src").get<std::string>();
+    command.dst = object.at("dst").get<std::string>();
+    return std::nullopt;
 }
 
 void fill_legacy_destination(ControlCommand& command,
@@ -126,13 +138,16 @@ DecodedControlMessage decode_control_message(const nlohmann::json& message)
         decoded.command.request_id = request_id_for_log(decoded.json_rpc_id);
         decoded.command.method = optional_string(message, "method");
         decoded.command.params = object_or_empty(message, "params");
-        decode_routing_fields(message, decoded.command);
+        decoded.validation_error = decode_routing_fields(message, decoded.command);
         // Once a logical destination is present, physical selectors in
         // params must not become a routing or downstream device identity.
         // Treat them as deprecated envelope fields and remove them before
         // invoking the adapter; endpoint-aware methods receive one canonical
         // destination only. They remain accepted for requests that omit dst.
-        if (decoded.command.dst.empty()) {
+        if (decoded.validation_error.has_value()) {
+            // Preserve the original params for diagnostics. The ControlPlane
+            // rejects this message before it can reach Broker or an adapter.
+        } else if (decoded.command.dst.empty()) {
             fill_legacy_destination(decoded.command, decoded.command.params, false);
         } else if (decoded.command.params.is_object()) {
             decoded.command.params.erase("deviceId");
