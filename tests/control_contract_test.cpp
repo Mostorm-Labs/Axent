@@ -32,5 +32,21 @@ static_assert(ControlStatus::stream_not_open().code == 0x0506);
 
 int main()
 {
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#endif
+    const axent::control::ControlRequest legacy_request{
+        42,
+        "cast.getStatus",
+        nlohmann::json::object(),
+    };
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+    if (!legacy_request.source_endpoint_id.empty() ||
+        !legacy_request.destination_endpoint_id.empty()) {
+        return 1;
+    }
     return 0;
 }

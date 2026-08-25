@@ -58,6 +58,8 @@ struct ControlRequest {
     std::uint32_t request_id = 0;
     std::string method;
     nlohmann::json params = nlohmann::json::object();
+    std::string source_endpoint_id;
+    std::string destination_endpoint_id;
 };
 
 struct ControlResult {

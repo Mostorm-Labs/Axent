@@ -114,11 +114,18 @@ void expect_invalid_registration(axent::AxtpControlEndpoint& endpoint,
 nlohmann::json request_message(const std::string& sid,
                                std::uint32_t id,
                                std::string method,
-                               nlohmann::json params = nlohmann::json::object())
+                               nlohmann::json params = nlohmann::json::object(),
+                               nlohmann::json metadata = nullptr)
 {
-    return {{"sid", sid},
-            {"op", 7},
-            {"d", {{"id", id}, {"method", std::move(method)}, {"params", std::move(params)}}}};
+    nlohmann::json message = {
+        {"sid", sid},
+        {"op", 7},
+        {"d", {{"id", id}, {"method", std::move(method)}, {"params", std::move(params)}}},
+    };
+    if (!metadata.is_null()) {
+        message["m"] = std::move(metadata);
+    }
+    return message;
 }
 
 std::uint32_t response_code(const nlohmann::json& response)
@@ -174,7 +181,10 @@ int main()
             }
             return ControlResult{
                 ControlStatus::success(),
-                {{"requestId", request.request_id}, {"method", request.method}},
+                {{"requestId", request.request_id},
+                 {"method", request.method},
+                 {"sourceEndpointId", request.source_endpoint_id},
+                 {"destinationEndpointId", request.destination_endpoint_id}},
             };
         });
     auto private_token = endpoint.register_handler(
@@ -292,15 +302,36 @@ int main()
         return first->next();
     };
 
-    response = request(101, "cast.getStatus", {{"includeSensitive", false}});
+    first->send(request_message(
+        sid,
+        101,
+        "cast.getStatus",
+        {{"includeSensitive", false}},
+        {{"src", "ep-controller"}, {"dst", "ep-nearcast"}}));
+    response = first->next();
     require(response.at("sid") == sid, "response sid must match the identified session");
     require(response.at("op") == 8, "endpoint must preserve AXTP response op");
     require(response.at("d").at("id") == 101, "response id mismatch");
     require(response_code(response) == 0, "successful status mismatch");
     require(response.at("d").at("result").at("method") == "cast.getStatus",
             "handler result mismatch");
+    require(response.at("d").at("result").at("sourceEndpointId") == "ep-controller",
+            "routed source Endpoint must reach the handler");
+    require(response.at("d").at("result").at("destinationEndpointId") == "ep-nearcast",
+            "routed destination Endpoint must reach the handler");
+    require(response.at("m") == nlohmann::json({{"src", "ep-nearcast"},
+                                                   {"dst", "ep-controller"}}),
+            "runtime must reverse routed response metadata");
 
-    response = request(102, "cast.getStatus", {{"throwInvalid", true}});
+    response = request(102, "cast.getStatus", nlohmann::json::object());
+    require(response.at("d").at("id") == 102,
+            "legacy request must still complete using its request ID");
+    require(response.at("d").at("result").at("sourceEndpointId") == "",
+            "legacy request without metadata must expose an empty source Endpoint");
+    require(response.at("d").at("result").at("destinationEndpointId") == "",
+            "legacy request without metadata must expose an empty destination Endpoint");
+
+    response = request(103, "cast.getStatus", {{"throwInvalid", true}});
     require(response_code(response) == ControlStatus::invalid_argument().code,
             "invalid_argument exception mapping mismatch");
 

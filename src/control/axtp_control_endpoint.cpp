@@ -292,11 +292,15 @@ struct AxtpControlEndpoint::Impl {
                     [slot = registration.slot,
                      method = resolved.name](const axtp::RpcContext& context,
                                              const axtp::RpcRequestView& request) {
-                        const control::ControlRequest control_request{
+                        control::ControlRequest control_request{
                             context.requestId,
                             method,
                             json_from_bytes(request.body),
+                            {},
+                            {},
                         };
+                        control_request.source_endpoint_id = context.endpoint.src.value_or("");
+                        control_request.destination_endpoint_id = context.endpoint.dst.value_or("");
                         auto result = slot->invoke(control_request);
                         if (result.status.code > kMaxAxtpCode) {
                             result.status = control::ControlStatus::internal_error();
