@@ -147,14 +147,14 @@ for device A does not starve device B.
 
 ## Integration and merge gate
 
-The runtime unit branch implements optional `m.src/m.dst`, response reversal,
-SDK propagation, canonical Endpoint IDs, and legacy golden tests. Axent must
-not update its runtime gitlink until a released `spec/v*` tag contains the
-Endpoint Relay authority commit and the runtime's pinned conformance suite
-passes against that release.
+The runtime feature branch is pinned to `spec/v0.15.0` and declares all three
+Endpoint Relay conformance cases. Axent pins that reviewed runtime commit,
+projects serial-backed HID devices with the canonical algorithm, and maps only
+explicit `NativeRelay` requests into runtime `CallOptions::endpoint`.
+`LocalProjection` and legacy calls continue to omit downstream metadata, and a
+legacy response without `m` still completes through request-ID correlation.
 
-After that pin, the remaining adapter-private work is to enable canonical HID
-projection and map `NativeRelay` requests into runtime `CallOptions::endpoint`.
-NearCast must then verify persistent app identity, two-device routing, response
-reversal, reconnect stability, and the no-stable-identity case. Do not merge
-this branch into `main` until those checks pass.
+NearCast must now verify persistent app identity, two-device routing, response
+reversal, reconnect stability, and the no-stable-identity case. Keep both the
+runtime and Axent feature branches unmerged from `main` until those integration
+checks pass.
