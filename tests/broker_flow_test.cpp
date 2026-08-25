@@ -152,9 +152,31 @@ int main()
             "mock endpoint should resolve to the physical mock device");
     require(mock_route->endpoint_id == "endpoint/mock-primary",
             "resolved route should preserve the logical endpoint");
+    require(mock_route->endpoint_delivery_mode == axent::EndpointDeliveryMode::LocalProjection,
+            "default endpoint route should use local projection");
+    const auto found_endpoint = routes.resolve_endpoint_route("endpoint/mock-primary");
+    require(found_endpoint.status == axent::RouteResolutionStatus::Found &&
+                found_endpoint.target.has_value(),
+            "online endpoint should report Found");
+    require(routes.resolve_endpoint_route("endpoint/missing").status ==
+                axent::RouteResolutionStatus::NotFound,
+            "unknown endpoint should report NotFound");
 
-    // Duplicate logical endpoints are ambiguous and must fail closed rather
-    // than selecting whichever physical device was inserted first.
+    axent::DeviceManager offline_devices;
+    auto offline_device = adapter.discover().front();
+    offline_device.id = "offline-device";
+    offline_device.endpoint_id = "endpoint/offline";
+    offline_device.connection.online = false;
+    offline_devices.upsert(offline_device);
+    axent::RouteManager offline_routes(offline_devices);
+    require(offline_routes.resolve_endpoint_route("endpoint/offline").status ==
+                axent::RouteResolutionStatus::Unavailable,
+            "offline endpoint should report Unavailable");
+    require(!offline_routes.resolve_endpoint("endpoint/offline").has_value(),
+            "compatibility endpoint resolver must omit unavailable targets");
+
+    // Duplicate logical endpoints are rejected before they can make routing
+    // ambiguous; the original binding remains usable.
     axent::DeviceManager collision_devices;
     auto collision_a = adapter.discover().front();
     auto collision_b = collision_a;
@@ -162,11 +184,20 @@ int main()
     collision_b.id = "collision-b";
     collision_a.endpoint_id = "endpoint/duplicate";
     collision_b.endpoint_id = "endpoint/duplicate";
-    collision_devices.upsert(collision_a);
-    collision_devices.upsert(collision_b);
+    collision_a.endpoint_delivery_mode = axent::EndpointDeliveryMode::NativeRelay;
+    require(collision_devices.upsert(collision_a).accepted(),
+            "first endpoint owner should be accepted");
+    require(collision_devices.upsert(collision_b).status ==
+                axent::DeviceUpsertStatus::EndpointConflict,
+            "second endpoint owner should be rejected");
     axent::RouteManager collision_routes(collision_devices);
-    require(!collision_routes.resolve_endpoint("endpoint/duplicate").has_value(),
-            "duplicate logical endpoints must fail closed");
+    const auto collision_route =
+        collision_routes.resolve_endpoint_route("endpoint/duplicate");
+    require(collision_route.status == axent::RouteResolutionStatus::Found &&
+                collision_route.target->device_id == "collision-a" &&
+                collision_route.target->endpoint_delivery_mode ==
+                    axent::EndpointDeliveryMode::NativeRelay,
+            "rejected duplicate must preserve the original route");
 
     const auto routed_status = control_plane.handle_text({
         {"jsonrpc", "2.0"},
