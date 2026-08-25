@@ -79,6 +79,43 @@ The implementation must enforce these rules from axtp PR #11:
    are not Endpoint IDs.
 9. JSON_BINARY remains unchanged and cannot carry Endpoint Relay v1 metadata.
 
+## cpp-runtime Backward-Compatibility Contract
+
+Endpoint Relay is an additive runtime feature. Existing callers and peers that
+do not opt into Endpoint metadata must retain their current behavior:
+
+- the encoder omits `m` when both `PayloadMeta::endpoint` fields are absent, so
+  the legacy `{sid, op, d}` JSON shape and field ordering remain unchanged;
+- the decoder accepts a missing `m` exactly as before, and all existing
+  request, response, Event, session-ID, and request-ID behavior remains
+  authoritative;
+- `sdk::CallOptions::endpoint` is appended with an empty default, so existing
+  calls and aggregate initializers continue to produce unaddressed requests;
+- response reversal runs only for Endpoint fields that were actually present;
+  an unaddressed legacy request still produces an unaddressed legacy response;
+- the JSON_BINARY fixed header, offsets, encoded size, and default SDK path are
+  unchanged. Only the new, explicitly invalid combination of JSON_BINARY plus
+  non-empty Endpoint metadata returns `InvalidArgument`;
+- structurally valid unknown metadata does not terminate the session, while a
+  malformed `m` rejects only that payload and leaves subsequent legacy traffic
+  usable;
+- Axent defaults every provider to `LocalProjection`, so an existing device
+  peer continues to receive `{sid, op, d}`. `NativeRelay` is enabled only by
+  explicit configuration or an adopted capability and is never inferred from
+  a version string, Endpoint prefix, or trial request.
+
+The compatibility matrix is therefore:
+
+| Sender / configuration | New runtime behavior | Compatibility result |
+|---|---|---|
+| Legacy sender, no `m` | Decode and dispatch unchanged | Compatible |
+| Existing SDK caller, default options | Encode without `m` | Compatible |
+| Axent `LocalProjection` to an old peer | Encode without `m` | Compatible |
+| New sender with valid `m` | Preserve and apply Relay semantics | New feature |
+| Explicit `NativeRelay` to a peer that omits response `m` | Keep request-ID correlation; metadata is unavailable for diagnostics | Degraded but request-compatible |
+| JSON_BINARY without metadata | Keep the existing 15-byte envelope | Compatible |
+| JSON_BINARY with metadata | Fail locally with `InvalidArgument` | Explicit new validation |
+
 ## Layer Ownership
 
 ### axtp-cpp-runtime: protocol mechanics
@@ -564,6 +601,14 @@ separate concerns.
 ## Repository and Branch Sequence
 
 Implementation is intentionally split across repositories:
+
+At the 2026-08-25 planning checkpoint, axtp PR #11 was merged at `2d88ff4`,
+but no released spec tag was found that contains that authority commit; the
+existing `spec/v0.14.0` tree does not contain the three Endpoint Relay
+conformance cases. Because axtp-cpp-runtime forbids an unpinned `main`
+dependency, runtime unit implementation may proceed on its feature branch,
+but its conformance declaration, merge, and Axent submodule update wait for a
+released `spec/vMAJOR.MINOR.PATCH` tag containing `2d88ff4`.
 
 1. In `axtp-cpp-runtime`, create a dedicated branch such as
    `codex/endpoint-relay-runtime` from its latest `main`.
