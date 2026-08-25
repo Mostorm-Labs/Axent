@@ -220,6 +220,67 @@ int main()
     require(legacy_device_list.at("d").at("result").at("devices").at(0).contains("endpointId"),
             "managed device snapshots should expose a stable endpointId");
 
+    const auto make_selector_collision = [](
+                                             std::string adapter_name,
+                                             std::string id,
+                                             std::string serial,
+                                             std::string endpoint) {
+        axent::DeviceSnapshot device;
+        device.adapter = std::move(adapter_name);
+        device.id = std::move(id);
+        device.identity.serial_number = std::move(serial);
+        device.endpoint_id = std::move(endpoint);
+        device.connection.online = true;
+        return device;
+    };
+    devices.upsert(make_selector_collision(
+        "mock", "CROSS-ID", "mock-id-owner", "endpoint/cross-id-mock"));
+    devices.upsert(make_selector_collision(
+        "routed-capture",
+        "CROSS-ID",
+        "routed-id-owner",
+        "endpoint/cross-id-routed"));
+    devices.upsert(make_selector_collision(
+        "routed-capture",
+        "cross-id-serial-owner",
+        "CROSS-ID",
+        "endpoint/cross-id-serial"));
+    devices.upsert(make_selector_collision(
+        "mock",
+        "cross-serial-mock",
+        "CROSS-SERIAL",
+        "endpoint/cross-serial-mock"));
+    devices.upsert(make_selector_collision(
+        "routed-capture",
+        "cross-serial-routed",
+        "CROSS-SERIAL",
+        "endpoint/cross-serial-routed"));
+    devices.upsert(make_selector_collision(
+        "routed-capture",
+        "CROSS-SERIAL",
+        "id-shadow-owner",
+        "endpoint/cross-serial-id"));
+
+    const auto ambiguous_device_id = control_plane.handle_text({
+        {"jsonrpc", "2.0"},
+        {"id", "cross-namespace-device-id"},
+        {"method", "status.get"},
+        {"params", {{"deviceId", "CROSS-ID"}}},
+    });
+    require(ambiguous_device_id.at("error").at("code") == -32004,
+            "ambiguous deviceId must not fall through to a unique serial match");
+    const auto ambiguous_serial = control_plane.handle_text({
+        {"op", 7},
+        {"sid", 1004},
+        {"d", {
+            {"id", "cross-namespace-serial"},
+            {"method", "GetDeviceInfo"},
+            {"params", {{"serialNumber", "CROSS-SERIAL"}}},
+        }},
+    });
+    require(ambiguous_serial.at("d").at("status").at("result") == false,
+            "ambiguous serialNumber must not fall through to a unique device ID");
+
     const auto mock_route = routes.resolve_endpoint("endpoint/mock-primary");
     require(mock_route.has_value(), "mock endpoint should resolve");
     require(mock_route->device_id == "mock-device-001",

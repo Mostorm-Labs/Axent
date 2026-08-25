@@ -96,6 +96,8 @@ The control codec preserves whether a legacy selector came from `deviceId` or
 `serialNumber`; each field resolves only in its own namespace. Manually built
 commands that do not declare a selector kind use the union of both namespaces
 and succeed only when exactly one physical `(adapter, device.id)` matches.
+Host leases already contain a resolved provider-local device ID, so their
+subsequent control commands always use the `ProviderLocalId` namespace.
 
 If HID enumeration reports the same canonical VID/PID/serial identity on
 different paths or interfaces, `AxtpAdapter` treats the evidence as ambiguous

@@ -112,6 +112,7 @@ int main()
         adapter_scoped_routes.resolve_endpoint("ep_mock_shared")->adapter != "mock") {
         throw std::runtime_error(
             "ambiguous legacy routing must fail while endpoint routing remains scoped");
+    }
 
     axent::DeviceSnapshot serial_alias = mock_shared;
     serial_alias.adapter = "external";
@@ -137,7 +138,6 @@ int main()
     if (adapter_scoped_routes.resolve_device("shared-local-id").has_value()) {
         throw std::runtime_error(
             "unspecified compatibility selector must fail on the union ambiguity");
-    }
     }
     if (!adapter_scoped_devices.get("mock", "shared-local-id") ||
         adapter_scoped_devices.get("mock", "shared-local-id")->endpoint_id !=

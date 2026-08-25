@@ -2265,6 +2265,7 @@ ControlOperationPtr AxentHost::call_async(
         command.request_id = session_id + ":" + method;
         command.control_session_id = lease->client_id;
         command.device_id = lease->device_id;
+        command.device_selector_kind = DeviceSelectorKind::ProviderLocalId;
         command.method = method;
         command.params = params;
     }

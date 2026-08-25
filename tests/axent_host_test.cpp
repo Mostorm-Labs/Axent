@@ -633,6 +633,28 @@ int main()
     require(devices_after_conflict.front().endpoint_id == "endpoint/mock-primary",
             "host conflict must preserve the original endpoint owner");
 
+    axent::DeviceSnapshot host_serial_alias;
+    host_serial_alias.id = "host-serial-alias-owner";
+    host_serial_alias.adapter = "external";
+    host_serial_alias.identity.serial_number = "mock-device-001";
+    host_serial_alias.endpoint_id = "endpoint/host-serial-alias";
+    host_serial_alias.connection.online = true;
+    host.upsert_device(host_serial_alias);
+    axent::SessionAcquireRequest host_namespace_request;
+    host_namespace_request.client_id = "host-namespace-test";
+    host_namespace_request.device_id = "mock-device-001";
+    const auto host_namespace_lease =
+        host.acquire_session(host_namespace_request);
+    require(host_namespace_lease.acquired,
+            "Host lease should select the unique provider-local device ID");
+    const auto host_namespace_call = host.call(
+        host_namespace_lease.session_id, "status.get", {});
+    require(host_namespace_call.status == axent::ControlStatus::Ok &&
+                host_namespace_call.body.at("health") == "ok",
+            "leased Host call must retain provider-local selector semantics");
+    host.release_session(
+        host_namespace_lease.session_id, "namespace regression complete");
+
     // Host lease ownership is device-scoped even when the concrete AXTP
     // adapter is supplied later by an embedded product host.  Keeping this
     // gate test independent of transport setup makes a regression back to a
