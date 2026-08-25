@@ -2916,8 +2916,8 @@ int main()
         });
         std::string codec_error;
         require(codec_adapter->open_session(
-                    "hid:0581:2581:NA20-SERIAL", codec_error),
-                "H.265 codec session should open");
+                    "hid:0581:2582:NA20-SERIAL", codec_error),
+                "H.265 codec session should open: " + codec_error);
         require(codec_scripted != nullptr &&
                     codec_scripted->video_open_params.size() == 1 &&
                     codec_scripted->video_open_params.front().at("codec") == "h265",
@@ -2949,7 +2949,7 @@ int main()
         });
         std::string fallback_error;
         require(fallback_adapter->open_session(
-                    "hid:0581:2581:NA20-SERIAL", fallback_error),
+                    "hid:0581:2582:NA20-SERIAL", fallback_error),
                 "H.265 rejection should fall back to H.264");
         require(fallback_scripted != nullptr &&
                     fallback_scripted->video_open_params.size() == 2 &&
@@ -2981,7 +2981,7 @@ int main()
         });
         std::string legacy_error;
         require(legacy_adapter->open_session(
-                    "hid:0581:2581:NA20-SERIAL", legacy_error),
+                    "hid:0581:2582:NA20-SERIAL", legacy_error),
                 "legacy H.264 response without a codec should remain compatible");
         require(legacy_scripted != nullptr &&
                     !legacy_adapter->active_media_stream_descriptors().empty(),
@@ -3003,7 +3003,7 @@ int main()
         });
         std::string explicit_error;
         require(explicit_adapter->open_session(
-                    "hid:0581:2581:NA20-SERIAL", explicit_error),
+                    "hid:0581:2582:NA20-SERIAL", explicit_error),
                 "transport session should remain open while H.265 negotiation fails");
         require(explicit_scripted != nullptr &&
                     wait_until([&]() {
@@ -3032,7 +3032,7 @@ int main()
         });
         std::string bypass_error;
         require(bypass_adapter->open_session(
-                    "hid:0581:2581:NA20-SERIAL", bypass_error),
+                    "hid:0581:2582:NA20-SERIAL", bypass_error),
                 "capability waiting must not prevent the H.265 session from opening");
         require(bypass_scripted != nullptr &&
                     bypass_scripted->video_open_params.size() >= 1 &&
