@@ -39,6 +39,15 @@ struct AxtpAdapterConfig {
     std::uint32_t audio_sample_rate = 48000;
     std::uint32_t audio_channels = 2;
     std::optional<std::uint32_t> video_frame_rate;
+    // Ordered, generic codec preferences supplied by the product host.  The
+    // adapter intersects these with the peer capabilities; it does not own
+    // product/backend policy.  Empty retains legacy H.264 behavior.
+    std::vector<MediaCodec> video_codec_preferences;
+    // Compatibility escape hatch for peers whose control contract only
+    // accepts H.264 while the media payload is known to be H.265.  The host
+    // must set both overrides together; normal negotiation leaves them empty.
+    std::optional<MediaCodec> video_open_codec_override;
+    std::optional<MediaCodec> video_decode_codec_override;
     std::string video_source = "wireless_cast";
     std::string audio_source = "wireless_cast_audio";
     bool enable_session_health_probe = true;
