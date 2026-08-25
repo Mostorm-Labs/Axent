@@ -17,9 +17,10 @@
 
 Implement AXTP Endpoint Relay for multi-device control without collapsing
 protocol mechanics, Axent provider routing, or NearCast product policy into one
-layer. Axent's existing external JSON-RPC 2.0 control API remains compatible and
-bridges its top-level `src` / `dst` fields to AXTP object-RPC `m.src` / `m.dst`
-when a command crosses an AXTP adapter.
+layer. Axent's existing external JSON-RPC 2.0 control API remains compatible.
+Axent either consumes its top-level `src` / `dst` through local Endpoint
+Projection for a legacy device, or bridges them to AXTP object-RPC
+`m.src` / `m.dst` for a peer explicitly configured for Native Relay.
 
 ## Non-goals
 
@@ -35,6 +36,9 @@ when a command crosses an AXTP adapter.
 - Do not add a new Axent WebSocket event subscription product in this change.
   Existing or future event delivery must obey the Endpoint Relay metadata
   rules, but subscription policy remains outside this scope.
+- Do not infer native Endpoint Relay support by probing a legacy peer or by
+  inspecting its Endpoint ID. Native Relay is an explicit provider/profile
+  capability.
 
 ## Normative AXTP Rules
 
@@ -155,7 +159,9 @@ It owns:
 - external JSON-RPC 2.0 decoding/encoding and compatibility behavior;
 - the private AxtpAdapter bridge from an Axent routed control request to
   runtime `PayloadMeta.endpoint`;
-- stable identity evidence selection for AXTP physical devices.
+- stable identity evidence selection for AXTP physical devices;
+- transparent Endpoint Projection for legacy devices that do not understand
+  `m.src` / `m.dst`.
 
 Axent Core treats Endpoint IDs as opaque non-empty strings. It must not parse
 the `ep_` prefix to infer a device type and public Axent headers must not expose
@@ -174,6 +180,11 @@ The public header contains only standard/Axent types. Its implementation in
 `axtp::endpointIdFromKey`; it does not contain a second SHA-256 implementation.
 This facade belongs to the AXTP adapter/integration surface, not Axent Core
 protocol mechanics.
+
+All Axent device adapters that project resources into the AXTP Endpoint address
+space use this facade. The adapters remain responsible for selecting a stable
+`endpointKey`; the facade centralizes generation, while DeviceManager only
+registers the resulting opaque ID.
 
 ### NearCast: product identity and policy
 
@@ -201,7 +212,7 @@ external IDs such as `endpoint/receiver-a` remain accepted. Only IDs generated
 by the canonical AXTP helper are required to have the
 `ep_<32-lowercase-hex>` form.
 
-### AXTP physical devices
+### AXTP physical and legacy devices
 
 The AxtpAdapter is the Endpoint owner for devices it discovers. Identity
 evidence priority is fixed per provider/profile:
@@ -233,6 +244,25 @@ instead of automatically replacing a deployed serial-derived Endpoint ID.
 If serial and stronger stable evidence are unavailable, the snapshot keeps its
 provider-local `device.id`, but `endpoint_id` remains empty. HID path is valid
 for opening the current transport only; it is never an Endpoint key.
+
+A legacy device does not need to generate, store, parse, or receive its
+Endpoint ID. Axent projects the device as an Endpoint using the stable evidence
+obtained by its adapter. The generated ID is an Axent provider-table identity;
+it does not imply that the downstream peer implements Endpoint Relay.
+
+Legacy device identity has exactly three supported cases:
+
+| Available identity | Axent behavior |
+|---|---|
+| Stable device UUID, public key, or VID/PID/serial | Adapter constructs the fixed stable key and Axent generates a canonical Endpoint ID automatically. |
+| No device-owned stable identity, but deployment supplies a persistent managed resource ID | Host/configuration owns a key such as `service:<namespace>:<managedAssetId>` and explicitly binds its generated Endpoint ID to the provider. The Endpoint represents that managed logical resource/slot, not cryptographic proof of a particular physical unit. |
+| Neither stable device identity nor persistent managed binding | Keep only the provider-local device ID and omit `endpoint_id`. |
+
+Axent must not generate a random Endpoint ID on every discovery or persist a
+random ID indexed only by USB path. Without stable evidence it could not prove
+that a reconnected device is the same Endpoint. Explicit managed bindings are
+loaded by Axent Host/configuration and supplied as explicit Endpoint bindings;
+they are not invented by DeviceManager.
 
 ### Axent software endpoints
 
@@ -290,11 +320,45 @@ surface rejected bindings through diagnostics/logging.
 
 ## Provider and Route Model
 
+Endpoint delivery mode is an Axent provider fact:
+
+```cpp
+enum class EndpointDeliveryMode {
+    LocalProjection,
+    NativeRelay,
+};
+```
+
+`DeviceSnapshot` stores `endpoint_delivery_mode` after `endpoint_id`, defaulting
+to `LocalProjection`. `RouteTarget` and `AdapterControlRequest` carry the
+resolved mode internally. It is not encoded into `endpointId` and NearCast does
+not need it to route a request.
+
+- `LocalProjection` is the default. Axent resolves the external Endpoint and
+  invokes the legacy provider without downstream Endpoint metadata.
+- `NativeRelay` is opt-in. It is selected only by explicit adapter
+  configuration or an adopted provider/profile capability that guarantees
+  `m.src` / `m.dst` support.
+
+The initial adapter configuration exposes:
+
+```cpp
+EndpointDeliveryMode AxtpAdapterConfig::endpoint_delivery_mode =
+    EndpointDeliveryMode::LocalProjection;
+```
+
+There is no trial request, version-string heuristic, or Endpoint-prefix test
+for changing this mode.
+
 For the current physical-device scope, an Endpoint Provider binding is
 represented by:
 
 ```text
-endpointId -> DeviceSnapshot(adapter, provider-local device.id, online state)
+endpointId -> DeviceSnapshot(
+    adapter,
+    provider-local device.id,
+    online state,
+    endpoint delivery mode)
 ```
 
 A projected child Endpoint may use the same representation: its `device.id` is
@@ -358,6 +422,8 @@ struct AdapterControlRequest {
     std::string device_id;               // provider-local target
     std::string source_endpoint_id;       // optional logical source
     std::string destination_endpoint_id;  // resolved logical destination
+    EndpointDeliveryMode endpoint_delivery_mode =
+        EndpointDeliveryMode::LocalProjection;
     std::string method;
     nlohmann::json params;
 };
@@ -384,8 +450,10 @@ AxtpAdapter overrides the routed overloads. The behavioral requirements are:
   copied from params.
 - Existing AXDP, TEA, and mock adapters may use a default implementation that
   delegates to their legacy method signature.
-- AxtpAdapter overrides the routed form and supplies source/destination through
-  the runtime SDK metadata API.
+- In `LocalProjection`, AxtpAdapter sends the legacy downstream AXTP request
+  without `m`, even though the external request was routed by Endpoint ID.
+- In `NativeRelay`, AxtpAdapter supplies source/destination through the runtime
+  SDK metadata API.
 - Routing fields are never inserted into business params.
 - `src` is address/provenance metadata and is not, by itself, proof of
   authorization. Current middleware and future authenticated control-session
@@ -417,9 +485,9 @@ This is not the AXTP object-RPC wire format. The bridge is:
 Axent JSON-RPC 2.0 src/dst
   -> ControlCommand src/dst
   -> RouteManager resolves dst to provider
-  -> AdapterControlRequest source/destination Endpoint IDs
-  -> AxtpAdapter private runtime call
-  -> AXTP {sid, op, m:{src,dst}, d}
+  -> AdapterControlRequest source/destination Endpoint IDs + delivery mode
+  -> LocalProjection: downstream legacy AXTP {sid, op, d}
+  -> NativeRelay: downstream AXTP {sid, op, m:{src,dst}, d}
 ```
 
 On response:
@@ -506,7 +574,8 @@ Implementation is intentionally split across repositories:
    `codex/axent-multi-device-management`.
 4. Correct the preliminary Axent implementation on that branch: remove FNV
    fallback identity, enforce provider bindings, carry routed metadata through
-   the adapter boundary, and bridge it in AxtpAdapter.
+   the adapter boundary, default old devices to Local Projection, and bridge
+   metadata only for explicitly configured Native Relay peers in AxtpAdapter.
 5. NearCast adapts on its own feature branch and supplies its persistent app
    identity and endpoint-aware product behavior.
 6. Merge Axent to `main` only after the NearCast integration gate passes.
@@ -540,14 +609,18 @@ Tests must cover:
 - no Endpoint ID is synthesized from a provider-local device ID or HID path;
 - stable VID/PID/serial evidence generates the expected canonical vector;
 - a path-only HID device remains provider-local and has no `endpointId`;
+- a legacy device with stable identity receives an Axent-projected canonical
+  Endpoint ID without receiving downstream `m` metadata;
+- an explicit persistent managed-resource binding projects a device that lacks
+  device-owned stable identity;
 - DeviceManager preserves explicit bindings across refresh/offline transitions;
 - duplicate and silent identity-change bindings fail closed;
 - route lookup distinguishes unknown from known-offline targets;
 - Endpoint and legacy aliases for one physical device share a FIFO lane;
 - different devices execute concurrently;
 - external JSON-RPC validates, strips legacy selectors, and reverses addresses;
-- AxtpAdapter passes `src` / resolved `dst` through runtime metadata and never
-  inserts them into params;
+- AxtpAdapter omits metadata in default `LocalProjection`, passes `src` /
+  resolved `dst` in explicit `NativeRelay`, and never inserts them into params;
 - public Axent headers remain free of runtime headers and `axtp::*` types.
 
 ### Recursive integration
