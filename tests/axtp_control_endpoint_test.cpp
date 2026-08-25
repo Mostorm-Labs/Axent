@@ -22,6 +22,7 @@
 #include "axent/host/axent_host.hpp"
 
 #include "../src/core/control_operation_internal.hpp"
+#include "../src/transports/websocket/ix_websocket_transport.hpp"
 
 namespace {
 
@@ -40,7 +41,18 @@ public:
     {
         socket_.setUrl("ws://127.0.0.1:" + std::to_string(port) + "/");
         socket_.setOnMessageCallback([this](const ix::WebSocketMessagePtr& message) {
-            if (!message || message->type != ix::WebSocketMessageType::Message) {
+            if (!message) {
+                return;
+            }
+            if (message->type == ix::WebSocketMessageType::Open) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    connected_ = true;
+                }
+                ready_.notify_all();
+                return;
+            }
+            if (message->type != ix::WebSocketMessageType::Message) {
                 return;
             }
             {
@@ -82,10 +94,22 @@ public:
         socket_.sendText(message.dump());
     }
 
+    bool wait_for_connection(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return ready_.wait_for(lock, timeout, [this]() { return connected_; });
+    }
+
+    void stop()
+    {
+        socket_.stop();
+    }
+
 private:
     std::mutex mutex_;
     std::condition_variable ready_;
     std::queue<std::string> messages_;
+    bool connected_ = false;
     ix::WebSocket socket_;
 };
 
@@ -136,6 +160,120 @@ nlohmann::json request_message(const std::string& sid,
 std::uint32_t response_code(const nlohmann::json& response)
 {
     return response.at("d").at("status").at("code").get<std::uint32_t>();
+}
+
+class DeferredReplyTargetSink final : public axtp::IByteSink {
+public:
+    explicit DeferredReplyTargetSink(axent::transport::WebSocketTransport& transport)
+        : transport_(transport)
+    {
+    }
+
+    void onBytes(const axtp::Byte*, std::size_t) override
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            reply_target_ = transport_.currentReplyTarget();
+            dispatched_ = true;
+        }
+        dispatched_cv_.notify_all();
+    }
+
+    bool wait_for_dispatch(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return dispatched_cv_.wait_for(lock, timeout, [this]() { return dispatched_; });
+    }
+
+    std::uint64_t reply_target() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return reply_target_;
+    }
+
+private:
+    axent::transport::WebSocketTransport& transport_;
+    mutable std::mutex mutex_;
+    std::condition_variable dispatched_cv_;
+    std::uint64_t reply_target_ = 0;
+    bool dispatched_ = false;
+};
+
+void exercise_queued_disconnect_reply_target()
+{
+    axent::transport::WebSocketTransport transport(0);
+    std::mutex ordering_mutex;
+    std::condition_variable ordering_cv;
+    std::size_t connection_changes = 0;
+    bool message_queued = false;
+    bool dispatch_paused = false;
+    bool release_dispatch = false;
+    transport.setConnectionChangedHookForTesting([&]() {
+        {
+            std::lock_guard<std::mutex> lock(ordering_mutex);
+            ++connection_changes;
+        }
+        ordering_cv.notify_all();
+    });
+    transport.setBeforeDispatchHookForTesting([&]() {
+        std::unique_lock<std::mutex> lock(ordering_mutex);
+        dispatch_paused = true;
+        ordering_cv.notify_all();
+        ordering_cv.wait(lock, [&]() { return release_dispatch; });
+    });
+    transport.setMessageQueuedHookForTesting([&]() {
+        {
+            std::lock_guard<std::mutex> lock(ordering_mutex);
+            message_queued = true;
+        }
+        ordering_cv.notify_all();
+    });
+    DeferredReplyTargetSink sink(transport);
+    transport.bind(sink);
+    transport.open();
+    require(transport.localPort() != 0, "queued disconnect transport should open");
+
+    WebSocketProbe source_probe(transport.localPort());
+    WebSocketProbe unrelated_probe(transport.localPort());
+    require(source_probe.wait_for_connection(2s) && unrelated_probe.wait_for_connection(2s),
+            "queued disconnect WebSocket clients should establish connections");
+    {
+        std::unique_lock<std::mutex> lock(ordering_mutex);
+        require(ordering_cv.wait_for(lock, 2s, [&]() { return connection_changes >= 2; }),
+                "both queued disconnect clients should connect");
+    }
+    source_probe.send({{"request", "queued-before-close"}});
+    {
+        std::unique_lock<std::mutex> lock(ordering_mutex);
+        require(ordering_cv.wait_for(lock, 2s, [&]() { return message_queued; }),
+                "source request should be queued before polling dispatch");
+    }
+    std::thread transport_poller([&]() { transport.poll(); });
+    {
+        std::unique_lock<std::mutex> lock(ordering_mutex);
+        require(ordering_cv.wait_for(lock, 2s, [&]() { return dispatch_paused; }),
+                "request should pause after queueing and before dispatch");
+    }
+    source_probe.stop();
+    {
+        std::unique_lock<std::mutex> lock(ordering_mutex);
+        require(ordering_cv.wait_for(lock, 2s, [&]() { return connection_changes >= 3; }),
+                "source close must remove its live reply target before dispatch");
+        release_dispatch = true;
+    }
+    ordering_cv.notify_all();
+    transport_poller.join();
+    require(sink.wait_for_dispatch(2s), "queued request should dispatch after release");
+    require(sink.reply_target() != 0,
+            "queued request must retain its opaque reply target after source close");
+
+    const nlohmann::json deferred_response = {{"deferred", true}};
+    const auto text = deferred_response.dump();
+    transport.sendBytesTo(
+        sink.reply_target(), reinterpret_cast<const axtp::Byte*>(text.data()), text.size());
+    require(!unrelated_probe.next_for(250ms).has_value(),
+            "deferred response for a closed target must not reach another client");
+    transport.close();
 }
 
 class DeferredEndpointRelayAdapter final : public axent::Adapter {
@@ -489,6 +627,7 @@ int main()
     using axent::control::ControlStatus;
 
     characterize_synchronous_endpoint_relay_bottleneck();
+    exercise_queued_disconnect_reply_target();
     exercise_endpoint_handler_status_and_cancellation();
 
     require(ControlStatus::success().ok(), "success status should be ok");

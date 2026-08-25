@@ -349,7 +349,11 @@ if(AXENT_BUILD_TESTING)
 
         add_executable(axtp_control_endpoint_test tests/axtp_control_endpoint_test.cpp)
         target_link_libraries(axtp_control_endpoint_test
-            PRIVATE axent::axtp_control_endpoint axent::libaxent ixwebsocket::ixwebsocket)
+            PRIVATE
+                axent::axtp_control_endpoint
+                axent::libaxent
+                axtp::runtime
+                ixwebsocket::ixwebsocket)
         axent_enable_warnings(axtp_control_endpoint_test)
         add_test(NAME axtp_control_endpoint_test COMMAND axtp_control_endpoint_test)
 

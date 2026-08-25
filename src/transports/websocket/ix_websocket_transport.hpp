@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -67,8 +68,9 @@ public:
                         std::lock_guard<std::mutex> lock(_clientsMutex);
                         const bool firstClient = _clients.empty();
                         const auto id = connectionId(connectionState);
+                        removeReplyTargetLocked(id);
                         _clients[id] = std::move(client);
-                        const auto reply_target = nextReplyTarget();
+                        const auto reply_target = nextReplyTargetLocked();
                         _replyTargets[id] = reply_target;
                         _connectionIdsByReplyTarget[reply_target] = id;
                         _pendingHelloClients.push(id);
@@ -81,6 +83,7 @@ public:
                         }
                         _hasConnection.store(true);
                     }
+                    runConnectionChangedHookForTesting();
                     return;
                 }
                 if (message->type == ix::WebSocketMessageType::Close ||
@@ -88,22 +91,29 @@ public:
                     {
                         std::lock_guard<std::mutex> lock(_clientsMutex);
                         const auto id = connectionId(connectionState);
-                        if (const auto target = _replyTargets.find(id);
-                            target != _replyTargets.end()) {
-                            _connectionIdsByReplyTarget.erase(target->second);
-                            _replyTargets.erase(target);
-                        }
+                        removeReplyTargetLocked(id);
                         _clients.erase(id);
                         _hasConnection.store(!_clients.empty());
                     }
+                    runConnectionChangedHookForTesting();
                     return;
                 }
                 if (message->type != ix::WebSocketMessageType::Message || message->binary) {
                     return;
                 }
-                std::lock_guard<std::mutex> lock(_rxMutex);
-                _rxMessages.push(
-                    ReceivedMessage{connectionId(connectionState), message->str});
+                const auto id = connectionId(connectionState);
+                std::uint64_t reply_target = 0;
+                {
+                    std::lock_guard<std::mutex> lock(_clientsMutex);
+                    if (const auto target = _replyTargets.find(id); target != _replyTargets.end()) {
+                        reply_target = target->second;
+                    }
+                }
+                {
+                    std::lock_guard<std::mutex> lock(_rxMutex);
+                    _rxMessages.push(ReceivedMessage{id, reply_target, message->str});
+                }
+                runMessageQueuedHookForTesting();
             });
         const bool started = _server->listenAndStart();
         _open.store(started);
@@ -164,18 +174,26 @@ public:
                 std::lock_guard<std::mutex> lock(_rxMutex);
                 if (_rxMessages.empty()) {
                     _dispatchConnectionId.clear();
+                    _dispatchReplyTarget = 0;
                     return;
                 }
                 message = std::move(_rxMessages.front());
                 _rxMessages.pop();
             }
+            runBeforeDispatchHookForTesting();
             _dispatchConnectionId = message.connectionId;
+            _dispatchReplyTarget = message.replyTarget;
             struct DispatchGuard {
-                explicit DispatchGuard(std::string& connectionId)
-                    : connectionId_(connectionId) {}
-                ~DispatchGuard() { connectionId_.clear(); }
+                DispatchGuard(std::string& connectionId, std::uint64_t& replyTarget)
+                    : connectionId_(connectionId)
+                    , replyTarget_(replyTarget) {}
+                ~DispatchGuard() {
+                    connectionId_.clear();
+                    replyTarget_ = 0;
+                }
                 std::string& connectionId_;
-            } dispatchGuard(_dispatchConnectionId);
+                std::uint64_t& replyTarget_;
+            } dispatchGuard(_dispatchConnectionId, _dispatchReplyTarget);
             _sink->onBytes(
                 reinterpret_cast<const Byte*>(message.text.data()), message.text.size());
         }
@@ -212,9 +230,7 @@ public:
     }
 
     std::uint64_t currentReplyTarget() const override {
-        std::lock_guard<std::mutex> lock(_clientsMutex);
-        const auto target = _replyTargets.find(_dispatchConnectionId);
-        return target == _replyTargets.end() ? 0 : target->second;
+        return _dispatchReplyTarget;
     }
 
     void sendBytesTo(std::uint64_t replyTarget,
@@ -264,9 +280,22 @@ public:
         return _connectionGeneration.load(std::memory_order_relaxed);
     }
 
+    void setBeforeDispatchHookForTesting(std::function<void()> hook) {
+        _beforeDispatchHookForTesting = std::move(hook);
+    }
+
+    void setConnectionChangedHookForTesting(std::function<void()> hook) {
+        _connectionChangedHookForTesting = std::move(hook);
+    }
+
+    void setMessageQueuedHookForTesting(std::function<void()> hook) {
+        _messageQueuedHookForTesting = std::move(hook);
+    }
+
 private:
     struct ReceivedMessage {
         std::string connectionId;
+        std::uint64_t replyTarget = 0;
         std::string text;
     };
 
@@ -274,9 +303,40 @@ private:
         return connectionState ? connectionState->getId() : std::string();
     }
 
-    std::uint64_t nextReplyTarget() {
-        const auto target = _nextReplyTarget++;
-        return target == 0 ? _nextReplyTarget++ : target;
+    void removeReplyTargetLocked(const std::string& id) {
+        const auto target = _replyTargets.find(id);
+        if (target == _replyTargets.end()) {
+            return;
+        }
+        _connectionIdsByReplyTarget.erase(target->second);
+        _replyTargets.erase(target);
+    }
+
+    std::uint64_t nextReplyTargetLocked() {
+        while (true) {
+            const auto target = _nextReplyTarget++;
+            if (target != 0 && _connectionIdsByReplyTarget.count(target) == 0) {
+                return target;
+            }
+        }
+    }
+
+    void runBeforeDispatchHookForTesting() {
+        if (_beforeDispatchHookForTesting) {
+            _beforeDispatchHookForTesting();
+        }
+    }
+
+    void runConnectionChangedHookForTesting() {
+        if (_connectionChangedHookForTesting) {
+            _connectionChangedHookForTesting();
+        }
+    }
+
+    void runMessageQueuedHookForTesting() {
+        if (_messageQueuedHookForTesting) {
+            _messageQueuedHookForTesting();
+        }
     }
 
     std::shared_ptr<ix::WebSocket> findClient(ix::WebSocket& webSocket) const {
@@ -370,6 +430,9 @@ private:
     std::map<std::string, std::uint64_t> _replyTargets;
     std::map<std::uint64_t, std::string> _connectionIdsByReplyTarget;
     std::uint64_t _nextReplyTarget = 1;
+    std::function<void()> _beforeDispatchHookForTesting;
+    std::function<void()> _connectionChangedHookForTesting;
+    std::function<void()> _messageQueuedHookForTesting;
     // Additional peers receive the cached Hello directly, without making the
     // shared runtime adapter reset the active SID.
     std::queue<std::string> _pendingHelloClients;
@@ -377,6 +440,7 @@ private:
     mutable std::mutex _rxMutex;
     std::queue<ReceivedMessage> _rxMessages;
     std::string _dispatchConnectionId;
+    std::uint64_t _dispatchReplyTarget = 0;
 };
 
 }  // namespace axent::transport
