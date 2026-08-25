@@ -723,7 +723,7 @@ struct AxtpControlEndpoint::Impl {
                     adapter->poll(*transport);
                 }
                 if (endpoint != nullptr) {
-                    endpoint->poll();
+                    endpoint->progress();
                 }
                 if (!running.load()) {
                     break;

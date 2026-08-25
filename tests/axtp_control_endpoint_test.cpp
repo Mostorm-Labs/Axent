@@ -174,7 +174,7 @@ public:
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 pending_a_ = pending;
-                a_admitted_ = true;
+                ++a_admissions_;
             }
             a_admitted_cv_.notify_all();
             return pending->source.operation();
@@ -199,10 +199,12 @@ public:
         return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
     }
 
-    bool wait_for_a_admitted(std::chrono::milliseconds timeout)
+    bool wait_for_a_admissions(std::size_t count, std::chrono::milliseconds timeout)
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        return a_admitted_cv_.wait_for(lock, timeout, [this]() { return a_admitted_; });
+        return a_admitted_cv_.wait_for(lock, timeout, [this, count]() {
+            return a_admissions_ >= count;
+        });
     }
 
     bool b_admitted() const
@@ -241,7 +243,7 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable a_admitted_cv_;
-    bool a_admitted_ = false;
+    std::size_t a_admissions_ = 0;
     bool b_admitted_ = false;
     std::shared_ptr<PendingCall> pending_a_;
 };
@@ -284,14 +286,41 @@ void characterize_synchronous_endpoint_relay_bottleneck()
         require(identified.at("op") == 3, "relay characterization must Identify");
         const auto sid = identified.at("sid").get<std::string>();
 
+        WebSocketProbe unrelated_probe(endpoint.local_port());
+        const auto unrelated_hello = unrelated_probe.next();
+        require(unrelated_hello.at("op") == 0,
+                "unrelated relay client must receive its own Hello");
+        unrelated_probe.send(
+            {{"sid", ""}, {"op", 2}, {"d", {{"resumeSid", sid}}}});
+        const auto unrelated_identified = unrelated_probe.next();
+        require(unrelated_identified.at("sid") == sid,
+                "unrelated relay client must join the shared session");
+
         probe.send(request_message(
             sid,
             901,
             "cast.getStatus",
             nlohmann::json::object(),
             {{"src", "endpoint/relay-client"}, {"dst", "endpoint/relay-a"}}));
-        require(adapter->wait_for_a_admitted(2s),
+        require(adapter->wait_for_a_admissions(1, 2s),
                 "device A operation should be admitted before sending device B");
+
+        adapter->release_a();
+        const auto targeted_a_response = probe.next_for(2s);
+        require(targeted_a_response.has_value() &&
+                    targeted_a_response->at("d").at("id") == 901,
+                "deferred response must return to its originating WebSocket client");
+        require(!unrelated_probe.next_for(250ms).has_value(),
+                "deferred response must not leak to another WebSocket client");
+
+        probe.send(request_message(
+            sid,
+            903,
+            "cast.getStatus",
+            nlohmann::json::object(),
+            {{"src", "endpoint/relay-client"}, {"dst", "endpoint/relay-a"}}));
+        require(adapter->wait_for_a_admissions(2, 2s),
+                "second device A operation should be admitted before sending device B");
 
         probe.send(request_message(
             sid,
@@ -312,7 +341,7 @@ void characterize_synchronous_endpoint_relay_bottleneck()
 
         adapter->release_a();
         const auto a_response = probe.next_for(2s);
-        require(a_response.has_value() && a_response->at("d").at("id") == 901,
+        require(a_response.has_value() && a_response->at("d").at("id") == 903,
                 "device A response must complete after release");
         require(endpoint.stop() == axent::control::ControlStatus::success(),
                 "relay characterization endpoint should stop cleanly");

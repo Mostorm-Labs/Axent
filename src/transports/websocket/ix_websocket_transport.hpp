@@ -68,6 +68,9 @@ public:
                         const bool firstClient = _clients.empty();
                         const auto id = connectionId(connectionState);
                         _clients[id] = std::move(client);
+                        const auto reply_target = nextReplyTarget();
+                        _replyTargets[id] = reply_target;
+                        _connectionIdsByReplyTarget[reply_target] = id;
                         _pendingHelloClients.push(id);
                         if (firstClient) {
                             // The runtime adapter owns one shared AXTP session.  Only the
@@ -84,7 +87,13 @@ public:
                     message->type == ix::WebSocketMessageType::Error) {
                     {
                         std::lock_guard<std::mutex> lock(_clientsMutex);
-                        _clients.erase(connectionId(connectionState));
+                        const auto id = connectionId(connectionState);
+                        if (const auto target = _replyTargets.find(id);
+                            target != _replyTargets.end()) {
+                            _connectionIdsByReplyTarget.erase(target->second);
+                            _replyTargets.erase(target);
+                        }
+                        _clients.erase(id);
                         _hasConnection.store(!_clients.empty());
                     }
                     return;
@@ -114,6 +123,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(_clientsMutex);
             _clients.clear();
+            _replyTargets.clear();
+            _connectionIdsByReplyTarget.clear();
             std::queue<std::string> empty;
             _pendingHelloClients.swap(empty);
             _helloText.clear();
@@ -200,6 +211,36 @@ public:
         sendText(activeClients(), text);
     }
 
+    std::uint64_t currentReplyTarget() const override {
+        std::lock_guard<std::mutex> lock(_clientsMutex);
+        const auto target = _replyTargets.find(_dispatchConnectionId);
+        return target == _replyTargets.end() ? 0 : target->second;
+    }
+
+    void sendBytesTo(std::uint64_t replyTarget,
+                     const Byte* data,
+                     std::size_t size) override {
+        if (!_server || replyTarget == 0 || data == nullptr || size == 0) {
+            return;
+        }
+        std::shared_ptr<ix::WebSocket> client;
+        {
+            std::lock_guard<std::mutex> lock(_clientsMutex);
+            const auto id = _connectionIdsByReplyTarget.find(replyTarget);
+            if (id == _connectionIdsByReplyTarget.end()) {
+                return;
+            }
+            const auto current = _clients.find(id->second);
+            if (current != _clients.end()) {
+                client = current->second;
+            }
+        }
+        if (client) {
+            const std::string text(reinterpret_cast<const char*>(data), size);
+            (void)client->sendText(text);
+        }
+    }
+
     TransportProfile profile() const override {
         TransportProfile profile;
         profile.kind = TransportKind::WebSocket;
@@ -231,6 +272,11 @@ private:
 
     static std::string connectionId(const std::shared_ptr<ix::ConnectionState>& connectionState) {
         return connectionState ? connectionState->getId() : std::string();
+    }
+
+    std::uint64_t nextReplyTarget() {
+        const auto target = _nextReplyTarget++;
+        return target == 0 ? _nextReplyTarget++ : target;
     }
 
     std::shared_ptr<ix::WebSocket> findClient(ix::WebSocket& webSocket) const {
@@ -321,6 +367,9 @@ private:
     bool _netInitialized = false;
     mutable std::mutex _clientsMutex;
     std::map<std::string, std::shared_ptr<ix::WebSocket>> _clients;
+    std::map<std::string, std::uint64_t> _replyTargets;
+    std::map<std::uint64_t, std::string> _connectionIdsByReplyTarget;
+    std::uint64_t _nextReplyTarget = 1;
     // Additional peers receive the cached Hello directly, without making the
     // shared runtime adapter reset the active SID.
     std::queue<std::string> _pendingHelloClients;

@@ -195,8 +195,9 @@ if(TARGET axent::transport_websocket_ix)
     add_library(axent::axtp_control_endpoint ALIAS axent_axtp_control_endpoint)
     target_include_directories(axent_axtp_control_endpoint PUBLIC include)
     target_link_libraries(axent_axtp_control_endpoint
-        PUBLIC axent::control_contract axent::libaxent
+        PUBLIC axent::control_contract
         PRIVATE
+            axent::libaxent
             axtp::core
             axtp::json_rpc
             axtp::runtime
