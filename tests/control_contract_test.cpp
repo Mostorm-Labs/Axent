@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <type_traits>
 
 #include "axent/control/control_contract.hpp"
 #include "core/protocol/generated/axtp_ids_generated.h"
@@ -27,6 +28,9 @@ static_assert(ControlStatus::unavailable().code == code(axtp::ErrorCode::Unavail
 static_assert(ControlStatus::unavailable().code == 0x000F);
 static_assert(ControlStatus::stream_not_open().code == code(axtp::ErrorCode::StreamNotOpen));
 static_assert(ControlStatus::stream_not_open().code == 0x0506);
+static_assert(std::is_same_v<
+              axent::control::EndpointControlHandler,
+              std::function<axent::ControlOperationPtr(const axent::control::ControlRequest&)>>);
 
 } // namespace
 

@@ -195,7 +195,7 @@ if(TARGET axent::transport_websocket_ix)
     add_library(axent::axtp_control_endpoint ALIAS axent_axtp_control_endpoint)
     target_include_directories(axent_axtp_control_endpoint PUBLIC include)
     target_link_libraries(axent_axtp_control_endpoint
-        PUBLIC axent::control_contract
+        PUBLIC axent::control_contract axent::libaxent
         PRIVATE
             axtp::core
             axtp::json_rpc
@@ -348,7 +348,7 @@ if(AXENT_BUILD_TESTING)
 
         add_executable(axtp_control_endpoint_test tests/axtp_control_endpoint_test.cpp)
         target_link_libraries(axtp_control_endpoint_test
-            PRIVATE axent::axtp_control_endpoint ixwebsocket::ixwebsocket)
+            PRIVATE axent::axtp_control_endpoint axent::libaxent ixwebsocket::ixwebsocket)
         axent_enable_warnings(axtp_control_endpoint_test)
         add_test(NAME axtp_control_endpoint_test COMMAND axtp_control_endpoint_test)
 

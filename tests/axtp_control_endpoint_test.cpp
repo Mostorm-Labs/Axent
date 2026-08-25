@@ -2,6 +2,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,7 +17,11 @@
 #include <ixwebsocket/IXWebSocketMessage.h>
 #include <nlohmann/json.hpp>
 
+#include "axent/core/adapter.hpp"
 #include "axent/control/axtp_control_endpoint.hpp"
+#include "axent/host/axent_host.hpp"
+
+#include "../src/core/control_operation_internal.hpp"
 
 namespace {
 
@@ -133,12 +138,329 @@ std::uint32_t response_code(const nlohmann::json& response)
     return response.at("d").at("status").at("code").get<std::uint32_t>();
 }
 
+class DeferredEndpointRelayAdapter final : public axent::Adapter {
+public:
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"deferred-endpoint-relay", "Deferred endpoint relay characterization", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        return {
+            device("relay-device-a", "endpoint/relay-a"),
+            device("relay-device-b", "endpoint/relay-b"),
+        };
+    }
+
+    axent::ControlResult call(const std::string&,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::InternalError, { {"error", "legacy call used"} }};
+    }
+
+    axent::ControlOperationPtr call_async(
+        const axent::AdapterControlRequest& request,
+        axent::ControlCallOptions) override
+    {
+        if (request.destination_endpoint_id == "endpoint/relay-a") {
+            auto pending = std::make_shared<PendingCall>();
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                pending_a_ = pending;
+                a_admitted_ = true;
+            }
+            a_admitted_cv_.notify_all();
+            return pending->source.operation();
+        }
+
+        if (request.destination_endpoint_id == "endpoint/relay-b") {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                b_admitted_ = true;
+            }
+            return axent::make_completed_control_operation(
+                {axent::ControlStatus::Ok, { {"device", "B"} }});
+        }
+
+        return axent::make_completed_control_operation(
+            {axent::ControlStatus::NotFound, nlohmann::json::object()});
+    }
+
+    axent::ControlResult start_firmware_update(
+        const std::string&, const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+    bool wait_for_a_admitted(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return a_admitted_cv_.wait_for(lock, timeout, [this]() { return a_admitted_; });
+    }
+
+    bool b_admitted() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return b_admitted_;
+    }
+
+    void release_a()
+    {
+        std::shared_ptr<PendingCall> pending;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pending.swap(pending_a_);
+        }
+        if (pending) {
+            pending->source.complete({axent::ControlStatus::Ok, { {"device", "A"} }});
+        }
+    }
+
+private:
+    struct PendingCall {
+        axent::ControlOperationSource source;
+    };
+
+    static axent::DeviceSnapshot device(std::string id, std::string endpoint_id)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "deferred-endpoint-relay";
+        snapshot.endpoint_id = std::move(endpoint_id);
+        snapshot.connection.online = true;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable a_admitted_cv_;
+    bool a_admitted_ = false;
+    bool b_admitted_ = false;
+    std::shared_ptr<PendingCall> pending_a_;
+};
+
+void characterize_synchronous_endpoint_relay_bottleneck()
+{
+    axent::AxentHost host;
+    DeferredEndpointRelayAdapter* adapter = nullptr;
+    axent::AxentHostOptions host_options;
+    host_options.enable_mock_adapter = false;
+    host_options.enable_axtp_adapter = true;
+    host_options.axtp_adapter_factory = [&adapter](axent::AxtpAdapterConfig) {
+        auto relay_adapter = std::make_unique<DeferredEndpointRelayAdapter>();
+        adapter = relay_adapter.get();
+        return relay_adapter;
+    };
+    require(host.start(std::move(host_options)), "relay characterization Host should start");
+    require(adapter != nullptr, "relay characterization adapter should be installed");
+
+    axent::AxtpControlEndpoint endpoint;
+    auto relay_token = endpoint.register_endpoint_handler(
+        generated(0x1612, "cast.getStatus"),
+        [&host](const axent::control::ControlRequest& request) {
+            return host.call_endpoint({
+                request.source_endpoint_id,
+                request.destination_endpoint_id,
+                request.method,
+                request.params,
+            });
+        });
+
+    try {
+        require(endpoint.start() == axent::control::ControlStatus::success(),
+                "relay characterization endpoint should start");
+        WebSocketProbe probe(endpoint.local_port());
+        const auto hello = probe.next();
+        require(hello.at("op") == 0, "relay characterization must receive Hello");
+        probe.send({{"sid", ""}, {"op", 2}, {"d", {{"randomSeed", 0xA11CE}}}});
+        const auto identified = probe.next();
+        require(identified.at("op") == 3, "relay characterization must Identify");
+        const auto sid = identified.at("sid").get<std::string>();
+
+        probe.send(request_message(
+            sid,
+            901,
+            "cast.getStatus",
+            nlohmann::json::object(),
+            {{"src", "endpoint/relay-client"}, {"dst", "endpoint/relay-a"}}));
+        require(adapter->wait_for_a_admitted(2s),
+                "device A operation should be admitted before sending device B");
+
+        probe.send(request_message(
+            sid,
+            902,
+            "cast.getStatus",
+            nlohmann::json::object(),
+            {{"src", "endpoint/relay-client"}, {"dst", "endpoint/relay-b"}}));
+        const auto b_response = probe.next_for(500ms);
+        require(adapter->b_admitted(),
+                "device B must be admitted to its Adapter before device A is released");
+        require(b_response.has_value(),
+                "device B response must arrive before device A is released");
+        require(b_response->at("d").at("id") == 902,
+                "device B response must preserve its AXTP request ID");
+        require(b_response->at("m") == nlohmann::json({{"src", "endpoint/relay-b"},
+                                                          {"dst", "endpoint/relay-client"}}),
+                "device B response must reverse AXTP Endpoint metadata");
+
+        adapter->release_a();
+        const auto a_response = probe.next_for(2s);
+        require(a_response.has_value() && a_response->at("d").at("id") == 901,
+                "device A response must complete after release");
+        require(endpoint.stop() == axent::control::ControlStatus::success(),
+                "relay characterization endpoint should stop cleanly");
+    } catch (...) {
+        adapter->release_a();
+        endpoint.stop();
+        host.stop();
+        throw;
+    }
+
+    host.stop();
+    (void)relay_token;
+}
+
+void exercise_endpoint_handler_status_and_cancellation()
+{
+    axent::AxtpControlEndpoint endpoint;
+    axent::ControlOperationSource pending_source;
+    std::mutex pending_mutex;
+    std::condition_variable pending_cv;
+    bool pending_started = false;
+
+    auto token = endpoint.register_endpoint_handler(
+        generated(0x1612, "cast.getStatus"),
+        [&](const axent::control::ControlRequest& request) -> axent::ControlOperationPtr {
+            if (request.params.value("pending", false)) {
+                {
+                    std::lock_guard<std::mutex> lock(pending_mutex);
+                    pending_started = true;
+                }
+                pending_cv.notify_all();
+                return pending_source.operation();
+            }
+            if (request.params.value("throw", false)) {
+                throw std::runtime_error("endpoint handler failure");
+            }
+            if (request.params.value("null", false)) {
+                return nullptr;
+            }
+
+            const auto status = request.params.value("status", "ok");
+            axent::ControlStatus result_status = axent::ControlStatus::Ok;
+            if (status == "accepted") result_status = axent::ControlStatus::Accepted;
+            if (status == "not_found") result_status = axent::ControlStatus::NotFound;
+            if (status == "not_supported") result_status = axent::ControlStatus::NotSupported;
+            if (status == "forbidden") result_status = axent::ControlStatus::Forbidden;
+            if (status == "invalid_argument") result_status = axent::ControlStatus::InvalidArgument;
+            if (status == "busy") result_status = axent::ControlStatus::Busy;
+            if (status == "unavailable") result_status = axent::ControlStatus::Unavailable;
+            if (status == "internal_error") result_status = axent::ControlStatus::InternalError;
+            return axent::make_completed_control_operation(
+                {result_status, {{"legacyMetadata", request.destination_endpoint_id}}});
+        });
+
+    require(endpoint.start() == axent::control::ControlStatus::success(),
+            "endpoint handler status endpoint should start");
+    WebSocketProbe probe(endpoint.local_port());
+    (void)probe.next();
+    probe.send({{"sid", ""}, {"op", 2}, {"d", {{"randomSeed", 0xE11}}}});
+    const auto identified = probe.next();
+    const auto sid = identified.at("sid").get<std::string>();
+
+    const std::vector<std::pair<std::string, std::uint32_t>> statuses = {
+        {"ok", 0x0000}, {"accepted", 0x0000}, {"not_found", 0x000C},
+        {"not_supported", 0x0003}, {"forbidden", 0x0009},
+        {"invalid_argument", 0x000A}, {"busy", 0x0005},
+        {"unavailable", 0x000F}, {"internal_error", 0x000E},
+    };
+    std::uint32_t request_id = 1100;
+    for (const auto& [status, expected_code] : statuses) {
+        probe.send(request_message(sid, request_id++, "cast.getStatus", {{"status", status}}));
+        const auto response = probe.next();
+        if (response_code(response) != expected_code) {
+            throw std::runtime_error(
+                "endpoint operation status mapping mismatch for " + status + ": got " +
+                std::to_string(response_code(response)) + ", expected " +
+                std::to_string(expected_code));
+        }
+        if (expected_code == 0) {
+            require(response.at("d").at("result").at("legacyMetadata") == "",
+                    "endpoint handler must accept requests without Endpoint metadata");
+        }
+    }
+
+    probe.send(request_message(sid, request_id++, "cast.getStatus", {{"null", true}}));
+    require(response_code(probe.next()) == 0x000E,
+            "null endpoint operation must fail closed as InternalError");
+    probe.send(request_message(sid, request_id++, "cast.getStatus", {{"throw", true}}));
+    require(response_code(probe.next()) == 0x000E,
+            "endpoint handler exception must fail closed as InternalError");
+
+    probe.send(request_message(sid, request_id, "cast.getStatus", {{"pending", true}}));
+    {
+        std::unique_lock<std::mutex> lock(pending_mutex);
+        require(pending_cv.wait_for(lock, 2s, [&]() { return pending_started; }),
+                "pending endpoint operation should be admitted");
+    }
+    token.reset();
+    require(pending_source.cancellation_requested(),
+            "registration token reset must cancel pending endpoint operations");
+    require(response_code(probe.next()) == 0x000F,
+            "cancelled endpoint operation must report Unavailable");
+    require(endpoint.stop() == axent::control::ControlStatus::success(),
+            "endpoint handler status endpoint should stop");
+
+    axent::AxtpControlEndpoint stop_endpoint;
+    axent::ControlOperationSource stop_pending_source;
+    std::mutex stop_mutex;
+    std::condition_variable stop_cv;
+    bool stop_pending_started = false;
+    auto stop_token = stop_endpoint.register_endpoint_handler(
+        generated(0x1612, "cast.getStatus"),
+        [&](const axent::control::ControlRequest&) {
+            {
+                std::lock_guard<std::mutex> lock(stop_mutex);
+                stop_pending_started = true;
+            }
+            stop_cv.notify_all();
+            return stop_pending_source.operation();
+        });
+    require(stop_endpoint.start() == axent::control::ControlStatus::success(),
+            "endpoint stop cancellation endpoint should start");
+    {
+        WebSocketProbe stop_probe(stop_endpoint.local_port());
+        (void)stop_probe.next();
+        stop_probe.send({{"sid", ""}, {"op", 2}, {"d", {{"randomSeed", 0xE12}}}});
+        const auto stop_sid = stop_probe.next().at("sid").get<std::string>();
+        stop_probe.send(request_message(stop_sid, 1200, "cast.getStatus"));
+        std::unique_lock<std::mutex> lock(stop_mutex);
+        require(stop_cv.wait_for(lock, 2s, [&]() { return stop_pending_started; }),
+                "pending endpoint operation should be admitted before stop");
+    }
+    require(stop_endpoint.stop() == axent::control::ControlStatus::success(),
+            "endpoint stop should complete with a pending endpoint operation");
+    require(stop_pending_source.cancellation_requested(),
+            "endpoint stop must cancel pending endpoint operations");
+    (void)stop_token;
+}
+
 } // namespace
 
 int main()
 {
     using axent::control::ControlResult;
     using axent::control::ControlStatus;
+
+    characterize_synchronous_endpoint_relay_bottleneck();
+    exercise_endpoint_handler_status_and_cancellation();
 
     require(ControlStatus::success().ok(), "success status should be ok");
     require(!ControlStatus::busy().ok(), "busy status should not be ok");
