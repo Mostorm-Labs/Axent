@@ -2328,6 +2328,68 @@ ControlOperationPtr AxentHost::call_async(
     return operation;
 }
 
+ControlOperationPtr AxentHost::call_endpoint(
+    EndpointControlRequest request,
+    ControlCallOptions options)
+{
+    if (request.source_endpoint_id.empty() || request.destination_endpoint_id.empty() ||
+        request.method.empty()) {
+        return make_completed_control_operation(
+            {ControlStatus::InvalidArgument,
+             {{"error", "endpoint source, destination, and method are required"}}});
+    }
+    if (!options.deadline.has_value()) {
+        const auto accepted_at = std::chrono::steady_clock::now();
+        options.deadline = options.timeout <= std::chrono::milliseconds::zero()
+            ? accepted_at
+            : accepted_at + options.timeout;
+    }
+
+    std::unique_lock<std::mutex> dispatch_lock(impl_->dispatch_mutex, std::defer_lock);
+    if (!dispatch_lock.try_lock()) {
+        return make_completed_control_operation(
+            {ControlStatus::Busy,
+             {{"error", g_in_media_stream_sink_callback
+                            ? "host dispatch busy during media stream callback"
+                            : "host dispatch busy"}}});
+    }
+
+    ControlCommand command;
+    Broker* broker = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->broker) {
+            return make_completed_control_operation(
+                {ControlStatus::Unavailable, {{"error", "host not running"}}});
+        }
+        broker = impl_->broker.get();
+        command.request_id = request.source_endpoint_id + ":" +
+            request.destination_endpoint_id + ":" + request.method;
+        command.source = ProtocolSource::LocalCli;
+        command.src = std::move(request.source_endpoint_id);
+        command.dst = std::move(request.destination_endpoint_id);
+        command.method = std::move(request.method);
+        command.params = std::move(request.params);
+    }
+
+    auto operation = broker->dispatch_async(command, options);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        auto& operations = impl_->control_operations[command.dst];
+        operations.erase(
+            std::remove_if(
+                operations.begin(),
+                operations.end(),
+                [](const auto& weak_operation) {
+                    const auto operation = weak_operation.lock();
+                    return !operation || operation->ready();
+                }),
+            operations.end());
+        operations.push_back(operation);
+    }
+    return operation;
+}
+
 Broker& AxentHost::broker()
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);

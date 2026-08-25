@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -17,6 +18,8 @@
 
 #include "axent/host/axent_host.hpp"
 #include "axtp_adapter_test_seam.hpp"
+
+#include "../src/core/control_operation_internal.hpp"
 
 #include "core/protocol/wire/inbound_processor.hpp"
 #include "core/protocol/wire/outbound_processor.hpp"
@@ -369,6 +372,131 @@ private:
     std::shared_ptr<int> discovery_count_;
 };
 
+class EndpointGateAdapter final : public axent::Adapter {
+public:
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"endpoint-gate", "Endpoint host bridge test adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        return {
+            device("physical-primary", "endpoint/mock-primary", true),
+            device("physical-secondary", "endpoint/mock-secondary", true),
+            device("physical-offline", "endpoint/mock-offline", false),
+        };
+    }
+
+    axent::ControlResult call(const std::string&,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::InternalError, {{"error", "legacy call used"}}};
+    }
+
+    axent::ControlOperationPtr call_async(
+        const axent::AdapterControlRequest& request,
+        axent::ControlCallOptions) override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        requests_.push_back(request);
+        if (request.method != "gate") {
+            return axent::make_completed_control_operation(
+                {axent::ControlStatus::Ok, {{"path", "endpoint-routed"}}});
+        }
+
+        auto pending = std::make_shared<PendingCall>();
+        pending->request = request;
+        pending_by_device_[request.device_id].push_back(pending);
+        start_next_locked(request.device_id);
+        return pending->source.operation();
+    }
+
+    axent::ControlResult start_firmware_update(
+        const std::string&, const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+    std::vector<axent::AdapterControlRequest> requests() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_;
+    }
+
+    bool wait_for_entries(const std::string& device_id, std::size_t count)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return entered_by_device_[device_id] >= count;
+        });
+    }
+
+    void release_next(const std::string& device_id)
+    {
+        std::shared_ptr<PendingCall> active;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto entry = active_by_device_.find(device_id);
+            require(entry != active_by_device_.end(), "gate release requires an active call");
+            active = entry->second;
+            active_by_device_.erase(entry);
+        }
+        active->source.complete(
+            {axent::ControlStatus::Ok, {{"path", "endpoint-gated"}}});
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            start_next_locked(device_id);
+        }
+    }
+
+private:
+    struct PendingCall {
+        axent::AdapterControlRequest request;
+        axent::ControlOperationSource source;
+    };
+
+    static axent::DeviceSnapshot device(
+        std::string id, std::string endpoint_id, bool online)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "endpoint-gate";
+        snapshot.endpoint_id = std::move(endpoint_id);
+        snapshot.connection.online = online;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    void start_next_locked(const std::string& device_id)
+    {
+        if (active_by_device_.find(device_id) != active_by_device_.end()) {
+            return;
+        }
+        auto& pending = pending_by_device_[device_id];
+        if (pending.empty()) {
+            return;
+        }
+        active_by_device_[device_id] = pending.front();
+        pending.erase(pending.begin());
+        ++entered_by_device_[device_id];
+        cv_.notify_all();
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<axent::AdapterControlRequest> requests_;
+    std::map<std::string, std::vector<std::shared_ptr<PendingCall>>> pending_by_device_;
+    std::map<std::string, std::shared_ptr<PendingCall>> active_by_device_;
+    std::map<std::string, std::size_t> entered_by_device_;
+};
+
 std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& consumer)
 {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -708,6 +836,105 @@ int main()
             "stopped Host refresh should return an empty list");
     require(*inventory_discovery_count == discovery_count_before_stopped_refresh,
             "stopped Host refresh must not call discovery");
+
+    EndpointGateAdapter* endpoint_adapter = nullptr;
+    axent::AxentHost endpoint_host;
+    axent::AxentHostOptions endpoint_options;
+    endpoint_options.enable_mock_adapter = false;
+    endpoint_options.enable_axtp_adapter = true;
+    endpoint_options.axtp_adapter_factory = [&endpoint_adapter](axent::AxtpAdapterConfig) {
+        auto adapter = std::make_unique<EndpointGateAdapter>();
+        endpoint_adapter = adapter.get();
+        return adapter;
+    };
+    require(endpoint_host.start(std::move(endpoint_options)),
+            "endpoint host should start");
+    require(endpoint_adapter != nullptr, "endpoint adapter should be installed");
+
+    const auto endpoint_operation = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        "endpoint/mock-primary",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(endpoint_operation != nullptr &&
+                endpoint_operation->wait().status == axent::ControlStatus::Ok,
+            "endpoint call should succeed without a Host session");
+    const auto endpoint_requests = endpoint_adapter->requests();
+    require(endpoint_requests.size() == 1 &&
+                endpoint_requests.front().device_id == "physical-primary" &&
+                endpoint_requests.front().source_endpoint_id == "ep-nearcast-source" &&
+                endpoint_requests.front().destination_endpoint_id == "endpoint/mock-primary" &&
+                endpoint_requests.front().method == "status.get" &&
+                endpoint_requests.front().params == nlohmann::json::object() &&
+                !endpoint_requests.front().params.contains("deviceId") &&
+                !endpoint_requests.front().params.contains("serialNumber"),
+            "endpoint call must preserve Endpoint IDs without injecting device selectors");
+
+    const auto unknown_endpoint = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        "endpoint/missing",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(unknown_endpoint != nullptr &&
+                unknown_endpoint->wait().status == axent::ControlStatus::NotFound,
+            "unknown endpoint should fail closed as NotFound");
+    const auto offline_endpoint = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        "endpoint/mock-offline",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(offline_endpoint != nullptr &&
+                offline_endpoint->wait().status == axent::ControlStatus::Unavailable,
+            "offline endpoint should fail closed as Unavailable");
+    for (const auto& invalid_request : std::vector<axent::EndpointControlRequest>{
+             {"", "endpoint/mock-primary", "status.get", nlohmann::json::object()},
+             {"ep-nearcast-source", "", "status.get", nlohmann::json::object()},
+             {"ep-nearcast-source", "endpoint/mock-primary", "", nlohmann::json::object()},
+         }) {
+        const auto invalid_operation = endpoint_host.call_endpoint(invalid_request);
+        require(invalid_operation != nullptr &&
+                    invalid_operation->wait().status == axent::ControlStatus::InvalidArgument,
+                "endpoint calls require source, destination, and method");
+    }
+
+    const auto primary_first = endpoint_host.call_endpoint({
+        "ep-client-a", "endpoint/mock-primary", "gate", nlohmann::json::object()});
+    const auto primary_second = endpoint_host.call_endpoint({
+        "ep-client-b", "endpoint/mock-primary", "gate", nlohmann::json::object()});
+    require(endpoint_adapter->wait_for_entries("physical-primary", 1),
+            "first endpoint alias should enter its physical lane");
+    require(!primary_first->ready() && !primary_second->ready(),
+            "same-physical endpoint aliases should remain asynchronous");
+
+    const auto secondary = endpoint_host.call_endpoint({
+        "ep-client-c", "endpoint/mock-secondary", "gate", nlohmann::json::object()});
+    require(endpoint_adapter->wait_for_entries("physical-secondary", 1),
+            "different physical device should enter while primary is gated");
+    endpoint_adapter->release_next("physical-primary");
+    require(endpoint_adapter->wait_for_entries("physical-primary", 2),
+            "same-physical endpoint aliases should enter FIFO");
+    endpoint_adapter->release_next("physical-primary");
+    endpoint_adapter->release_next("physical-secondary");
+    require(primary_first->wait().status == axent::ControlStatus::Ok &&
+                primary_second->wait().status == axent::ControlStatus::Ok &&
+                secondary->wait().status == axent::ControlStatus::Ok,
+            "gated endpoint calls should complete after their physical lanes release");
+
+    const auto cancelled_by_stop = endpoint_host.call_endpoint({
+        "ep-nearcast-source", "endpoint/mock-primary", "gate", nlohmann::json::object()});
+    require(endpoint_adapter->wait_for_entries("physical-primary", 3),
+            "endpoint operation should be tracked before stop");
+    endpoint_host.stop();
+    require(cancelled_by_stop->wait().status == axent::ControlStatus::Unavailable,
+            "Host stop should cancel tracked endpoint operations");
+    const auto stopped_endpoint = endpoint_host.call_endpoint({
+        "ep-nearcast-source", "endpoint/mock-primary", "status.get", nlohmann::json::object()});
+    require(stopped_endpoint != nullptr &&
+                stopped_endpoint->wait().status == axent::ControlStatus::Unavailable,
+            "stopped Host endpoint calls should be unavailable");
 
     axent::AxentHostOptions options;
     options.enable_mock_adapter = true;

@@ -48,6 +48,13 @@ struct SessionLease {
     ControlStatus status = ControlStatus::Ok;
 };
 
+struct EndpointControlRequest {
+    std::string source_endpoint_id;
+    std::string destination_endpoint_id;
+    std::string method;
+    nlohmann::json params = nlohmann::json::object();
+};
+
 class MediaConsumer {
 public:
     std::optional<MediaFrame> read();
@@ -118,6 +125,9 @@ public:
         const std::string& session_id,
         const std::string& method,
         const nlohmann::json& params,
+        ControlCallOptions options = {});
+    ControlOperationPtr call_endpoint(
+        EndpointControlRequest request,
         ControlCallOptions options = {});
 
     // AxentHost serializes its own lifecycle/session/media state. The returned
