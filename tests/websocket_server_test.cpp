@@ -295,6 +295,9 @@ int main()
         require(false,
                 "different dst should run in parallel and same dst must remain ordered");
     }
+    require(first_parallel.at("src") == "endpoint/controlled-b" &&
+                first_parallel.at("dst") == "controller:nearcast",
+            "parallel endpoint response must reverse its routing envelope");
     blocking_adapter.release();
     require(parallel.wait_for_messages(3, std::chrono::seconds(3)),
             "blocked endpoint requests should finish after release");
@@ -302,6 +305,11 @@ int main()
     require(nlohmann::json::parse(parallel_messages[1]).at("id") == 10 &&
                 nlohmann::json::parse(parallel_messages[2]).at("id") == 11,
             "endpoint and legacy aliases for one physical device must share FIFO order");
+    const auto addressed_blocking_response =
+        nlohmann::json::parse(parallel_messages[1]);
+    require(addressed_blocking_response.at("src") == "endpoint/controlled-a" &&
+                addressed_blocking_response.at("dst") == "controller:nearcast",
+            "blocked endpoint response must reverse its routing envelope");
     const auto legacy_alias_response =
         nlohmann::json::parse(parallel_messages[2]);
     require(legacy_alias_response.at("result").at("device") == "blocking-a" &&
