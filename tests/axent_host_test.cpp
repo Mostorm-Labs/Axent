@@ -426,6 +426,84 @@ private:
     std::shared_ptr<int> discovery_count_;
 };
 
+class BatchInventoryAdapter final : public axent::Adapter {
+public:
+    explicit BatchInventoryAdapter(std::shared_ptr<int> discovery_count)
+        : discovery_count_(std::move(discovery_count))
+    {
+    }
+
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"batch-inventory", "Batch inventory adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        switch (++*discovery_count_) {
+        case 1:
+            return {
+                device("stable-path-old", "endpoint/stable"),
+                device("conflict-a", "endpoint/conflict"),
+                device("unrelated", "endpoint/unrelated"),
+                device("legacy-old", ""),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 2:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("legacy-new", ""),
+                device("endpoint-change", "endpoint/changed"),
+            };
+        case 3:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-a", "endpoint/conflict"),
+                device("conflict-b", "endpoint/conflict"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        default:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", "endpoint/conflict"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        }
+    }
+
+    axent::ControlResult call(const std::string& device_id,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::Ok, {{"deviceId", device_id}}};
+    }
+
+    axent::ControlResult start_firmware_update(const std::string&,
+                                               const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+private:
+    static axent::DeviceSnapshot device(std::string id, std::string endpoint_id)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "batch-inventory";
+        snapshot.endpoint_id = std::move(endpoint_id);
+        snapshot.connection.online = true;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    std::shared_ptr<int> discovery_count_;
+};
+
 struct EndpointCancellationState {
     bool wait_for_cancellations(std::size_t count)
     {
@@ -891,6 +969,76 @@ int main()
             "stopped Host refresh should return an empty list");
     require(*inventory_discovery_count == discovery_count_before_stopped_refresh,
             "stopped Host refresh must not call discovery");
+
+    auto batch_discovery_count = std::make_shared<int>(0);
+    axent::AxentHost batch_inventory_host;
+    axent::AxentHostOptions batch_inventory_options;
+    batch_inventory_options.enable_mock_adapter = false;
+    batch_inventory_options.enable_axtp_adapter = true;
+    batch_inventory_options.axtp_adapter_factory = [batch_discovery_count](
+                                                    axent::AxtpAdapterConfig) {
+        return std::make_unique<BatchInventoryAdapter>(batch_discovery_count);
+    };
+    require(batch_inventory_host.start(std::move(batch_inventory_options)),
+            "batch inventory host should start");
+
+    const auto migrated_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                migrated_inventory.begin(),
+                migrated_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "stable-path-old";
+                }),
+            "stable Endpoint migration must remove the stale same-adapter owner");
+    require(find_inventory_device(migrated_inventory, "stable-path-new").connection.online,
+            "stable Endpoint migration must retain the current provider-local ID");
+    require(!find_inventory_device(migrated_inventory, "unrelated").connection.online,
+            "missing unrelated devices must remain retained offline");
+    require(!find_inventory_device(migrated_inventory, "legacy-old").connection.online &&
+                find_inventory_device(migrated_inventory, "legacy-new").connection.online,
+            "legacy empty-Endpoint devices must reconcile strictly by adapter and local ID");
+    require(find_inventory_device(migrated_inventory, "endpoint-change").endpoint_id ==
+                "endpoint/original",
+            "same physical owner must not change between non-empty Endpoints");
+
+    const auto conflicted_inventory = batch_inventory_host.refresh_devices();
+    require(find_inventory_device(conflicted_inventory, "conflict-a").connection.online &&
+                find_inventory_device(conflicted_inventory, "conflict-b").connection.online,
+            "simultaneous current Endpoint claims must all remain visible");
+    const auto conflicted_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/conflict",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(conflicted_call != nullptr &&
+                conflicted_call->wait().status == axent::ControlStatus::Unavailable,
+            "simultaneous Endpoint claims must make Host routing fail closed");
+
+    const auto recovered_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                recovered_inventory.begin(),
+                recovered_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "conflict-a";
+                }) &&
+                find_inventory_device(recovered_inventory, "conflict-b").connection.online,
+            "collapsed same-adapter conflict must remove the absent stale claim");
+    const auto recovered_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/conflict",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    const auto recovered_result = recovered_call != nullptr
+        ? recovered_call->wait()
+        : axent::ControlResult{axent::ControlStatus::InternalError,
+                               nlohmann::json::object()};
+    require(recovered_call != nullptr &&
+                recovered_result.status == axent::ControlStatus::Ok &&
+                recovered_result.body.at("deviceId") == "conflict-b",
+            "collapsed Endpoint conflict must restore the unique Host route");
+    batch_inventory_host.stop();
 
     EndpointRecordingAdapter* endpoint_adapter = nullptr;
     auto endpoint_cancellations = std::make_shared<EndpointCancellationState>();

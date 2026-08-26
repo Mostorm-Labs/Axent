@@ -1684,18 +1684,11 @@ std::vector<DeviceSnapshot> AxentHost::refresh_devices()
     const auto discovered = adapter->discover();
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    for (const auto& device : discovered) {
-        const auto result = impl_->devices->upsert(device);
-        log_endpoint_binding_rejection(impl_->logger.get(), device, result);
-    }
-    for (const auto& device : impl_->devices->list()) {
-        const auto still_discovered = std::any_of(
-            discovered.begin(), discovered.end(), [&](const DeviceSnapshot& current) {
-                return current.adapter == device.adapter && current.id == device.id;
-            });
-        if (device.adapter == adapter_name && !still_discovered) {
-            impl_->devices->mark_offline(device.adapter, device.id, "discovery-missing");
-        }
+    const auto results = impl_->devices->reconcile_discovery(
+        adapter_name, discovered, "discovery-missing");
+    for (std::size_t index = 0; index < discovered.size(); ++index) {
+        log_endpoint_binding_rejection(
+            impl_->logger.get(), discovered[index], results[index]);
     }
     return impl_->devices->list();
 }

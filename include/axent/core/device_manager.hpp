@@ -37,6 +37,13 @@ public:
     DeviceManager& operator=(DeviceManager&& other) noexcept;
 
     DeviceUpsertResult upsert(DeviceSnapshot snapshot);
+    // Reconcile one adapter's complete discovery result atomically. Missing
+    // unrelated devices remain as offline history; stable non-empty Endpoint
+    // claims may replace only absent owners from the same adapter.
+    std::vector<DeviceUpsertResult> reconcile_discovery(
+        const std::string& adapter,
+        std::vector<DeviceSnapshot> discovered,
+        const std::string& missing_reason = "discovery-missing");
     void mark_offline(const std::string& adapter,
                       const std::string& id,
                       const std::string& reason);
@@ -52,6 +59,10 @@ public:
     std::vector<DeviceSnapshot> list() const;
 
 private:
+    DeviceUpsertResult upsert_locked(
+        DeviceSnapshot snapshot,
+        bool allow_same_adapter_endpoint_conflicts);
+
     mutable std::mutex mutex_;
     std::vector<DeviceSnapshot> devices_;
 };

@@ -169,6 +169,119 @@ int main()
             "one endpoint must not bind to the same local id from another adapter");
     }
 
+    axent::DeviceManager batch_devices;
+    axent::DeviceSnapshot stale_path;
+    stale_path.id = "stable-path-old";
+    stale_path.adapter = "inventory";
+    stale_path.endpoint_id = "endpoint/stable";
+    stale_path.connection.online = true;
+    axent::DeviceSnapshot unrelated = stale_path;
+    unrelated.id = "unrelated";
+    unrelated.endpoint_id = "endpoint/unrelated";
+    axent::DeviceSnapshot legacy_old = stale_path;
+    legacy_old.id = "legacy-old";
+    legacy_old.endpoint_id.clear();
+    axent::DeviceSnapshot endpoint_change = stale_path;
+    endpoint_change.id = "endpoint-change";
+    endpoint_change.endpoint_id = "endpoint/original";
+    axent::DeviceSnapshot cross_adapter_owner = stale_path;
+    cross_adapter_owner.id = "cross-adapter-old";
+    cross_adapter_owner.adapter = "external";
+    cross_adapter_owner.endpoint_id = "endpoint/cross-adapter";
+    batch_devices.upsert(stale_path);
+    batch_devices.upsert(unrelated);
+    batch_devices.upsert(legacy_old);
+    batch_devices.upsert(endpoint_change);
+    batch_devices.upsert(cross_adapter_owner);
+
+    auto migrated_path = stale_path;
+    migrated_path.id = "stable-path-new";
+    auto legacy_new = legacy_old;
+    legacy_new.id = "legacy-new";
+    auto rejected_change = endpoint_change;
+    rejected_change.endpoint_id = "endpoint/changed";
+    auto rejected_cross_adapter_migration = cross_adapter_owner;
+    rejected_cross_adapter_migration.id = "cross-adapter-new";
+    rejected_cross_adapter_migration.adapter = "inventory";
+    const auto batch_results = batch_devices.reconcile_discovery(
+        "inventory",
+        {migrated_path,
+         legacy_new,
+         rejected_change,
+         rejected_cross_adapter_migration});
+    if (batch_results.size() != 4 ||
+        batch_results[2].status != axent::DeviceUpsertStatus::EndpointChangeRejected ||
+        batch_results[3].status != axent::DeviceUpsertStatus::EndpointConflict) {
+        throw std::runtime_error(
+            "batch reconcile must report endpoint changes and cross-adapter migration conflicts");
+    }
+    if (batch_devices.get("inventory", "stable-path-old").has_value() ||
+        !batch_devices.get("inventory", "stable-path-new") ||
+        !batch_devices.get("inventory", "stable-path-new")->connection.online) {
+        throw std::runtime_error(
+            "unique current Endpoint claim must migrate a stale same-adapter local ID");
+    }
+    if (!batch_devices.get("inventory", "unrelated") ||
+        batch_devices.get("inventory", "unrelated")->connection.online) {
+        throw std::runtime_error(
+            "batch reconcile must retain missing unrelated devices offline");
+    }
+    if (!batch_devices.get("inventory", "legacy-old") ||
+        batch_devices.get("inventory", "legacy-old")->connection.online ||
+        !batch_devices.get("inventory", "legacy-new") ||
+        !batch_devices.get("inventory", "legacy-new")->connection.online) {
+        throw std::runtime_error(
+            "empty-Endpoint devices must reconcile strictly by adapter and local ID");
+    }
+    if (!batch_devices.get("inventory", "endpoint-change") ||
+        batch_devices.get("inventory", "endpoint-change")->endpoint_id !=
+            "endpoint/original") {
+        throw std::runtime_error(
+            "same adapter and local ID must reject a non-empty Endpoint change");
+    }
+    if (!batch_devices.get("external", "cross-adapter-old") ||
+        batch_devices.get("inventory", "cross-adapter-new").has_value()) {
+        throw std::runtime_error(
+            "batch reconcile must never migrate an Endpoint across adapters");
+    }
+
+    axent::DeviceManager conflict_batch_devices;
+    axent::DeviceSnapshot simultaneous_a;
+    simultaneous_a.id = "simultaneous-a";
+    simultaneous_a.adapter = "inventory";
+    simultaneous_a.endpoint_id = "endpoint/simultaneous";
+    simultaneous_a.connection.online = true;
+    auto simultaneous_b = simultaneous_a;
+    simultaneous_b.id = "simultaneous-b";
+    const auto simultaneous_results = conflict_batch_devices.reconcile_discovery(
+        "inventory", {simultaneous_a, simultaneous_b});
+    if (simultaneous_results.size() != 2 ||
+        !simultaneous_results[0].accepted() ||
+        !simultaneous_results[1].accepted() ||
+        conflict_batch_devices.list().size() != 2) {
+        throw std::runtime_error(
+            "simultaneous current Endpoint claims must all remain visible");
+    }
+    axent::RouteManager conflict_batch_routes(conflict_batch_devices);
+    if (conflict_batch_routes.resolve_endpoint_route("endpoint/simultaneous").status !=
+        axent::RouteResolutionStatus::Conflict) {
+        throw std::runtime_error(
+            "simultaneous current Endpoint claims must make routing fail closed");
+    }
+
+    const auto recovered_results = conflict_batch_devices.reconcile_discovery(
+        "inventory", {simultaneous_b});
+    const auto recovered_route =
+        conflict_batch_routes.resolve_endpoint_route("endpoint/simultaneous");
+    if (recovered_results.size() != 1 || !recovered_results[0].accepted() ||
+        conflict_batch_devices.get("inventory", "simultaneous-a").has_value() ||
+        recovered_route.status != axent::RouteResolutionStatus::Found ||
+        !recovered_route.target ||
+        recovered_route.target->device_id != "simultaneous-b") {
+        throw std::runtime_error(
+            "collapsed conflict must remove the absent claim and restore the unique route");
+    }
+
     axent::CapabilityRegistry capabilities;
     capabilities.register_core_capabilities();
     if (!capabilities.has("identity")) {
