@@ -269,6 +269,7 @@ int main()
             "simultaneous current Endpoint claims must make routing fail closed");
     }
 
+    simultaneous_b.endpoint_id.clear();
     const auto recovered_results = conflict_batch_devices.reconcile_discovery(
         "inventory", {simultaneous_b});
     const auto recovered_route =
@@ -279,7 +280,104 @@ int main()
         !recovered_route.target ||
         recovered_route.target->device_id != "simultaneous-b") {
         throw std::runtime_error(
-            "collapsed conflict must remove the absent claim and restore the unique route");
+            "empty Endpoint refresh must inherit the stable binding and collapse the conflict");
+    }
+    const auto repeated_recovery_results = conflict_batch_devices.reconcile_discovery(
+        "inventory", {simultaneous_b});
+    const auto repeated_recovery_route =
+        conflict_batch_routes.resolve_endpoint_route("endpoint/simultaneous");
+    if (repeated_recovery_results.size() != 1 ||
+        !repeated_recovery_results[0].accepted() ||
+        conflict_batch_devices.list().size() != 1 ||
+        repeated_recovery_route.status != axent::RouteResolutionStatus::Found ||
+        !repeated_recovery_route.target ||
+        repeated_recovery_route.target->device_id != "simultaneous-b") {
+        throw std::runtime_error(
+            "repeating an effective empty-Endpoint recovery batch must be idempotent");
+    }
+
+    axent::DeviceManager duplicate_row_devices;
+    axent::DeviceSnapshot duplicate_row;
+    duplicate_row.id = "duplicate-row";
+    duplicate_row.adapter = "inventory";
+    duplicate_row.endpoint_id = "endpoint/duplicate-row";
+    duplicate_row.connection.online = true;
+    auto duplicate_row_stale_owner = duplicate_row;
+    duplicate_row_stale_owner.id = "duplicate-row-stale";
+    duplicate_row_devices.upsert(duplicate_row_stale_owner);
+    const auto duplicate_row_results = duplicate_row_devices.reconcile_discovery(
+        "inventory", {duplicate_row, duplicate_row});
+    axent::RouteManager duplicate_row_routes(duplicate_row_devices);
+    const auto duplicate_row_route =
+        duplicate_row_routes.resolve_endpoint_route("endpoint/duplicate-row");
+    if (duplicate_row_results.size() != 2 ||
+        !duplicate_row_results[0].accepted() ||
+        !duplicate_row_results[1].accepted() ||
+        duplicate_row_devices.list().size() != 1 ||
+        duplicate_row_devices.get("inventory", "duplicate-row-stale").has_value() ||
+        duplicate_row_route.status != axent::RouteResolutionStatus::Found ||
+        !duplicate_row_route.target ||
+        duplicate_row_route.target->device_id != "duplicate-row") {
+        throw std::runtime_error(
+            "identical duplicate discovery rows must count as one physical claim");
+    }
+
+    const auto require_conflicting_same_key_rejected = [](
+        const std::vector<axent::DeviceSnapshot>& rows) {
+        axent::DeviceManager conflicting_key_devices;
+        axent::DeviceSnapshot stale_owner;
+        stale_owner.id = "stale-owner";
+        stale_owner.adapter = "inventory";
+        stale_owner.endpoint_id = "endpoint/claim-a";
+        stale_owner.connection.online = true;
+        conflicting_key_devices.upsert(stale_owner);
+
+        const auto results = conflicting_key_devices.reconcile_discovery(
+            "inventory", rows);
+        const auto retained_stale =
+            conflicting_key_devices.get("inventory", "stale-owner");
+        if (results.size() != 2 ||
+            results[0].status !=
+                axent::DeviceUpsertStatus::DiscoveryClaimConflict ||
+            results[1].status !=
+                axent::DeviceUpsertStatus::DiscoveryClaimConflict ||
+            conflicting_key_devices.get("inventory", "conflicting-key").has_value() ||
+            !retained_stale || retained_stale->endpoint_id != "endpoint/claim-a") {
+            throw std::runtime_error(
+                "same-key different-Endpoint rows must reject the whole key without cleanup");
+        }
+    };
+    auto conflicting_key_a = duplicate_row;
+    conflicting_key_a.id = "conflicting-key";
+    conflicting_key_a.endpoint_id = "endpoint/claim-a";
+    auto conflicting_key_b = conflicting_key_a;
+    conflicting_key_b.endpoint_id = "endpoint/claim-b";
+    require_conflicting_same_key_rejected({conflicting_key_a, conflicting_key_b});
+    require_conflicting_same_key_rejected({conflicting_key_b, conflicting_key_a});
+
+    axent::DeviceManager rejected_change_devices;
+    axent::DeviceSnapshot rejected_change_owner;
+    rejected_change_owner.id = "rejected-change";
+    rejected_change_owner.adapter = "inventory";
+    rejected_change_owner.endpoint_id = "endpoint/original-change";
+    rejected_change_owner.connection.online = true;
+    auto rejected_change_stale = rejected_change_owner;
+    rejected_change_stale.id = "rejected-change-stale";
+    rejected_change_stale.endpoint_id = "endpoint/rejected-target";
+    rejected_change_devices.upsert(rejected_change_owner);
+    rejected_change_devices.upsert(rejected_change_stale);
+    auto attempted_change = rejected_change_owner;
+    attempted_change.endpoint_id = "endpoint/rejected-target";
+    const auto rejected_change_results = rejected_change_devices.reconcile_discovery(
+        "inventory", {attempted_change});
+    if (rejected_change_results.size() != 1 ||
+        rejected_change_results[0].status !=
+            axent::DeviceUpsertStatus::EndpointChangeRejected ||
+        !rejected_change_devices.get("inventory", "rejected-change-stale") ||
+        rejected_change_devices.get("inventory", "rejected-change")->endpoint_id !=
+            "endpoint/original-change") {
+        throw std::runtime_error(
+            "rejected Endpoint change must not erase another stale Endpoint owner");
     }
 
     axent::CapabilityRegistry capabilities;

@@ -15,6 +15,7 @@ enum class DeviceUpsertStatus {
     EndpointBound,
     EndpointConflict,
     EndpointChangeRejected,
+    DiscoveryClaimConflict,
 };
 
 struct DeviceUpsertResult {

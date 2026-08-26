@@ -1,6 +1,8 @@
 #include "axent/core/device_manager.hpp"
 
 #include <algorithm>
+#include <map>
+#include <tuple>
 #include <utility>
 
 namespace axent {
@@ -91,51 +93,124 @@ std::vector<DeviceUpsertResult> DeviceManager::reconcile_discovery(
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    const auto is_current = [&](const DeviceSnapshot& device) {
-        return std::any_of(
-            discovered.begin(), discovered.end(), [&](const DeviceSnapshot& current) {
-                return current.adapter == device.adapter && current.id == device.id;
-            });
+    using DeviceKey = std::pair<std::string, std::string>;
+    struct ClaimPlan {
+        DeviceSnapshot snapshot;
+        std::vector<std::size_t> row_indices;
+        bool valid = true;
+        DeviceUpsertStatus rejection_status =
+            DeviceUpsertStatus::DiscoveryClaimConflict;
     };
 
-    std::vector<bool> endpoint_change_rejected(discovered.size(), false);
+    std::map<DeviceKey, std::vector<std::size_t>> rows_by_key;
     for (std::size_t index = 0; index < discovered.size(); ++index) {
-        const auto& snapshot = discovered[index];
-        const auto existing = std::find_if(
-            devices_.begin(), devices_.end(), [&](const DeviceSnapshot& current) {
-                return current.adapter == snapshot.adapter && current.id == snapshot.id;
-            });
-        endpoint_change_rejected[index] =
-            existing != devices_.end() &&
-            !existing->endpoint_id.empty() &&
-            !snapshot.endpoint_id.empty() &&
-            existing->endpoint_id != snapshot.endpoint_id;
+        rows_by_key[{discovered[index].adapter, discovered[index].id}]
+            .push_back(index);
     }
 
-    const auto current_endpoint_claim_count = [&](const std::string& endpoint_id) {
-        std::size_t count = 0;
-        for (std::size_t index = 0; index < discovered.size(); ++index) {
-            if (!endpoint_change_rejected[index] &&
-                discovered[index].adapter == adapter &&
-                discovered[index].endpoint_id == endpoint_id) {
-                ++count;
-            }
-        }
-        return count;
+    const auto snapshots_equivalent = [](const DeviceSnapshot& lhs,
+                                         const DeviceSnapshot& rhs) {
+        return std::tie(lhs.id,
+                        lhs.adapter,
+                        lhs.identity.vendor,
+                        lhs.identity.model,
+                        lhs.identity.serial_number,
+                        lhs.identity.firmware_version,
+                        lhs.identity.hardware_version,
+                        lhs.connection.online,
+                        lhs.connection.transport,
+                        lhs.connection.last_change_reason,
+                        lhs.status.health,
+                        lhs.endpoint_id,
+                        lhs.endpoint_delivery_mode) ==
+               std::tie(rhs.id,
+                        rhs.adapter,
+                        rhs.identity.vendor,
+                        rhs.identity.model,
+                        rhs.identity.serial_number,
+                        rhs.identity.firmware_version,
+                        rhs.identity.hardware_version,
+                        rhs.connection.online,
+                        rhs.connection.transport,
+                        rhs.connection.last_change_reason,
+                        rhs.status.health,
+                        rhs.endpoint_id,
+                        rhs.endpoint_delivery_mode);
     };
 
-    std::vector<DeviceUpsertResult> results;
-    results.reserve(discovered.size());
-    for (std::size_t index = 0; index < discovered.size(); ++index) {
-        const auto& snapshot = discovered[index];
-        if (endpoint_change_rejected[index]) {
-            results.push_back({DeviceUpsertStatus::EndpointChangeRejected});
+    std::map<DeviceKey, ClaimPlan> plans;
+    for (const auto& entry : rows_by_key) {
+        ClaimPlan plan;
+        plan.row_indices = entry.second;
+
+        const auto existing = std::find_if(
+            devices_.begin(), devices_.end(), [&](const DeviceSnapshot& current) {
+                return current.adapter == entry.first.first &&
+                       current.id == entry.first.second;
+            });
+        std::string effective_endpoint = existing == devices_.end()
+            ? std::string{}
+            : existing->endpoint_id;
+        for (const auto index : entry.second) {
+            const auto& endpoint = discovered[index].endpoint_id;
+            if (endpoint.empty()) {
+                continue;
+            }
+            if (!effective_endpoint.empty() && endpoint != effective_endpoint) {
+                plan.valid = false;
+                plan.rejection_status = existing == devices_.end()
+                    ? DeviceUpsertStatus::DiscoveryClaimConflict
+                    : DeviceUpsertStatus::EndpointChangeRejected;
+                break;
+            }
+            effective_endpoint = endpoint;
+        }
+
+        if (plan.valid) {
+            plan.snapshot = discovered[entry.second.front()];
+            plan.snapshot.endpoint_id = effective_endpoint;
+            for (const auto index : entry.second) {
+                auto normalized = discovered[index];
+                normalized.endpoint_id = effective_endpoint;
+                if (!snapshots_equivalent(plan.snapshot, normalized)) {
+                    plan.valid = false;
+                    plan.rejection_status =
+                        DeviceUpsertStatus::DiscoveryClaimConflict;
+                    break;
+                }
+            }
+        }
+        plans.emplace(entry.first, std::move(plan));
+    }
+
+    std::map<std::string, std::size_t> claim_counts;
+    for (const auto& entry : plans) {
+        const auto& plan = entry.second;
+        if (plan.valid && plan.snapshot.adapter == adapter &&
+            !plan.snapshot.endpoint_id.empty()) {
+            ++claim_counts[plan.snapshot.endpoint_id];
+        }
+    }
+
+    const auto is_current = [&](const DeviceSnapshot& device) {
+        return rows_by_key.find({device.adapter, device.id}) !=
+               rows_by_key.end();
+    };
+
+    std::vector<DeviceUpsertResult> results(discovered.size());
+    for (const auto& entry : plans) {
+        const auto& plan = entry.second;
+        if (!plan.valid) {
+            for (const auto index : plan.row_indices) {
+                results[index] = {plan.rejection_status};
+            }
             continue;
         }
 
+        const auto& snapshot = plan.snapshot;
         const auto claim_count = snapshot.endpoint_id.empty()
             ? 0
-            : current_endpoint_claim_count(snapshot.endpoint_id);
+            : claim_counts[snapshot.endpoint_id];
         if (snapshot.adapter == adapter && claim_count == 1) {
             const auto cross_adapter_owner = std::find_if(
                 devices_.begin(), devices_.end(), [&](const DeviceSnapshot& current) {
@@ -157,7 +232,10 @@ std::vector<DeviceUpsertResult> DeviceManager::reconcile_discovery(
             }
         }
 
-        results.push_back(upsert_locked(snapshot, claim_count >= 2));
+        const auto result = upsert_locked(snapshot, claim_count >= 2);
+        for (const auto index : plan.row_indices) {
+            results[index] = result;
+        }
     }
 
     for (auto& device : devices_) {

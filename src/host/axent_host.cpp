@@ -44,6 +44,21 @@ void log_endpoint_binding_rejection(Logger* logger,
     if (logger == nullptr || result.accepted()) {
         return;
     }
+    const char* status = "discovery_claim_conflict";
+    switch (result.status) {
+    case DeviceUpsertStatus::EndpointConflict:
+        status = "endpoint_conflict";
+        break;
+    case DeviceUpsertStatus::EndpointChangeRejected:
+        status = "endpoint_change_rejected";
+        break;
+    case DeviceUpsertStatus::DiscoveryClaimConflict:
+        break;
+    case DeviceUpsertStatus::Inserted:
+    case DeviceUpsertStatus::Refreshed:
+    case DeviceUpsertStatus::EndpointBound:
+        return;
+    }
     logger->write(
         LogLevel::Error,
         LogCategory::Diagnostics,
@@ -51,9 +66,7 @@ void log_endpoint_binding_rejection(Logger* logger,
         {{"deviceId", device.id},
          {"adapter", device.adapter},
          {"endpointId", device.endpoint_id},
-         {"status", result.status == DeviceUpsertStatus::EndpointConflict
-                        ? "endpoint_conflict"
-                        : "endpoint_change_rejected"}});
+         {"status", status}});
 }
 
 class MediaStreamSinkCallbackMarker final {

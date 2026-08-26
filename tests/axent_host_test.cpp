@@ -467,10 +467,41 @@ public:
                 device("conflict-b", "endpoint/conflict"),
                 device("endpoint-change", "endpoint/original"),
             };
+        case 4:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 5:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 6:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("duplicate-row", "endpoint/duplicate-row"),
+                device("duplicate-row", "endpoint/duplicate-row"),
+                device("invalid-stale", "endpoint/invalid-a"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 7:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("invalid-key", "endpoint/invalid-a"),
+                device("invalid-key", "endpoint/invalid-b"),
+                device("endpoint-change", "endpoint/original"),
+            };
         default:
             return {
                 device("stable-path-new", "endpoint/stable"),
-                device("conflict-b", "endpoint/conflict"),
+                device("conflict-b", ""),
+                device("invalid-key", "endpoint/invalid-b"),
+                device("invalid-key", "endpoint/invalid-a"),
                 device("endpoint-change", "endpoint/original"),
             };
         }
@@ -1038,6 +1069,57 @@ int main()
                 recovered_result.status == axent::ControlStatus::Ok &&
                 recovered_result.body.at("deviceId") == "conflict-b",
             "collapsed Endpoint conflict must restore the unique Host route");
+
+    const auto repeated_recovery_inventory = batch_inventory_host.refresh_devices();
+    require(repeated_recovery_inventory.size() == recovered_inventory.size() &&
+                std::none_of(
+                    repeated_recovery_inventory.begin(),
+                    repeated_recovery_inventory.end(),
+                    [](const axent::DeviceSnapshot& device) {
+                        return device.id == "conflict-a";
+                    }) &&
+                find_inventory_device(repeated_recovery_inventory, "conflict-b")
+                        .endpoint_id == "endpoint/conflict",
+            "repeated effective empty-Endpoint Host refresh must be idempotent");
+
+    const auto duplicate_row_inventory = batch_inventory_host.refresh_devices();
+    require(std::count_if(
+                duplicate_row_inventory.begin(),
+                duplicate_row_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "duplicate-row";
+                }) == 1,
+            "Host refresh must deduplicate identical rows for one physical key");
+    const auto duplicate_row_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/duplicate-row",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(duplicate_row_call != nullptr &&
+                duplicate_row_call->wait().status == axent::ControlStatus::Ok,
+            "deduplicated Host discovery row must retain a unique Endpoint route");
+
+    const auto invalid_order_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                invalid_order_inventory.begin(),
+                invalid_order_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "invalid-key";
+                }) &&
+                !find_inventory_device(invalid_order_inventory, "invalid-stale")
+                     .connection.online,
+            "invalid same-key Endpoint rows must not choose a winner or erase stale owners");
+    const auto reverse_invalid_order_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                reverse_invalid_order_inventory.begin(),
+                reverse_invalid_order_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "invalid-key";
+                }) &&
+                !find_inventory_device(reverse_invalid_order_inventory, "invalid-stale")
+                     .connection.online,
+            "invalid same-key Endpoint rejection must be independent of row order");
     batch_inventory_host.stop();
 
     EndpointRecordingAdapter* endpoint_adapter = nullptr;
