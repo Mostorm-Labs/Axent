@@ -98,6 +98,7 @@ std::vector<DeviceUpsertResult> DeviceManager::reconcile_discovery(
         DeviceSnapshot snapshot;
         std::vector<std::size_t> row_indices;
         bool valid = true;
+        bool has_authoritative_claim = false;
         DeviceUpsertStatus rejection_status =
             DeviceUpsertStatus::DiscoveryClaimConflict;
     };
@@ -180,13 +181,19 @@ std::vector<DeviceUpsertResult> DeviceManager::reconcile_discovery(
                 }
             }
         }
+        if (!plan.valid && existing != devices_.end() &&
+            !existing->endpoint_id.empty()) {
+            plan.snapshot = *existing;
+            plan.has_authoritative_claim = true;
+        }
         plans.emplace(entry.first, std::move(plan));
     }
 
     std::map<std::string, std::size_t> claim_counts;
     for (const auto& entry : plans) {
         const auto& plan = entry.second;
-        if (plan.valid && plan.snapshot.adapter == adapter &&
+        if ((plan.valid || plan.has_authoritative_claim) &&
+            plan.snapshot.adapter == adapter &&
             !plan.snapshot.endpoint_id.empty()) {
             ++claim_counts[plan.snapshot.endpoint_id];
         }
@@ -200,7 +207,7 @@ std::vector<DeviceUpsertResult> DeviceManager::reconcile_discovery(
     std::vector<DeviceUpsertResult> results(discovered.size());
     for (const auto& entry : plans) {
         const auto& plan = entry.second;
-        if (!plan.valid) {
+        if (!plan.valid && !plan.has_authoritative_claim) {
             for (const auto index : plan.row_indices) {
                 results[index] = {plan.rejection_status};
             }
@@ -230,6 +237,13 @@ std::vector<DeviceUpsertResult> DeviceManager::reconcile_discovery(
                         }),
                     devices_.end());
             }
+        }
+
+        if (!plan.valid) {
+            for (const auto index : plan.row_indices) {
+                results[index] = {plan.rejection_status};
+            }
+            continue;
         }
 
         const auto result = upsert_locked(snapshot, claim_count >= 2);

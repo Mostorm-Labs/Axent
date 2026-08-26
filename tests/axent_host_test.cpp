@@ -496,12 +496,37 @@ public:
                 device("invalid-key", "endpoint/invalid-b"),
                 device("endpoint-change", "endpoint/original"),
             };
-        default:
+        case 8:
             return {
                 device("stable-path-new", "endpoint/stable"),
                 device("conflict-b", ""),
                 device("invalid-key", "endpoint/invalid-b"),
                 device("invalid-key", "endpoint/invalid-a"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 9:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("rejected-change-a", "endpoint/rejected-original"),
+                device("rejected-change-b", "endpoint/rejected-original"),
+                device("rejected-target-owner", "endpoint/rejected-target"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 10:
+        case 11:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("rejected-change-b", "endpoint/rejected-target"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        default:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("rejected-change-b", "endpoint/rejected-target"),
+                device("rejected-change-c", "endpoint/rejected-original"),
                 device("endpoint-change", "endpoint/original"),
             };
         }
@@ -1120,6 +1145,81 @@ int main()
                 !find_inventory_device(reverse_invalid_order_inventory, "invalid-stale")
                      .connection.online,
             "invalid same-key Endpoint rejection must be independent of row order");
+
+    const auto rejected_change_conflict_inventory =
+        batch_inventory_host.refresh_devices();
+    require(find_inventory_device(
+                rejected_change_conflict_inventory, "rejected-change-a")
+                    .connection.online &&
+                find_inventory_device(
+                    rejected_change_conflict_inventory, "rejected-change-b")
+                    .connection.online,
+            "Host rejected-change fixture must begin with two current Endpoint owners");
+
+    const auto rejected_change_recovered_inventory =
+        batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                rejected_change_recovered_inventory.begin(),
+                rejected_change_recovered_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "rejected-change-a";
+                }) &&
+                find_inventory_device(
+                    rejected_change_recovered_inventory, "rejected-change-b")
+                        .endpoint_id == "endpoint/rejected-original" &&
+                !find_inventory_device(
+                    rejected_change_recovered_inventory, "rejected-target-owner")
+                     .connection.online,
+            "rejected Host change must recover the old Endpoint without cleaning its target");
+    const auto rejected_change_recovered_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/rejected-original",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(rejected_change_recovered_call != nullptr &&
+                rejected_change_recovered_call->wait().status ==
+                    axent::ControlStatus::Ok,
+            "rejected Host change must restore the unique authoritative route");
+    const auto rejected_target_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/rejected-target",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(rejected_target_call != nullptr &&
+                rejected_target_call->wait().status ==
+                    axent::ControlStatus::Unavailable,
+            "rejected attempted Endpoint must not erase its retained offline owner");
+
+    const auto repeated_rejected_change_inventory =
+        batch_inventory_host.refresh_devices();
+    require(repeated_rejected_change_inventory.size() ==
+                rejected_change_recovered_inventory.size() &&
+                find_inventory_device(
+                    repeated_rejected_change_inventory, "rejected-change-b")
+                        .endpoint_id == "endpoint/rejected-original",
+            "repeated rejected Host change recovery must be idempotent");
+
+    const auto simultaneous_rejected_change_inventory =
+        batch_inventory_host.refresh_devices();
+    require(find_inventory_device(
+                simultaneous_rejected_change_inventory, "rejected-change-b")
+                    .connection.online &&
+                find_inventory_device(
+                    simultaneous_rejected_change_inventory, "rejected-change-c")
+                    .connection.online,
+            "simultaneous authoritative Endpoint owners must remain visible");
+    const auto simultaneous_rejected_change_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/rejected-original",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(simultaneous_rejected_change_call != nullptr &&
+                simultaneous_rejected_change_call->wait().status ==
+                    axent::ControlStatus::Unavailable,
+            "simultaneous authoritative Endpoint owners must keep Host routing conflicted");
     batch_inventory_host.stop();
 
     EndpointRecordingAdapter* endpoint_adapter = nullptr;

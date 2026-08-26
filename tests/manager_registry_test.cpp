@@ -356,28 +356,73 @@ int main()
     require_conflicting_same_key_rejected({conflicting_key_b, conflicting_key_a});
 
     axent::DeviceManager rejected_change_devices;
-    axent::DeviceSnapshot rejected_change_owner;
-    rejected_change_owner.id = "rejected-change";
-    rejected_change_owner.adapter = "inventory";
-    rejected_change_owner.endpoint_id = "endpoint/original-change";
-    rejected_change_owner.connection.online = true;
-    auto rejected_change_stale = rejected_change_owner;
-    rejected_change_stale.id = "rejected-change-stale";
-    rejected_change_stale.endpoint_id = "endpoint/rejected-target";
-    rejected_change_devices.upsert(rejected_change_owner);
-    rejected_change_devices.upsert(rejected_change_stale);
-    auto attempted_change = rejected_change_owner;
+    axent::DeviceSnapshot rejected_change_a;
+    rejected_change_a.id = "rejected-change-a";
+    rejected_change_a.adapter = "inventory";
+    rejected_change_a.endpoint_id = "endpoint/original-change";
+    rejected_change_a.connection.online = true;
+    auto rejected_change_b = rejected_change_a;
+    rejected_change_b.id = "rejected-change-b";
+    rejected_change_devices.reconcile_discovery(
+        "inventory", {rejected_change_a, rejected_change_b});
+    auto rejected_target_owner = rejected_change_a;
+    rejected_target_owner.id = "rejected-target-owner";
+    rejected_target_owner.endpoint_id = "endpoint/rejected-target";
+    rejected_change_devices.upsert(rejected_target_owner);
+
+    auto attempted_change = rejected_change_b;
     attempted_change.endpoint_id = "endpoint/rejected-target";
     const auto rejected_change_results = rejected_change_devices.reconcile_discovery(
         "inventory", {attempted_change});
+    axent::RouteManager rejected_change_routes(rejected_change_devices);
+    const auto recovered_rejected_change_route =
+        rejected_change_routes.resolve_endpoint_route("endpoint/original-change");
     if (rejected_change_results.size() != 1 ||
         rejected_change_results[0].status !=
             axent::DeviceUpsertStatus::EndpointChangeRejected ||
-        !rejected_change_devices.get("inventory", "rejected-change-stale") ||
-        rejected_change_devices.get("inventory", "rejected-change")->endpoint_id !=
-            "endpoint/original-change") {
+        rejected_change_devices.get("inventory", "rejected-change-a").has_value() ||
+        !rejected_change_devices.get("inventory", "rejected-change-b") ||
+        rejected_change_devices.get("inventory", "rejected-change-b")->endpoint_id !=
+            "endpoint/original-change" ||
+        !rejected_change_devices.get("inventory", "rejected-target-owner") ||
+        recovered_rejected_change_route.status !=
+            axent::RouteResolutionStatus::Found ||
+        !recovered_rejected_change_route.target ||
+        recovered_rejected_change_route.target->device_id != "rejected-change-b") {
         throw std::runtime_error(
-            "rejected Endpoint change must not erase another stale Endpoint owner");
+            "rejected change must recover the authoritative Endpoint without touching its target");
+    }
+
+    const auto repeated_rejected_change_results =
+        rejected_change_devices.reconcile_discovery("inventory", {attempted_change});
+    const auto repeated_rejected_change_route =
+        rejected_change_routes.resolve_endpoint_route("endpoint/original-change");
+    if (repeated_rejected_change_results.size() != 1 ||
+        repeated_rejected_change_results[0].status !=
+            axent::DeviceUpsertStatus::EndpointChangeRejected ||
+        rejected_change_devices.list().size() != 2 ||
+        repeated_rejected_change_route.status !=
+            axent::RouteResolutionStatus::Found ||
+        !repeated_rejected_change_route.target ||
+        repeated_rejected_change_route.target->device_id != "rejected-change-b") {
+        throw std::runtime_error(
+            "repeating a rejected Endpoint change recovery must be idempotent");
+    }
+
+    auto simultaneous_rejected_change_owner = rejected_change_b;
+    simultaneous_rejected_change_owner.id = "rejected-change-c";
+    const auto simultaneous_rejected_change_results =
+        rejected_change_devices.reconcile_discovery(
+            "inventory", {attempted_change, simultaneous_rejected_change_owner});
+    if (simultaneous_rejected_change_results.size() != 2 ||
+        simultaneous_rejected_change_results[0].status !=
+            axent::DeviceUpsertStatus::EndpointChangeRejected ||
+        !simultaneous_rejected_change_results[1].accepted() ||
+        rejected_change_routes.resolve_endpoint_route("endpoint/original-change").status !=
+            axent::RouteResolutionStatus::Conflict ||
+        !rejected_change_devices.get("inventory", "rejected-target-owner")) {
+        throw std::runtime_error(
+            "another current authoritative Endpoint owner must preserve route conflict");
     }
 
     axent::CapabilityRegistry capabilities;
