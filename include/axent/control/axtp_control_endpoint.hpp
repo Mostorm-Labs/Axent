@@ -27,6 +27,9 @@ public:
 
     control::RegistrationToken register_handler(control::ControlRoute route,
                                                   control::ControlHandler handler);
+    control::RegistrationToken register_endpoint_handler(
+        control::ControlRoute route,
+        control::EndpointControlHandler handler);
 
     control::ControlStatus start(AxtpControlEndpointOptions options = {});
     control::ControlStatus stop();

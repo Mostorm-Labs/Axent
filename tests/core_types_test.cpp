@@ -9,6 +9,7 @@ int main()
 {
     axent::DeviceSnapshot device;
     device.id = "mock-device-001";
+    device.endpoint_id = "ep_20d54d9fc87018d571995be978620d21";
     device.adapter = "mock";
     device.identity.vendor = "Mostorm";
     device.identity.model = "MockCam";
@@ -19,6 +20,7 @@ int main()
 
     assert_json_eq(axent::to_json(device), {
         {"id", "mock-device-001"},
+        {"endpointId", "ep_20d54d9fc87018d571995be978620d21"},
         {"adapter", "mock"},
         {"identity", {
             {"vendor", "Mostorm"},
@@ -34,6 +36,12 @@ int main()
         }},
         {"status", {{"health", "ok"}}}
     });
+
+    auto unbound = device;
+    unbound.endpoint_id.clear();
+    if (axent::to_json(unbound).contains("endpointId")) {
+        throw std::runtime_error("unbound device JSON must omit endpointId");
+    }
 
     axent::Capability capability;
     capability.name = "firmware";

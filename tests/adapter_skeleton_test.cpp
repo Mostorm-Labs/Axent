@@ -32,5 +32,20 @@ int main()
     const auto axdp_result = axdp.call("missing", "status.get", {});
     require(axdp_result.status == axent::ControlStatus::Unavailable, "AXDP skeleton call should be unavailable");
 
+    axent::AdapterControlRequest routed;
+    routed.device_id = "missing";
+    routed.source_endpoint_id = "ep_app";
+    routed.destination_endpoint_id = "ep_device";
+    routed.method = "status.get";
+    axent::Adapter& legacy_adapter = axdp;
+    require(legacy_adapter.call(routed).status == axent::ControlStatus::Unavailable,
+            "routed sync compatibility must delegate to the legacy signature");
+    require(legacy_adapter.call_async(routed)->wait().status ==
+                axent::ControlStatus::Unavailable,
+            "routed async compatibility must delegate to the legacy signature");
+    require(legacy_adapter.start_firmware_update(routed, "/tmp/fw.bin").status ==
+                axent::ControlStatus::Unavailable,
+            "routed firmware compatibility must delegate to the legacy signature");
+
     return 0;
 }

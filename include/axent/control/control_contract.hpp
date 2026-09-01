@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "axent/core/control_operation.hpp"
+
 namespace axent {
 
 class AxtpControlEndpoint;
@@ -58,6 +60,8 @@ struct ControlRequest {
     std::uint32_t request_id = 0;
     std::string method;
     nlohmann::json params = nlohmann::json::object();
+    std::string source_endpoint_id;
+    std::string destination_endpoint_id;
 };
 
 struct ControlResult {
@@ -66,6 +70,7 @@ struct ControlResult {
 };
 
 using ControlHandler = std::function<ControlResult(const ControlRequest&)>;
+using EndpointControlHandler = std::function<ControlOperationPtr(const ControlRequest&)>;
 using ControlTask = std::function<void()>;
 
 class RegistrationToken final {

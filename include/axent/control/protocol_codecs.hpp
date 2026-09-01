@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -13,6 +14,7 @@ struct DecodedControlMessage {
     std::string wire_method;
     nlohmann::json json_rpc_id = nullptr;
     nlohmann::json original;
+    std::optional<std::string> validation_error;
 };
 
 DecodedControlMessage decode_control_message(const nlohmann::json& message);

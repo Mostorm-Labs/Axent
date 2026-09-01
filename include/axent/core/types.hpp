@@ -32,6 +32,17 @@ enum class ControlStatus {
     Busy,
 };
 
+enum class EndpointDeliveryMode {
+    LocalProjection,
+    NativeRelay,
+};
+
+enum class DeviceSelectorKind {
+    Unspecified,
+    ProviderLocalId,
+    SerialNumber,
+};
+
 struct DeviceIdentity {
     std::string vendor;
     std::string model;
@@ -56,6 +67,13 @@ struct DeviceSnapshot {
     DeviceIdentity identity;
     DeviceConnection connection;
     DeviceStatus status;
+    // Stable logical endpoint used by control-plane routing. The Endpoint
+    // owner (an adapter or deployment Host) supplies this binding only from
+    // persistent identity evidence; DeviceManager never synthesizes it from a
+    // provider-local ID or transport path. Kept at the end so existing
+    // aggregate initializers remain source-compatible.
+    std::string endpoint_id;
+    EndpointDeliveryMode endpoint_delivery_mode = EndpointDeliveryMode::LocalProjection;
 };
 
 struct CapabilityMethod {
@@ -81,6 +99,15 @@ struct ControlCommand {
     std::string device_id;
     ProtocolSource source = ProtocolSource::JsonRpc;
     nlohmann::json params = nlohmann::json::object();
+    // JSON-RPC routing envelope.  These are logical endpoint names, not
+    // physical device identifiers.  device_id remains as a legacy fallback.
+    // Kept at the end so existing aggregate initializers remain compatible.
+    std::string src;
+    std::string dst;
+    // Legacy physical selectors live in distinct namespaces. Unspecified is
+    // retained for source compatibility with manually constructed commands
+    // and resolves only when the union identifies one physical provider.
+    DeviceSelectorKind device_selector_kind = DeviceSelectorKind::Unspecified;
 };
 
 struct ControlResult {

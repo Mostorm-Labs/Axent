@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <set>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -38,6 +39,15 @@ struct AxtpAdapterConfig {
     std::uint32_t audio_sample_rate = 48000;
     std::uint32_t audio_channels = 2;
     std::optional<std::uint32_t> video_frame_rate;
+    // Ordered, generic codec preferences supplied by the product host.  The
+    // adapter intersects these with the peer capabilities; it does not own
+    // product/backend policy.  Empty retains legacy H.264 behavior.
+    std::vector<MediaCodec> video_codec_preferences;
+    // Compatibility escape hatch for peers whose control contract only
+    // accepts H.264 while the media payload is known to be H.265.  The host
+    // must set both overrides together; normal negotiation leaves them empty.
+    std::optional<MediaCodec> video_open_codec_override;
+    std::optional<MediaCodec> video_decode_codec_override;
     std::string video_source = "wireless_cast";
     std::string audio_source = "wireless_cast_audio";
     bool enable_session_health_probe = true;
@@ -50,6 +60,8 @@ struct AxtpAdapterConfig {
     std::uint32_t session_health_failure_threshold = 3;
     std::uint32_t session_recovery_backoff_initial_ms = 1000;
     std::uint32_t session_recovery_backoff_max_ms = 5000;
+    EndpointDeliveryMode endpoint_delivery_mode =
+        EndpointDeliveryMode::LocalProjection;
 };
 
 class AxentHost;
@@ -64,23 +76,39 @@ public:
     ~AxtpAdapter() override;
 
     static AxtpAdapterConfig na20_defaults();
-    static DeviceSnapshot snapshot_from_descriptor(const TransportDescriptor& descriptor);
+    static DeviceSnapshot snapshot_from_descriptor(
+        const TransportDescriptor& descriptor,
+        EndpointDeliveryMode endpoint_delivery_mode =
+            EndpointDeliveryMode::LocalProjection);
 
     AdapterMetadata metadata() const override;
     std::vector<Capability> capabilities() const override;
     std::vector<DeviceSnapshot> discover() override;
     ControlResult call(const std::string& device_id, const std::string& method, const nlohmann::json& params) override;
+    ControlResult call(const AdapterControlRequest& request) override;
     ControlOperationPtr call_async(
         const std::string& device_id,
         const std::string& method,
         const nlohmann::json& params,
         ControlCallOptions options = {}) override;
+    ControlOperationPtr call_async(
+        const AdapterControlRequest& request,
+        ControlCallOptions options = {}) override;
     ControlResult start_firmware_update(const std::string& device_id, const std::string& file_path) override;
+    ControlResult start_firmware_update(
+        const AdapterControlRequest& request,
+        const std::string& file_path) override;
 
     TransportDiagnostics diagnostics() const;
+    // Return diagnostics for one physical AXTP device. The no-argument form
+    // remains available for compatibility and returns an aggregate snapshot
+    // when more than one device context is active.
+    TransportDiagnostics diagnostics(const std::string& device_id) const;
     void set_media_frame_callback(MediaFrameCallback callback);
     void set_media_stream_event_callback(MediaStreamEventCallback callback);
     std::vector<MediaStreamDescriptor> active_media_stream_descriptors() const;
+    std::vector<MediaStreamDescriptor> active_media_stream_descriptors(
+        const std::string& device_id) const;
     ControlStatus open_session_status(const std::string& device_id,
                                       std::string& error,
                                       bool configure_media = true);
@@ -98,7 +126,19 @@ private:
     friend class testing::AxtpAdapterTestSeam;
 
     AxtpAdapter(AxtpAdapterConfig config,
-                std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory);
+                std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory,
+                bool device_context = false);
+
+    struct DeviceContext;
+    class DeviceContextOperation;
+    std::shared_ptr<DeviceContext> device_context_for(
+        const std::string& device_id,
+        bool create = true) const;
+    std::shared_ptr<DeviceContext> find_device_context(
+        const std::string& device_id) const;
+    std::vector<std::shared_ptr<DeviceContext>> device_contexts() const;
+    void install_device_context_callbacks(const std::shared_ptr<DeviceContext>& context) const;
+    void update_selector_from_descriptor(const TransportDescriptor& descriptor);
 
     std::thread request_stop_session_pump_locked();
     void process_next_control_call(const std::string& device_id);
@@ -204,12 +244,40 @@ private:
                                      bool* had_other_activity);
 
     AxtpAdapterConfig config_;
+    // A public AxtpAdapter is a device manager. Each discovered physical
+    // device owns a private leaf AxtpAdapter, which keeps the mature AXTP
+    // session/poll/recovery/media state isolated without exposing runtime
+    // types through Axent's public API.
+    bool device_context_ = false;
+    // Serialize first-use leaf construction. The map mutex is intentionally
+    // not held while a leaf starts its worker threads or receives callbacks.
+    mutable std::mutex device_creation_mutex_;
+    mutable std::mutex device_context_mutex_;
+    mutable std::map<std::string, std::shared_ptr<DeviceContext>> device_contexts_;
+    // Device IDs in this set are temporarily unavailable while their retired
+    // leaf drains. New callers fail fast instead of creating a replacement
+    // transport before the old one has fully closed.
+    mutable std::set<std::string> retiring_device_ids_;
+    mutable std::map<std::string, TransportDescriptor> transport_descriptors_;
+    // Canonical HID identities observed on more than one physical
+    // path/interface are withheld until discovery becomes unambiguous.
+    mutable std::set<std::string> ambiguous_device_ids_;
+    // A selector that already names one serial/path is a single-device
+    // configuration. Reserve its first logical ID when discovery metadata is
+    // unavailable so a second ID cannot accidentally reopen the same handle.
+    mutable std::string fixed_selector_device_id_;
+    struct ManagerCallbackState;
+    std::shared_ptr<ManagerCallbackState> manager_callback_state_;
     struct RuntimeState;
     std::unique_ptr<RuntimeState> runtime_;
+    // A descriptor can change HID path after a replug while retaining its
+    // serial-number identity. Selector updates are synchronized with the
+    // next physical open/recovery and never mutate an in-flight transport.
+    mutable std::mutex selector_mutex_;
     MediaFrameCallback media_frame_callback_;
     MediaStreamEventCallback media_stream_event_callback_;
     mutable std::mutex media_callback_mutex_;
-    std::recursive_mutex media_callback_dispatch_mutex_;
+    mutable std::recursive_mutex media_callback_dispatch_mutex_;
     bool draining_media_callbacks_ = false;
     struct ActiveMediaStream {
         MediaStreamDescriptor descriptor;

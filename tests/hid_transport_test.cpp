@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -320,6 +321,51 @@ int main() {
     }
     assert(coreBackendPtr->writes[0][1] == axtp::kAxtpStandardMagic0);
     assert(coreBackendPtr->writes[0][2] == axtp::kAxtpStandardMagic1);
+
+    // Separate physical devices must be able to open in parallel, and
+    // closing one transport must leave the other device usable.  The real
+    // backend additionally keeps hidapi's process-wide init/exit lifetime
+    // referenced until the last handle closes.
+    axent::transport::HidTransportOptions parallelOptions;
+    parallelOptions.reportId = 0x05;
+    parallelOptions.inputReportSize = 5;
+    parallelOptions.outputReportSize = 5;
+    parallelOptions.maxReportsPerPoll = 1;
+    auto firstBackend = std::make_unique<MockHidBackend>();
+    auto secondBackend = std::make_unique<MockHidBackend>();
+    auto* firstBackendPtr = firstBackend.get();
+    auto* secondBackendPtr = secondBackend.get();
+    axent::transport::HidTransport firstTransport(
+        parallelOptions, std::move(firstBackend));
+    axent::transport::HidTransport secondTransport(
+        parallelOptions, std::move(secondBackend));
+    CapturingByteSink firstSink;
+    CapturingByteSink secondSink;
+    firstTransport.bind(firstSink);
+    secondTransport.bind(secondSink);
+    std::thread firstOpen([&]() { firstTransport.open(); });
+    std::thread secondOpen([&]() { secondTransport.open(); });
+    firstOpen.join();
+    secondOpen.join();
+    assert(firstTransport.isOpen());
+    assert(secondTransport.isOpen());
+    assert(firstBackendPtr->openCount == 1);
+    assert(secondBackendPtr->openCount == 1);
+
+    firstTransport.close();
+    assert(!firstTransport.isOpen());
+    assert(secondTransport.isOpen());
+    const axtp::Bytes secondPayload{0x21, 0x22, 0x23, 0x24};
+    secondTransport.sendBytes(secondPayload.data(), secondPayload.size());
+    assert(secondBackendPtr->writes.size() == 1);
+    assert((secondBackendPtr->writes.front() ==
+            axtp::Bytes{0x05, 0x21, 0x22, 0x23, 0x24}));
+    secondBackendPtr->enqueueRead(axtp::Bytes{0x05, 0x31, 0x32, 0x33, 0x34});
+    secondTransport.poll();
+    assert(secondSink.chunks.size() == 1);
+    assert((secondSink.chunks.front() == axtp::Bytes{0x31, 0x32, 0x33, 0x34}));
+    secondTransport.close();
+    assert(!secondTransport.isOpen());
 
     return 0;
 }

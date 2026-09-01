@@ -18,6 +18,8 @@
 #include "axent/host/axent_host.hpp"
 #include "axtp_adapter_test_seam.hpp"
 
+#include "../src/core/control_operation_internal.hpp"
+
 #include "core/protocol/wire/inbound_processor.hpp"
 #include "core/protocol/wire/outbound_processor.hpp"
 #include "hidapi/hid_transport.hpp"
@@ -170,6 +172,45 @@ public:
         block_cv_.notify_all();
     }
 
+    void blockNextBusinessRequest()
+    {
+        std::lock_guard<std::mutex> lock(block_mutex_);
+        block_next_business_request_ = true;
+        business_request_blocked_ = false;
+        unblock_business_request_ = false;
+    }
+
+    bool waitForBusinessRequestBlocked()
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        return block_cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+            return business_request_blocked_;
+        });
+    }
+
+    bool waitForBusinessRequests(std::size_t count)
+    {
+        std::unique_lock<std::mutex> lock(block_mutex_);
+        return block_cv_.wait_for(lock, std::chrono::seconds(1), [this, count]() {
+            return business_request_count_ >= count;
+        });
+    }
+
+    std::size_t businessRequestCount() const
+    {
+        std::lock_guard<std::mutex> lock(block_mutex_);
+        return business_request_count_;
+    }
+
+    void unblockBusinessRequest()
+    {
+        {
+            std::lock_guard<std::mutex> lock(block_mutex_);
+            unblock_business_request_ = true;
+        }
+        block_cv_.notify_all();
+    }
+
     void sendBytes(const axtp::Byte* data, std::size_t size) override
     {
         CapturingPayloadSink payload_sink;
@@ -194,6 +235,18 @@ public:
             }
             if (rpc.op == axtp::RpcOp::Request) {
                 saw_business_request = true;
+                {
+                    std::unique_lock<std::mutex> lock(block_mutex_);
+                    ++business_request_count_;
+                    if (block_next_business_request_) {
+                        block_next_business_request_ = false;
+                        business_request_blocked_ = true;
+                        block_cv_.notify_all();
+                        block_cv_.wait(lock, [this]() {
+                            return unblock_business_request_;
+                        });
+                    }
+                }
                 std::optional<axtp::Bytes> request_stream;
                 {
                     std::lock_guard<std::mutex> lock(rx_mutex_);
@@ -273,11 +326,15 @@ private:
     std::mutex rx_mutex_;
     std::queue<axtp::Bytes> rx_queue_;
     std::optional<axtp::Bytes> stream_on_next_request_;
-    std::mutex block_mutex_;
+    mutable std::mutex block_mutex_;
     std::condition_variable block_cv_;
     bool block_after_next_stream_ = false;
     bool stream_blocked_ = false;
     bool unblock_stream_ = false;
+    bool block_next_business_request_ = false;
+    bool business_request_blocked_ = false;
+    bool unblock_business_request_ = false;
+    std::size_t business_request_count_ = 0;
     bool open_ = false;
 };
 
@@ -311,6 +368,323 @@ axent::DeviceSnapshot make_second_mock_device()
     device.status.health = "ok";
     return device;
 }
+
+class StatefulInventoryAdapter final : public axent::Adapter {
+public:
+    explicit StatefulInventoryAdapter(std::shared_ptr<int> discovery_count)
+        : discovery_count_(std::move(discovery_count))
+    {
+    }
+
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"inventory", "Stateful inventory adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        switch (++*discovery_count_) {
+        case 1:
+            return {device("device-a"), device("device-b")};
+        case 2:
+            return {device("device-b"), device("device-c")};
+        default:
+            return {device("device-a"), device("device-b"), device("device-c")};
+        }
+    }
+
+    axent::ControlResult call(const std::string&,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+    axent::ControlResult start_firmware_update(const std::string&,
+                                               const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+private:
+    static axent::DeviceSnapshot device(std::string id)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "inventory";
+        snapshot.endpoint_id = "ep-" + snapshot.id;
+        snapshot.connection.online = true;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    std::shared_ptr<int> discovery_count_;
+};
+
+class BatchInventoryAdapter final : public axent::Adapter {
+public:
+    explicit BatchInventoryAdapter(std::shared_ptr<int> discovery_count)
+        : discovery_count_(std::move(discovery_count))
+    {
+    }
+
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"batch-inventory", "Batch inventory adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        switch (++*discovery_count_) {
+        case 1:
+            return {
+                device("stable-path-old", "endpoint/stable"),
+                device("conflict-a", "endpoint/conflict"),
+                device("unrelated", "endpoint/unrelated"),
+                device("legacy-old", ""),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 2:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("legacy-new", ""),
+                device("endpoint-change", "endpoint/changed"),
+            };
+        case 3:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-a", "endpoint/conflict"),
+                device("conflict-b", "endpoint/conflict"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 4:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 5:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 6:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("duplicate-row", "endpoint/duplicate-row"),
+                device("duplicate-row", "endpoint/duplicate-row"),
+                device("invalid-stale", "endpoint/invalid-a"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 7:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("invalid-key", "endpoint/invalid-a"),
+                device("invalid-key", "endpoint/invalid-b"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 8:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("invalid-key", "endpoint/invalid-b"),
+                device("invalid-key", "endpoint/invalid-a"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 9:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("rejected-change-a", "endpoint/rejected-original"),
+                device("rejected-change-b", "endpoint/rejected-original"),
+                device("rejected-target-owner", "endpoint/rejected-target"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        case 10:
+        case 11:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("rejected-change-b", "endpoint/rejected-target"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        default:
+            return {
+                device("stable-path-new", "endpoint/stable"),
+                device("conflict-b", ""),
+                device("rejected-change-b", "endpoint/rejected-target"),
+                device("rejected-change-c", "endpoint/rejected-original"),
+                device("endpoint-change", "endpoint/original"),
+            };
+        }
+    }
+
+    axent::ControlResult call(const std::string& device_id,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::Ok, {{"deviceId", device_id}}};
+    }
+
+    axent::ControlResult start_firmware_update(const std::string&,
+                                               const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+private:
+    static axent::DeviceSnapshot device(std::string id, std::string endpoint_id)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "batch-inventory";
+        snapshot.endpoint_id = std::move(endpoint_id);
+        snapshot.connection.online = true;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    std::shared_ptr<int> discovery_count_;
+};
+
+struct EndpointCancellationState {
+    bool wait_for_cancellations(std::size_t count)
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        return cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return cancellations >= count;
+        });
+    }
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::size_t cancellations = 0;
+};
+
+class EndpointRecordingAdapter final : public axent::Adapter {
+public:
+    explicit EndpointRecordingAdapter(std::shared_ptr<EndpointCancellationState> cancellation_state)
+        : cancellation_state_(std::move(cancellation_state))
+    {
+    }
+
+    axent::AdapterMetadata metadata() const override
+    {
+        return {"endpoint-recording", "Endpoint host bridge test adapter", true, ""};
+    }
+
+    std::vector<axent::Capability> capabilities() const override
+    {
+        return {};
+    }
+
+    std::vector<axent::DeviceSnapshot> discover() override
+    {
+        return {
+            device("physical-primary", "endpoint/mock-primary", true),
+            device("physical-offline", "endpoint/mock-offline", false),
+        };
+    }
+
+    axent::ControlResult call(const std::string&,
+                              const std::string&,
+                              const nlohmann::json&) override
+    {
+        return {axent::ControlStatus::InternalError, {{"error", "legacy call used"}}};
+    }
+
+    axent::ControlOperationPtr call_async(
+        const axent::AdapterControlRequest& request,
+        axent::ControlCallOptions) override
+    {
+        if (request.method != "hold") {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->requests.push_back(request);
+            return axent::make_completed_control_operation(
+                {axent::ControlStatus::Ok, {{"path", "endpoint-routed"}}});
+        }
+
+        auto pending = std::make_shared<PendingCall>();
+        pending->request = request;
+        const auto cancellation_state = cancellation_state_;
+        pending->source.set_cancel_handler([cancellation_state]() {
+            std::lock_guard<std::mutex> lock(cancellation_state->mutex);
+            ++cancellation_state->cancellations;
+            cancellation_state->cv.notify_all();
+        });
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->requests.push_back(request);
+            state_->held.push_back(pending);
+        }
+        return pending->source.operation();
+    }
+
+    axent::ControlResult start_firmware_update(
+        const std::string&, const std::string&) override
+    {
+        return {axent::ControlStatus::Unavailable, nlohmann::json::object()};
+    }
+
+    std::vector<axent::AdapterControlRequest> requests() const
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return state_->requests;
+    }
+
+    void complete_held()
+    {
+        std::vector<std::shared_ptr<PendingCall>> held;
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            held.swap(state_->held);
+        }
+        for (const auto& pending : held) {
+            pending->source.complete(
+                {axent::ControlStatus::Ok, {{"path", "endpoint-held"}}});
+        }
+    }
+
+private:
+    struct PendingCall {
+        axent::AdapterControlRequest request;
+        axent::ControlOperationSource source;
+    };
+
+    struct State {
+        std::mutex mutex;
+        std::vector<axent::AdapterControlRequest> requests;
+        std::vector<std::shared_ptr<PendingCall>> held;
+    };
+
+    static axent::DeviceSnapshot device(
+        std::string id, std::string endpoint_id, bool online)
+    {
+        axent::DeviceSnapshot snapshot;
+        snapshot.id = std::move(id);
+        snapshot.adapter = "endpoint-recording";
+        snapshot.endpoint_id = std::move(endpoint_id);
+        snapshot.connection.online = online;
+        snapshot.connection.transport = "test";
+        return snapshot;
+    }
+
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::shared_ptr<EndpointCancellationState> cancellation_state_;
+};
 
 std::optional<axent::MediaFrame> wait_for_media_frame(axent::MediaConsumer& consumer)
 {
@@ -611,6 +985,352 @@ int main()
     }
     require(broker_threw, "broker should throw before start");
 
+    auto inventory_discovery_count = std::make_shared<int>(0);
+    axent::AxentHost inventory_host;
+    axent::AxentHostOptions inventory_options;
+    inventory_options.enable_mock_adapter = false;
+    inventory_options.enable_axtp_adapter = true;
+    inventory_options.axtp_adapter_factory = [inventory_discovery_count](
+                                              axent::AxtpAdapterConfig) {
+        return std::make_unique<StatefulInventoryAdapter>(inventory_discovery_count);
+    };
+    require(inventory_host.start(std::move(inventory_options)),
+            "inventory host should start");
+
+    const auto find_inventory_device = [](const std::vector<axent::DeviceSnapshot>& devices,
+                                          const char* id) -> const axent::DeviceSnapshot& {
+        const auto device = std::find_if(
+            devices.begin(), devices.end(), [id](const axent::DeviceSnapshot& candidate) {
+                return candidate.id == id;
+            });
+        require(device != devices.end(), "refreshed inventory must contain expected device");
+        return *device;
+    };
+
+    const auto refreshed = inventory_host.refresh_devices();
+    require(find_inventory_device(refreshed, "device-a").connection.online == false,
+            "missing A must be retained offline");
+    require(find_inventory_device(refreshed, "device-b").connection.online,
+            "B must remain online");
+    require(find_inventory_device(refreshed, "device-c").connection.online,
+            "new C must be inserted");
+
+    const auto restored = inventory_host.refresh_devices();
+    require(find_inventory_device(restored, "device-a").endpoint_id == "ep-device-a",
+            "reappearance must preserve the stable Endpoint");
+
+    inventory_host.stop();
+    const auto discovery_count_before_stopped_refresh = *inventory_discovery_count;
+    require(inventory_host.refresh_devices().empty(),
+            "stopped Host refresh should return an empty list");
+    require(*inventory_discovery_count == discovery_count_before_stopped_refresh,
+            "stopped Host refresh must not call discovery");
+
+    auto batch_discovery_count = std::make_shared<int>(0);
+    axent::AxentHost batch_inventory_host;
+    axent::AxentHostOptions batch_inventory_options;
+    batch_inventory_options.enable_mock_adapter = false;
+    batch_inventory_options.enable_axtp_adapter = true;
+    batch_inventory_options.axtp_adapter_factory = [batch_discovery_count](
+                                                    axent::AxtpAdapterConfig) {
+        return std::make_unique<BatchInventoryAdapter>(batch_discovery_count);
+    };
+    require(batch_inventory_host.start(std::move(batch_inventory_options)),
+            "batch inventory host should start");
+
+    const auto migrated_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                migrated_inventory.begin(),
+                migrated_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "stable-path-old";
+                }),
+            "stable Endpoint migration must remove the stale same-adapter owner");
+    require(find_inventory_device(migrated_inventory, "stable-path-new").connection.online,
+            "stable Endpoint migration must retain the current provider-local ID");
+    require(!find_inventory_device(migrated_inventory, "unrelated").connection.online,
+            "missing unrelated devices must remain retained offline");
+    require(!find_inventory_device(migrated_inventory, "legacy-old").connection.online &&
+                find_inventory_device(migrated_inventory, "legacy-new").connection.online,
+            "legacy empty-Endpoint devices must reconcile strictly by adapter and local ID");
+    require(find_inventory_device(migrated_inventory, "endpoint-change").endpoint_id ==
+                "endpoint/original",
+            "same physical owner must not change between non-empty Endpoints");
+
+    const auto conflicted_inventory = batch_inventory_host.refresh_devices();
+    require(find_inventory_device(conflicted_inventory, "conflict-a").connection.online &&
+                find_inventory_device(conflicted_inventory, "conflict-b").connection.online,
+            "simultaneous current Endpoint claims must all remain visible");
+    const auto conflicted_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/conflict",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(conflicted_call != nullptr &&
+                conflicted_call->wait().status == axent::ControlStatus::Unavailable,
+            "simultaneous Endpoint claims must make Host routing fail closed");
+
+    const auto recovered_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                recovered_inventory.begin(),
+                recovered_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "conflict-a";
+                }) &&
+                find_inventory_device(recovered_inventory, "conflict-b").connection.online,
+            "collapsed same-adapter conflict must remove the absent stale claim");
+    const auto recovered_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/conflict",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    const auto recovered_result = recovered_call != nullptr
+        ? recovered_call->wait()
+        : axent::ControlResult{axent::ControlStatus::InternalError,
+                               nlohmann::json::object()};
+    require(recovered_call != nullptr &&
+                recovered_result.status == axent::ControlStatus::Ok &&
+                recovered_result.body.at("deviceId") == "conflict-b",
+            "collapsed Endpoint conflict must restore the unique Host route");
+
+    const auto repeated_recovery_inventory = batch_inventory_host.refresh_devices();
+    require(repeated_recovery_inventory.size() == recovered_inventory.size() &&
+                std::none_of(
+                    repeated_recovery_inventory.begin(),
+                    repeated_recovery_inventory.end(),
+                    [](const axent::DeviceSnapshot& device) {
+                        return device.id == "conflict-a";
+                    }) &&
+                find_inventory_device(repeated_recovery_inventory, "conflict-b")
+                        .endpoint_id == "endpoint/conflict",
+            "repeated effective empty-Endpoint Host refresh must be idempotent");
+
+    const auto duplicate_row_inventory = batch_inventory_host.refresh_devices();
+    require(std::count_if(
+                duplicate_row_inventory.begin(),
+                duplicate_row_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "duplicate-row";
+                }) == 1,
+            "Host refresh must deduplicate identical rows for one physical key");
+    const auto duplicate_row_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/duplicate-row",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(duplicate_row_call != nullptr &&
+                duplicate_row_call->wait().status == axent::ControlStatus::Ok,
+            "deduplicated Host discovery row must retain a unique Endpoint route");
+
+    const auto invalid_order_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                invalid_order_inventory.begin(),
+                invalid_order_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "invalid-key";
+                }) &&
+                !find_inventory_device(invalid_order_inventory, "invalid-stale")
+                     .connection.online,
+            "invalid same-key Endpoint rows must not choose a winner or erase stale owners");
+    const auto reverse_invalid_order_inventory = batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                reverse_invalid_order_inventory.begin(),
+                reverse_invalid_order_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "invalid-key";
+                }) &&
+                !find_inventory_device(reverse_invalid_order_inventory, "invalid-stale")
+                     .connection.online,
+            "invalid same-key Endpoint rejection must be independent of row order");
+
+    const auto rejected_change_conflict_inventory =
+        batch_inventory_host.refresh_devices();
+    require(find_inventory_device(
+                rejected_change_conflict_inventory, "rejected-change-a")
+                    .connection.online &&
+                find_inventory_device(
+                    rejected_change_conflict_inventory, "rejected-change-b")
+                    .connection.online,
+            "Host rejected-change fixture must begin with two current Endpoint owners");
+
+    const auto rejected_change_recovered_inventory =
+        batch_inventory_host.refresh_devices();
+    require(std::none_of(
+                rejected_change_recovered_inventory.begin(),
+                rejected_change_recovered_inventory.end(),
+                [](const axent::DeviceSnapshot& device) {
+                    return device.id == "rejected-change-a";
+                }) &&
+                find_inventory_device(
+                    rejected_change_recovered_inventory, "rejected-change-b")
+                        .endpoint_id == "endpoint/rejected-original" &&
+                !find_inventory_device(
+                    rejected_change_recovered_inventory, "rejected-target-owner")
+                     .connection.online,
+            "rejected Host change must recover the old Endpoint without cleaning its target");
+    const auto rejected_change_recovered_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/rejected-original",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(rejected_change_recovered_call != nullptr &&
+                rejected_change_recovered_call->wait().status ==
+                    axent::ControlStatus::Ok,
+            "rejected Host change must restore the unique authoritative route");
+    const auto rejected_target_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/rejected-target",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(rejected_target_call != nullptr &&
+                rejected_target_call->wait().status ==
+                    axent::ControlStatus::Unavailable,
+            "rejected attempted Endpoint must not erase its retained offline owner");
+
+    const auto repeated_rejected_change_inventory =
+        batch_inventory_host.refresh_devices();
+    require(repeated_rejected_change_inventory.size() ==
+                rejected_change_recovered_inventory.size() &&
+                find_inventory_device(
+                    repeated_rejected_change_inventory, "rejected-change-b")
+                        .endpoint_id == "endpoint/rejected-original",
+            "repeated rejected Host change recovery must be idempotent");
+
+    const auto simultaneous_rejected_change_inventory =
+        batch_inventory_host.refresh_devices();
+    require(find_inventory_device(
+                simultaneous_rejected_change_inventory, "rejected-change-b")
+                    .connection.online &&
+                find_inventory_device(
+                    simultaneous_rejected_change_inventory, "rejected-change-c")
+                    .connection.online,
+            "simultaneous authoritative Endpoint owners must remain visible");
+    const auto simultaneous_rejected_change_call = batch_inventory_host.call_endpoint({
+        "endpoint/controller",
+        "endpoint/rejected-original",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(simultaneous_rejected_change_call != nullptr &&
+                simultaneous_rejected_change_call->wait().status ==
+                    axent::ControlStatus::Unavailable,
+            "simultaneous authoritative Endpoint owners must keep Host routing conflicted");
+    batch_inventory_host.stop();
+
+    EndpointRecordingAdapter* endpoint_adapter = nullptr;
+    auto endpoint_cancellations = std::make_shared<EndpointCancellationState>();
+    axent::AxentHost endpoint_host;
+    axent::AxentHostOptions endpoint_options;
+    endpoint_options.enable_mock_adapter = false;
+    endpoint_options.enable_axtp_adapter = true;
+    endpoint_options.axtp_adapter_factory = [&endpoint_adapter, endpoint_cancellations](
+                                              axent::AxtpAdapterConfig) {
+        auto adapter = std::make_unique<EndpointRecordingAdapter>(endpoint_cancellations);
+        endpoint_adapter = adapter.get();
+        return adapter;
+    };
+    require(endpoint_host.start(std::move(endpoint_options)),
+            "endpoint host should start");
+    require(endpoint_adapter != nullptr, "endpoint adapter should be installed");
+
+    const auto endpoint_operation = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        "endpoint/mock-primary",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(endpoint_operation != nullptr &&
+                endpoint_operation->wait().status == axent::ControlStatus::Ok,
+            "endpoint call should succeed without a Host session");
+    const auto endpoint_requests = endpoint_adapter->requests();
+    require(endpoint_requests.size() == 1 &&
+                endpoint_requests.front().device_id == "physical-primary" &&
+                endpoint_requests.front().source_endpoint_id == "ep-nearcast-source" &&
+                endpoint_requests.front().destination_endpoint_id == "endpoint/mock-primary" &&
+                endpoint_requests.front().method == "status.get" &&
+                endpoint_requests.front().params == nlohmann::json::object() &&
+                !endpoint_requests.front().params.contains("deviceId") &&
+                !endpoint_requests.front().params.contains("serialNumber"),
+            "endpoint call must preserve Endpoint IDs without injecting device selectors");
+
+    const auto unknown_endpoint = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        "endpoint/missing",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(unknown_endpoint != nullptr &&
+                unknown_endpoint->wait().status == axent::ControlStatus::NotFound,
+            "unknown endpoint should fail closed as NotFound");
+    const auto offline_endpoint = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        "endpoint/mock-offline",
+        "status.get",
+        nlohmann::json::object(),
+    });
+    require(offline_endpoint != nullptr &&
+                offline_endpoint->wait().status == axent::ControlStatus::Unavailable,
+            "offline endpoint should fail closed as Unavailable");
+    for (const auto& invalid_request : std::vector<axent::EndpointControlRequest>{
+             {"", "endpoint/mock-primary", "status.get", nlohmann::json::object()},
+             {"ep-nearcast-source", "", "status.get", nlohmann::json::object()},
+             {"ep-nearcast-source", "endpoint/mock-primary", "", nlohmann::json::object()},
+         }) {
+        const auto invalid_operation = endpoint_host.call_endpoint(invalid_request);
+        require(invalid_operation != nullptr &&
+                    invalid_operation->wait().status == axent::ControlStatus::InvalidArgument,
+                "endpoint calls require source, destination, and method");
+    }
+
+    axent::SessionAcquireRequest endpoint_collision_session_request;
+    endpoint_collision_session_request.client_id = "endpoint-collision-client";
+    endpoint_collision_session_request.device_id = "physical-primary";
+    const auto endpoint_collision_session =
+        endpoint_host.acquire_session(endpoint_collision_session_request);
+    require(endpoint_collision_session.acquired,
+            "collision test should acquire a Host session");
+    axent::DeviceSnapshot endpoint_collision_device;
+    endpoint_collision_device.id = "physical-session-collision";
+    endpoint_collision_device.adapter = "endpoint-recording";
+    endpoint_collision_device.endpoint_id = endpoint_collision_session.session_id;
+    endpoint_collision_device.connection.online = true;
+    endpoint_host.upsert_device(endpoint_collision_device);
+    const auto endpoint_collision_operation = endpoint_host.call_endpoint({
+        "ep-nearcast-source",
+        endpoint_collision_session.session_id,
+        "hold",
+        nlohmann::json::object(),
+    });
+    require(endpoint_collision_operation != nullptr && !endpoint_collision_operation->ready(),
+            "endpoint operation should remain pending before unrelated session release");
+    endpoint_host.release_session(
+        endpoint_collision_session.session_id, "session and endpoint key collision");
+    require(!endpoint_collision_operation->ready(),
+            "releasing a matching session ID must not cancel an endpoint operation");
+    endpoint_adapter->complete_held();
+    require(endpoint_collision_operation->wait().status == axent::ControlStatus::Ok,
+            "endpoint operation should complete after its own adapter releases it");
+
+    {
+        const auto discarded_operation = endpoint_host.call_endpoint({
+            "ep-nearcast-source", "endpoint/mock-primary", "hold", nlohmann::json::object()});
+        require(discarded_operation != nullptr && !discarded_operation->ready(),
+                "Adapter should retain the pending endpoint operation");
+    }
+    endpoint_host.stop();
+    require(endpoint_cancellations->wait_for_cancellations(1),
+            "Host stop should cancel a producer-owned endpoint operation after caller release");
+    const auto stopped_endpoint = endpoint_host.call_endpoint({
+        "ep-nearcast-source", "endpoint/mock-primary", "status.get", nlohmann::json::object()});
+    require(stopped_endpoint != nullptr &&
+                stopped_endpoint->wait().status == axent::ControlStatus::Unavailable,
+            "stopped Host endpoint calls should be unavailable");
+
     axent::AxentHostOptions options;
     options.enable_mock_adapter = true;
     options.enable_axtp_adapter = false;
@@ -622,6 +1342,70 @@ int main()
     host.upsert_device(make_second_mock_device());
     const auto devices_after_upsert = host.discover_devices();
     require(devices_after_upsert.size() == 2, "host should allow upserting a second device");
+
+    auto conflicting_device = make_second_mock_device();
+    conflicting_device.id = "mock-device-conflict";
+    conflicting_device.endpoint_id = "endpoint/mock-primary";
+    host.upsert_device(conflicting_device);
+    const auto devices_after_conflict = host.discover_devices();
+    require(devices_after_conflict.size() == 2,
+            "host must not store a conflicting endpoint binding");
+    require(devices_after_conflict.front().endpoint_id == "endpoint/mock-primary",
+            "host conflict must preserve the original endpoint owner");
+
+    axent::DeviceSnapshot host_serial_alias;
+    host_serial_alias.id = "host-serial-alias-owner";
+    host_serial_alias.adapter = "external";
+    host_serial_alias.identity.serial_number = "mock-device-001";
+    host_serial_alias.endpoint_id = "endpoint/host-serial-alias";
+    host_serial_alias.connection.online = true;
+    host.upsert_device(host_serial_alias);
+    axent::SessionAcquireRequest host_namespace_request;
+    host_namespace_request.client_id = "host-namespace-test";
+    host_namespace_request.device_id = "mock-device-001";
+    const auto host_namespace_lease =
+        host.acquire_session(host_namespace_request);
+    require(host_namespace_lease.acquired,
+            "Host lease should select the unique provider-local device ID");
+    const auto host_namespace_call = host.call(
+        host_namespace_lease.session_id, "status.get", {});
+    require(host_namespace_call.status == axent::ControlStatus::Ok &&
+                host_namespace_call.body.at("health") == "ok",
+            "leased Host call must retain provider-local selector semantics");
+    host.release_session(
+        host_namespace_lease.session_id, "namespace regression complete");
+
+    // Host lease ownership is device-scoped even when the concrete AXTP
+    // adapter is supplied later by an embedded product host.  Keeping this
+    // gate test independent of transport setup makes a regression back to a
+    // single global AXTP owner fail immediately.
+    const auto make_axtp_snapshot = [](std::string id, std::string serial) {
+        axent::DeviceSnapshot device;
+        device.id = std::move(id);
+        device.adapter = "axtp";
+        device.identity.serial_number = std::move(serial);
+        device.connection.online = true;
+        device.connection.transport = "hid";
+        device.status.health = "ready";
+        return device;
+    };
+    const auto isolated_axtp_a = make_axtp_snapshot(
+        "hid:0581:2582:HOST-ISOLATION-A", "HOST-ISOLATION-A");
+    const auto isolated_axtp_b = make_axtp_snapshot(
+        "hid:0581:2582:HOST-ISOLATION-B", "HOST-ISOLATION-B");
+    host.upsert_device(isolated_axtp_a);
+    host.upsert_device(isolated_axtp_b);
+    axent::SessionAcquireRequest isolated_axtp_request;
+    isolated_axtp_request.client_id = "host-isolation-a";
+    isolated_axtp_request.device_id = isolated_axtp_a.id;
+    const auto isolated_axtp_lease_a = host.acquire_session(isolated_axtp_request);
+    isolated_axtp_request.client_id = "host-isolation-b";
+    isolated_axtp_request.device_id = isolated_axtp_b.id;
+    const auto isolated_axtp_lease_b = host.acquire_session(isolated_axtp_request);
+    require(isolated_axtp_lease_a.acquired && isolated_axtp_lease_b.acquired,
+            "distinct AXTP devices should hold concurrent Host leases");
+    host.release_session(isolated_axtp_lease_a.session_id, "host isolation complete");
+    host.release_session(isolated_axtp_lease_b.session_id, "host isolation complete");
 
     axent::SessionAcquireRequest unknown_device_request;
     unknown_device_request.client_id = "nearcast-test";
@@ -853,6 +1637,7 @@ int main()
 
     axent::AxentHost real_host;
     ScriptedAxtpTransport* scripted = nullptr;
+    ScriptedAxtpTransport* second_scripted = nullptr;
     axent::AxtpAdapter* real_adapter = nullptr;
     int transport_factory_calls = 0;
     axent::AxentHostOptions real_options;
@@ -861,10 +1646,14 @@ int main()
     real_options.axtp_adapter_factory = [&](axent::AxtpAdapterConfig config) {
         auto adapter = axent::testing::AxtpAdapterTestSeam::make(
             std::move(config),
-            [&](const axent::transport::HidTransportOptions&) {
+            [&](const axent::transport::HidTransportOptions& options) {
                 ++transport_factory_calls;
                 auto transport = std::make_unique<ScriptedAxtpTransport>();
-                scripted = transport.get();
+                if (options.serialNumber == "NA20-SECOND") {
+                    second_scripted = transport.get();
+                } else {
+                    scripted = transport.get();
+                }
                 return transport;
             });
         real_adapter = adapter.get();
@@ -873,7 +1662,7 @@ int main()
     require(real_host.start(std::move(real_options)), "real AXTP host should start");
 
     axent::DeviceSnapshot real_device;
-    real_device.id = "hid:0581:2581:NA20-SERIAL";
+    real_device.id = "hid:0581:2582:NA20-SERIAL";
     real_device.adapter = "axtp";
     real_device.identity.vendor = "Mostorm";
     real_device.identity.model = "NA20";
@@ -951,27 +1740,99 @@ int main()
             "audio descriptor mapping mismatch");
 
     axent::DeviceSnapshot second_real_device = real_device;
-    second_real_device.id = "hid:0581:2581:NA20-SECOND";
+    second_real_device.id = "hid:0581:2582:NA20-SECOND";
     second_real_device.identity.serial_number = "NA20-SECOND";
     real_host.upsert_device(second_real_device);
     axent::SessionAcquireRequest second_real_request;
     second_real_request.client_id = "nearcast-second-real";
     second_real_request.device_id = second_real_device.id;
     second_real_request.media = true;
-    const auto busy_lease = real_host.acquire_session(second_real_request);
-    require(!busy_lease.acquired, "second real AXTP device must fail fast");
-    require(busy_lease.status == axent::ControlStatus::Busy,
-            "second real AXTP device must return typed Busy");
-    require(busy_lease.reason.find("AXTP session busy") != std::string::npos,
-            "second real AXTP Busy reason mismatch");
-    require(transport_factory_calls == 1,
-            "Busy acquisition must not construct a replacement transport");
-    const auto original_after_busy =
+    const auto second_real_lease = real_host.acquire_session(second_real_request);
+    require(second_real_lease.acquired,
+            "a second physical AXTP device should acquire concurrently");
+    require(second_real_lease.status == axent::ControlStatus::Ok,
+            "the second physical AXTP device should return typed Ok");
+    require(second_scripted != nullptr && transport_factory_calls == 2,
+            "each AXTP device should own an independent transport");
+    const auto second_real_call = real_host.call(
+        second_real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(second_real_call.status == axent::ControlStatus::Ok &&
+                second_scripted->saw_business_request,
+            "the second AXTP device should dispatch on its own transport");
+    require(real_host.transport_diagnostics(real_device.id).open &&
+                real_host.transport_diagnostics(second_real_device.id).open,
+            "Host diagnostics should report each physical AXTP session independently");
+    auto second_stream_sink = std::make_shared<RecordingMediaStreamSink>();
+    auto second_stream_subscription = real_host.subscribe_media_stream(
+        second_real_lease.session_id, second_stream_sink);
+    require(second_stream_subscription != nullptr &&
+                second_stream_sink->wait_for_records(2),
+            "the second AXTP media lease should replay only its descriptors");
+    const auto second_replayed_streams = second_stream_sink->records();
+    require(second_replayed_streams.size() == 2 &&
+                second_replayed_streams[0].descriptor.device_id == second_real_device.id &&
+                second_replayed_streams[1].descriptor.device_id == second_real_device.id &&
+                second_replayed_streams[0].key.session_id == second_real_lease.session_id &&
+                second_replayed_streams[1].key.session_id == second_real_lease.session_id,
+            "same-ID streams must remain bound to the second device and lease");
+    second_scripted->injectStream(
+        0x1001, 8, 8000, {0x00, 0x00, 0x01, 0x65});
+    require(second_stream_sink->wait_for_records(3) &&
+                stream_sink->records().size() == 2,
+            "a frame from B must not be delivered to A's same-ID stream");
+    const auto original_after_second_open =
         real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
-    require(original_after_busy.status == axent::ControlStatus::Ok,
-            "Busy acquisition must not disconnect the original AXTP session");
-    require(transport_factory_calls == 1,
-            "original session should remain attached after Busy acquisition");
+    require(original_after_second_open.status == axent::ControlStatus::Ok,
+            "opening a second AXTP device must not disconnect the first");
+
+    auto endpoint_real_device = real_device;
+    endpoint_real_device.endpoint_id = "endpoint/real-primary";
+    real_host.upsert_device(endpoint_real_device);
+    auto endpoint_second_real_device = second_real_device;
+    endpoint_second_real_device.endpoint_id = "endpoint/real-secondary";
+    real_host.upsert_device(endpoint_second_real_device);
+
+    const auto primary_requests_before_lane_gate = scripted->businessRequestCount();
+    scripted->blockNextBusinessRequest();
+    const auto primary_endpoint_operation = real_host.call_endpoint({
+        "ep-test-source",
+        "endpoint/real-primary",
+        "audio.getAlgorithmConfig",
+        nlohmann::json::object(),
+    });
+    require(scripted->waitForBusinessRequestBlocked(),
+            "first real endpoint call should enter the primary physical AXTP lane");
+    const auto primary_session_operation = real_host.call_async(
+        real_lease.session_id, "audio.getAlgorithmConfig", {});
+    const auto secondary_endpoint_operation = real_host.call_endpoint({
+        "ep-test-source",
+        "endpoint/real-secondary",
+        "audio.getAlgorithmConfig",
+        nlohmann::json::object(),
+    });
+    const auto secondary_result = secondary_endpoint_operation->wait_for(
+        std::chrono::seconds(1));
+    require(secondary_result.has_value() &&
+                secondary_result->status == axent::ControlStatus::Ok,
+            "B must complete while A1 remains blocked");
+    require(!primary_session_operation->ready() &&
+                scripted->businessRequestCount() == primary_requests_before_lane_gate + 1,
+            "A2 must not bypass blocked A1 on the same real physical lane");
+    scripted->unblockBusinessRequest();
+    require(scripted->waitForBusinessRequests(primary_requests_before_lane_gate + 2),
+            "A2 should enter only after A1 releases the real physical lane");
+    require(primary_endpoint_operation->wait().status == axent::ControlStatus::Ok &&
+                primary_session_operation->wait().status == axent::ControlStatus::Ok,
+            "real primary calls should complete FIFO after the physical lane releases");
+
+    real_host.release_session(second_real_lease.session_id,
+                              "second device isolation verified");
+    const auto original_after_second_release =
+        real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
+    require(original_after_second_release.status == axent::ControlStatus::Ok &&
+                real_host.transport_diagnostics(real_device.id).open &&
+                !real_host.transport_diagnostics(second_real_device.id).open,
+            "releasing the second AXTP device must not reset the first");
 
     axent::MediaRelayOptions real_relay_options;
     real_relay_options.max_frames = 4;
@@ -1486,19 +2347,25 @@ int main()
             "release must end each stream lifecycle before SubscriptionClosed");
 
     const auto factory_calls_after_media_release = transport_factory_calls;
-    const auto busy_after_media_release = real_host.acquire_session(second_real_request);
-    require(!busy_after_media_release.acquired,
-            "releasing A media lease must not let B replace a remaining A control lease");
-    require(busy_after_media_release.status == axent::ControlStatus::Busy,
-            "B must remain typed Busy while A still has a control lease");
-    require(transport_factory_calls == factory_calls_after_media_release,
-            "B Busy after A media release must not replace A transport");
+    const auto second_after_media_release =
+        real_host.acquire_session(second_real_request);
+    require(second_after_media_release.acquired,
+            "B should acquire while A retains a control-only lease");
+    require(second_after_media_release.status == axent::ControlStatus::Ok &&
+                transport_factory_calls == factory_calls_after_media_release + 1,
+            "reopening B should create only B's replacement transport");
+    const auto second_after_media_release_call = real_host.call(
+        second_after_media_release.session_id, "audio.getAlgorithmConfig", {});
+    require(second_after_media_release_call.status == axent::ControlStatus::Ok,
+            "B should remain controllable while A has a control lease");
     const auto control_after_media_release =
         real_host.call(real_lease.session_id, "audio.getAlgorithmConfig", {});
     require(control_after_media_release.status == axent::ControlStatus::Ok,
             "A control lease must remain usable after its media lease is released");
-    require(transport_factory_calls == factory_calls_after_media_release,
-            "A control call after media release must keep the existing transport");
+    require(transport_factory_calls == factory_calls_after_media_release + 1,
+            "A control call must keep A's existing transport while B is open");
+    real_host.release_session(second_after_media_release.session_id,
+                              "second device media complete");
 
     const auto replacement_lease = real_host.acquire_session(real_request);
     require(replacement_lease.acquired, "replacement media lease should be acquired");

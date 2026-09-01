@@ -1,4 +1,5 @@
 #include "axent/adapters/axtp_adapter.hpp"
+#include "axent/adapters/axtp_endpoint_identity.hpp"
 #include "axtp_adapter_test_seam.hpp"
 
 #include "axtp_adapter_internal.hpp"
@@ -8,6 +9,7 @@
 #include <chrono>
 #include <cctype>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -91,6 +93,76 @@ std::string descriptor_id_for(const axent::transport::HidDeviceInfo& device)
         return "hid:" + hex4(device.vendorId) + ":" + hex4(device.productId) + ":" + device.path;
     }
     return "hid:" + hex4(device.vendorId) + ":" + hex4(device.productId);
+}
+
+bool populate_selector_identity_from_device_id(const std::string& device_id,
+                                               TransportDescriptor& descriptor)
+{
+    // DeviceManager snapshots created by a product host may reach the adapter
+    // without a preceding HID enumeration (notably embedded/test hosts). Keep
+    // the physical selector internal, but recover the conventional
+    // hid:<vid>:<pid>:<serial> identity so two logical contexts do not both
+    // reopen an arbitrary first HID handle.
+    constexpr const char* prefix = "hid:";
+    if (device_id.rfind(prefix, 0) != 0) {
+        return false;
+    }
+    const auto vendor_end = device_id.find(':', 4);
+    if (vendor_end == std::string::npos) {
+        return false;
+    }
+    const auto product_end = device_id.find(':', vendor_end + 1);
+    if (product_end == std::string::npos || product_end + 1 >= device_id.size()) {
+        return false;
+    }
+    const auto parse_hex4 = [](const std::string& value, std::uint16_t& output) {
+        // descriptor_id_for() emits canonical, fixed-width VID/PID fields.
+        // Reject uppercase aliases, signs, whitespace and abbreviated values
+        // rather than letting std::stoul() accept a merely numeric prefix.
+        if (value.size() != 4 ||
+            !std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                return (ch >= '0' && ch <= '9') ||
+                    (ch >= 'a' && ch <= 'f');
+            })) {
+            return false;
+        }
+        try {
+            std::size_t parsed = 0;
+            const auto numeric = std::stoul(value, &parsed, 16);
+            if (parsed == value.size() && numeric <= 0xffffU) {
+                output = static_cast<std::uint16_t>(numeric);
+                return true;
+            }
+        } catch (const std::exception&) {
+        }
+        return false;
+    };
+    if (!parse_hex4(device_id.substr(4, vendor_end - 4), descriptor.vendor_id)) {
+        return false;
+    }
+    const auto product_begin = vendor_end + 1;
+    if (!parse_hex4(
+            device_id.substr(product_begin, product_end - product_begin),
+            descriptor.product_id)) {
+        return false;
+    }
+    const auto suffix = device_id.substr(product_end + 1);
+    // descriptor_id_for() uses the serial when one exists and otherwise
+    // falls back to the platform HID path.  Prefer exact enumeration (the
+    // manager does that before this parser); this fallback still needs to
+    // distinguish common path-shaped IDs used by embedded hosts.
+    const bool looks_like_path =
+        suffix.rfind("/", 0) == 0 || suffix.rfind("\\", 0) == 0 ||
+        suffix.rfind("IOService:", 0) == 0 ||
+        suffix.rfind("DevSrvsID:", 0) == 0 ||
+        suffix.find('/') != std::string::npos ||
+        suffix.find('\\') != std::string::npos;
+    if (looks_like_path) {
+        descriptor.path = suffix;
+    } else {
+        descriptor.serial_number = suffix;
+    }
+    return true;
 }
 
 std::string trace_event_name(axent::transport::HidReportTraceKind kind)
@@ -417,9 +489,12 @@ std::uint32_t choose_audio_channels(const nlohmann::json& capabilities,
 
 MediaCodec codec_for_open_result(MediaKind kind, const nlohmann::json& result)
 {
-    const auto codec = json_string_or(result, "codec", json_string_or(result, "format"));
+    const auto codec = ascii_lower(json_string_or(result, "codec", json_string_or(result, "format")));
     if (codec == "h264") {
         return MediaCodec::H264;
+    }
+    if (codec == "h265" || codec == "hevc") {
+        return MediaCodec::H265;
     }
     if (codec == "aac") {
         return MediaCodec::Aac;
@@ -467,6 +542,58 @@ std::shared_ptr<AxtpAdapterRuntimeFactory> make_default_axtp_runtime_factory()
 } // namespace detail
 
 namespace {
+
+enum class ManagerCallbackKind {
+    Frame,
+    StreamEvent,
+};
+
+struct ActiveManagerCallback {
+    const void* state = nullptr;
+    ManagerCallbackKind kind = ManagerCallbackKind::Frame;
+    std::uint64_t generation = 0;
+};
+
+thread_local std::vector<ActiveManagerCallback> active_manager_callbacks;
+
+std::size_t active_manager_callback_count(const void* state,
+                                          ManagerCallbackKind kind,
+                                          std::uint64_t generation)
+{
+    return static_cast<std::size_t>(std::count_if(
+        active_manager_callbacks.begin(),
+        active_manager_callbacks.end(),
+        [=](const ActiveManagerCallback& active) {
+            return active.state == state && active.kind == kind &&
+                active.generation == generation;
+        }));
+}
+
+bool has_active_manager_callback(const void* state)
+{
+    return std::any_of(
+        active_manager_callbacks.begin(),
+        active_manager_callbacks.end(),
+        [state](const ActiveManagerCallback& active) {
+            return active.state == state;
+        });
+}
+
+class ActiveManagerCallbackGuard final {
+public:
+    explicit ActiveManagerCallbackGuard(ActiveManagerCallback active)
+    {
+        active_manager_callbacks.push_back(active);
+    }
+
+    ~ActiveManagerCallbackGuard()
+    {
+        active_manager_callbacks.pop_back();
+    }
+
+    ActiveManagerCallbackGuard(const ActiveManagerCallbackGuard&) = delete;
+    ActiveManagerCallbackGuard& operator=(const ActiveManagerCallbackGuard&) = delete;
+};
 
 class VideoStreamParamsObserverSlot final {
 public:
@@ -580,8 +707,80 @@ struct AxtpAdapter::RuntimeState {
     std::uint64_t physical_session_generation = 0;
 };
 
+struct AxtpAdapter::ManagerCallbackState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    MediaFrameCallback frame_callback;
+    MediaStreamEventCallback stream_event_callback;
+    std::uint64_t frame_generation = 1;
+    std::uint64_t stream_event_generation = 1;
+    std::map<std::uint64_t, std::size_t> frame_in_flight;
+    std::map<std::uint64_t, std::size_t> stream_event_in_flight;
+};
+
+struct AxtpAdapter::DeviceContext {
+    TransportDescriptor descriptor;
+    std::unique_ptr<AxtpAdapter> adapter;
+    // Manager calls may hold a shared_ptr after the context is removed from
+    // the map. Retire the context and wait for this counter before stopping
+    // its leaf, so an old WS request cannot reopen it while a new context is
+    // being created for the same physical device. The mutex is held only for
+    // the state transition/counter update, never across an AXTP call.
+    std::mutex lifecycle_mutex;
+    std::condition_variable lifecycle_cv;
+    std::size_t in_flight = 0;
+    bool retired = false;
+};
+
+class AxtpAdapter::DeviceContextOperation final {
+public:
+    explicit DeviceContextOperation(const std::shared_ptr<DeviceContext>& context)
+        : context_(context)
+    {
+        if (!context_) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(context_->lifecycle_mutex);
+        if (context_->retired) {
+            return;
+        }
+        ++context_->in_flight;
+        acquired_ = true;
+    }
+
+    ~DeviceContextOperation()
+    {
+        if (!acquired_ || !context_) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(context_->lifecycle_mutex);
+            if (context_->in_flight != 0) {
+                --context_->in_flight;
+            }
+        }
+        context_->lifecycle_cv.notify_all();
+    }
+
+    DeviceContextOperation(const DeviceContextOperation&) = delete;
+    DeviceContextOperation& operator=(const DeviceContextOperation&) = delete;
+
+    explicit operator bool() const
+    {
+        return acquired_;
+    }
+
+private:
+    std::shared_ptr<DeviceContext> context_;
+    bool acquired_ = false;
+};
+
 struct AxtpAdapter::PendingControlCall {
     std::string device_id;
+    std::string source_endpoint_id;
+    std::string destination_endpoint_id;
+    EndpointDeliveryMode endpoint_delivery_mode =
+        EndpointDeliveryMode::LocalProjection;
     std::string method;
     std::string params;
     std::chrono::steady_clock::time_point deadline;
@@ -603,19 +802,344 @@ AxtpAdapter::AxtpAdapter(AxtpAdapterConfig config)
 
 AxtpAdapter::AxtpAdapter(
     AxtpAdapterConfig config,
-    std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory)
+    std::shared_ptr<detail::AxtpAdapterRuntimeFactory> runtime_factory,
+    bool device_context)
     : config_(std::move(config))
+    , device_context_(device_context)
     , runtime_(std::make_unique<RuntimeState>(std::move(runtime_factory)))
 {
     if (!runtime_->factory) {
         runtime_->factory = detail::make_default_axtp_runtime_factory();
     }
-    media_dispatcher_ = std::thread(&AxtpAdapter::run_media_dispatcher, this);
-    recovery_worker_ = std::thread(&AxtpAdapter::run_session_recovery_worker, this);
+    if (device_context_) {
+        media_dispatcher_ = std::thread(&AxtpAdapter::run_media_dispatcher, this);
+        recovery_worker_ = std::thread(&AxtpAdapter::run_session_recovery_worker, this);
+    } else {
+        manager_callback_state_ = std::make_shared<ManagerCallbackState>();
+    }
+}
+
+std::shared_ptr<AxtpAdapter::DeviceContext> AxtpAdapter::find_device_context(
+    const std::string& device_id) const
+{
+    std::lock_guard<std::mutex> lock(device_context_mutex_);
+    const auto found = device_contexts_.find(device_id);
+    return found == device_contexts_.end() ? nullptr : found->second;
+}
+
+std::vector<std::shared_ptr<AxtpAdapter::DeviceContext>> AxtpAdapter::device_contexts() const
+{
+    std::vector<std::shared_ptr<DeviceContext>> contexts;
+    std::lock_guard<std::mutex> lock(device_context_mutex_);
+    contexts.reserve(device_contexts_.size());
+    for (const auto& entry : device_contexts_) {
+        contexts.push_back(entry.second);
+    }
+    return contexts;
+}
+
+void AxtpAdapter::install_device_context_callbacks(
+    const std::shared_ptr<DeviceContext>& context) const
+{
+    if (!context || !context->adapter) {
+        return;
+    }
+    const auto callback_state = manager_callback_state_;
+    if (!callback_state) {
+        return;
+    }
+    // Install stable forwarding callbacks once. Replacing a manager callback
+    // then only updates the manager-owned function slot; it never acquires
+    // several leaf dispatch locks in opposite orders while device callbacks
+    // are running concurrently.
+    context->adapter->set_media_frame_callback(
+        [callback_state](std::string device_id, MediaFrame frame) {
+            MediaFrameCallback callback;
+            std::uint64_t generation = 0;
+            {
+                std::lock_guard<std::mutex> lock(callback_state->mutex);
+                callback = callback_state->frame_callback;
+                if (!callback) {
+                    return;
+                }
+                generation = callback_state->frame_generation;
+                ++callback_state->frame_in_flight[generation];
+            }
+            struct InFlightGuard {
+                std::shared_ptr<ManagerCallbackState> state;
+                std::uint64_t generation = 0;
+                ~InFlightGuard()
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(state->mutex);
+                        const auto found = state->frame_in_flight.find(generation);
+                        if (found != state->frame_in_flight.end() &&
+                            --found->second == 0) {
+                            state->frame_in_flight.erase(found);
+                        }
+                    }
+                    state->cv.notify_all();
+                }
+            } in_flight{callback_state, generation};
+            ActiveManagerCallbackGuard active({
+                callback_state.get(), ManagerCallbackKind::Frame, generation});
+            callback(std::move(device_id), std::move(frame));
+        });
+    context->adapter->set_media_stream_event_callback(
+        [callback_state](MediaStreamEvent event) {
+            MediaStreamEventCallback callback;
+            std::uint64_t generation = 0;
+            {
+                std::lock_guard<std::mutex> lock(callback_state->mutex);
+                callback = callback_state->stream_event_callback;
+                if (!callback) {
+                    return;
+                }
+                generation = callback_state->stream_event_generation;
+                ++callback_state->stream_event_in_flight[generation];
+            }
+            struct InFlightGuard {
+                std::shared_ptr<ManagerCallbackState> state;
+                std::uint64_t generation = 0;
+                ~InFlightGuard()
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(state->mutex);
+                        const auto found =
+                            state->stream_event_in_flight.find(generation);
+                        if (found != state->stream_event_in_flight.end() &&
+                            --found->second == 0) {
+                            state->stream_event_in_flight.erase(found);
+                        }
+                    }
+                    state->cv.notify_all();
+                }
+            } in_flight{callback_state, generation};
+            ActiveManagerCallbackGuard active({
+                callback_state.get(), ManagerCallbackKind::StreamEvent, generation});
+            callback(std::move(event));
+        });
+}
+
+std::shared_ptr<AxtpAdapter::DeviceContext> AxtpAdapter::device_context_for(
+    const std::string& device_id,
+    bool create) const
+{
+    if (device_context_ || device_id.empty()) {
+        return nullptr;
+    }
+
+    // Only one caller constructs the first leaf for a physical ID.  Without
+    // this single-flight fence, concurrent WS requests can start two worker
+    // sets and let the losing temporary leaf briefly open the same HID peer.
+    std::lock_guard<std::mutex> creation_lock(device_creation_mutex_);
+
+    TransportDescriptor descriptor;
+    bool descriptor_known = false;
+    bool descriptor_cache_populated = false;
+    {
+        std::lock_guard<std::mutex> lock(device_context_mutex_);
+        if (retiring_device_ids_.find(device_id) != retiring_device_ids_.end()) {
+            // A reset owns this physical identity until its old leaf has
+            // closed. Do not let a caller create a replacement in the gap.
+            return nullptr;
+        }
+        if (ambiguous_device_ids_.find(device_id) !=
+            ambiguous_device_ids_.end()) {
+            return nullptr;
+        }
+        const auto found = transport_descriptors_.find(device_id);
+        if (found != transport_descriptors_.end()) {
+            descriptor = found->second;
+            descriptor_known = true;
+        }
+        descriptor_cache_populated = !transport_descriptors_.empty();
+        const auto existing = device_contexts_.find(device_id);
+        if (existing != device_contexts_.end()) {
+            if (descriptor_known && existing->second &&
+                existing->second->adapter) {
+                existing->second->descriptor = descriptor;
+                existing->second->adapter->update_selector_from_descriptor(
+                    descriptor);
+            }
+            return existing->second;
+        }
+    }
+    if (!create) {
+        return nullptr;
+    }
+
+#if AXENT_HAS_AXTP_HID_TRANSPORT
+    // A path-only HID ID and a serial-number HID ID share the same public
+    // hid:<vid>:<pid>:<suffix> shape. Resolve an exact enumerated descriptor
+    // before falling back to parsing the suffix, so paths are never passed to
+    // hid_open() as if they were serial numbers.
+    if (!descriptor_known && device_id.rfind("hid:", 0) == 0) {
+        TransportSelector selector;
+        {
+            std::lock_guard<std::mutex> selector_lock(selector_mutex_);
+            selector = config_.selector;
+        }
+        if (selector.kind == TransportKind::Hid) {
+            const auto hid_devices = axent::transport::enumerateHidDevices(
+                selector.vendor_id, selector.product_id);
+            auto projection = detail::project_hid_devices(
+                selector, hid_devices, config_.endpoint_delivery_mode);
+            std::lock_guard<std::mutex> lock(device_context_mutex_);
+            ambiguous_device_ids_ = projection.ambiguous_device_ids;
+            if (ambiguous_device_ids_.find(device_id) !=
+                ambiguous_device_ids_.end()) {
+                transport_descriptors_.erase(device_id);
+                return nullptr;
+            }
+            const auto candidate = projection.descriptors.find(device_id);
+            if (candidate != projection.descriptors.end()) {
+                descriptor = candidate->second;
+                descriptor_known = true;
+                transport_descriptors_[device_id] = descriptor;
+            }
+        }
+    }
+#endif
+
+    if (!descriptor_known && descriptor_cache_populated) {
+        // Once discovery has produced a concrete set, never reopen an
+        // arbitrary first HID handle for an unknown logical device.
+        return nullptr;
+    }
+    if (descriptor_known && !descriptor.online) {
+        return nullptr;
+    }
+    TransportSelector selector;
+    {
+        std::lock_guard<std::mutex> selector_lock(selector_mutex_);
+        selector = config_.selector;
+    }
+    if (!descriptor_known &&
+        (!selector.serial_number.empty() || !selector.path.empty())) {
+        std::lock_guard<std::mutex> lock(device_context_mutex_);
+        if (!fixed_selector_device_id_.empty() &&
+            fixed_selector_device_id_ != device_id) {
+            return nullptr;
+        }
+        fixed_selector_device_id_ = device_id;
+    }
+    if (!descriptor_known) {
+        descriptor.id = device_id;
+        descriptor.kind = selector.kind;
+        descriptor.online = true;
+        descriptor.path = selector.path;
+        descriptor.serial_number = selector.serial_number;
+        descriptor.vendor_id = selector.vendor_id;
+        descriptor.product_id = selector.product_id;
+        descriptor.usage_page = selector.usage_page;
+        descriptor.usage = selector.usage;
+        if (selector.path.empty() && selector.serial_number.empty()) {
+            if (!populate_selector_identity_from_device_id(device_id, descriptor)) {
+                return nullptr;
+            }
+            // A canonical ID is still checked against the configured
+            // discovery allowlist.  This prevents an arbitrary VID/PID string
+            // from bypassing a product's transport policy when discovery is
+            // unavailable, while descriptors learned from discovery remain
+            // authoritative below.
+            if ((selector.vendor_id != 0 &&
+                 selector.vendor_id != descriptor.vendor_id) ||
+                (selector.product_id != 0 &&
+                 selector.product_id != descriptor.product_id)) {
+                return nullptr;
+            }
+        }
+        if (descriptor.path.empty() && descriptor.serial_number.empty()) {
+            // A broad VID/PID/usage selector is not a physical identity.  An
+            // arbitrary logical ID must never cause two contexts to open the
+            // first matching HID handle; require discovery or a canonical ID
+            // that yields an exact serial/path selector.
+            return nullptr;
+        }
+    }
+
+    auto child_config = config_;
+    child_config.selector.kind = descriptor.kind;
+    // A serial is the stable exact selector across replug/path churn. Path is
+    // used only for HID devices which expose no serial number.
+    child_config.selector.path = descriptor.serial_number.empty()
+        ? descriptor.path : std::string{};
+    child_config.selector.serial_number = descriptor.serial_number;
+    if (descriptor.vendor_id != 0) {
+        child_config.selector.vendor_id = descriptor.vendor_id;
+    }
+    if (descriptor.product_id != 0) {
+        child_config.selector.product_id = descriptor.product_id;
+    }
+    if (descriptor.usage_page != 0) {
+        child_config.selector.usage_page = descriptor.usage_page;
+    }
+    if (descriptor.usage != 0) {
+        child_config.selector.usage = descriptor.usage;
+    }
+    auto context = std::make_shared<DeviceContext>();
+    context->descriptor = descriptor;
+    context->adapter = std::unique_ptr<AxtpAdapter>(new AxtpAdapter(
+        std::move(child_config), runtime_->factory, true));
+    install_device_context_callbacks(context);
+
+    std::lock_guard<std::mutex> context_lock(device_context_mutex_);
+    device_contexts_.emplace(device_id, context);
+    return context;
+}
+
+void AxtpAdapter::update_selector_from_descriptor(
+    const TransportDescriptor& descriptor)
+{
+    if (!device_context_) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(selector_mutex_);
+    if (descriptor.kind != TransportKind::Unknown) {
+        config_.selector.kind = descriptor.kind;
+    }
+    config_.selector.path = descriptor.serial_number.empty()
+        ? descriptor.path : std::string{};
+    config_.selector.serial_number = descriptor.serial_number;
+    if (descriptor.vendor_id != 0) {
+        config_.selector.vendor_id = descriptor.vendor_id;
+    }
+    if (descriptor.product_id != 0) {
+        config_.selector.product_id = descriptor.product_id;
+    }
+    if (descriptor.usage_page != 0) {
+        config_.selector.usage_page = descriptor.usage_page;
+    }
+    if (descriptor.usage != 0) {
+        config_.selector.usage = descriptor.usage;
+    }
 }
 
 AxtpAdapter::~AxtpAdapter()
 {
+    if (!device_context_) {
+        // Leaf forwarding callbacks read this slot for every invocation. Set
+        // it empty before destroying the leaves; their destructors join the
+        // dispatchers and therefore fence any callback which already copied
+        // the old function before the manager object disappears.
+        set_media_frame_callback({});
+        set_media_stream_event_callback({});
+        // Destroy every leaf while all manager callback state and locks are
+        // still alive. A leaf may drain a final lifecycle event while its
+        // pump/dispatcher is being joined.
+        std::map<std::string, std::shared_ptr<DeviceContext>> contexts;
+        {
+            std::lock_guard<std::mutex> lock(device_context_mutex_);
+            contexts.swap(device_contexts_);
+            transport_descriptors_.clear();
+            ambiguous_device_ids_.clear();
+            retiring_device_ids_.clear();
+            fixed_selector_device_id_.clear();
+        }
+        contexts.clear();
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         accepting_control_calls_ = false;
@@ -721,7 +1245,9 @@ TransportDescriptor detail::descriptor_from_hid_device(const axent::transport::H
     return descriptor;
 }
 
-DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(const TransportDescriptor& descriptor)
+DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(
+    const TransportDescriptor& descriptor,
+    EndpointDeliveryMode endpoint_delivery_mode)
 {
     DeviceSnapshot snapshot;
     snapshot.id = descriptor.id;
@@ -733,7 +1259,54 @@ DeviceSnapshot AxtpAdapter::snapshot_from_descriptor(const TransportDescriptor& 
     snapshot.connection.transport = "hid";
     snapshot.connection.last_change_reason = "hid-discovered";
     snapshot.status.health = descriptor.online ? "ready" : "offline";
+    snapshot.endpoint_delivery_mode = endpoint_delivery_mode;
+    if (descriptor.kind == TransportKind::Hid &&
+        !descriptor.serial_number.empty()) {
+        snapshot.endpoint_id = axtp_endpoint_id_from_key(
+            "device:axtp:hid:" + hex4(descriptor.vendor_id) + ":" +
+            hex4(descriptor.product_id) + ":" + descriptor.serial_number);
+    }
     return snapshot;
+}
+
+detail::AxtpDiscoveryProjection detail::project_hid_devices(
+    const TransportSelector& selector,
+    const std::vector<axent::transport::HidDeviceInfo>& hid_devices,
+    EndpointDeliveryMode endpoint_delivery_mode)
+{
+    AxtpDiscoveryProjection projection;
+    for (const auto& device : hid_devices) {
+        if (!matches_selector(selector, device)) {
+            continue;
+        }
+        auto descriptor = descriptor_from_hid_device(device);
+        if (projection.ambiguous_device_ids.find(descriptor.id) !=
+            projection.ambiguous_device_ids.end()) {
+            continue;
+        }
+        const auto existing = projection.descriptors.find(descriptor.id);
+        if (existing == projection.descriptors.end()) {
+            projection.descriptors.emplace(descriptor.id, std::move(descriptor));
+            continue;
+        }
+        // Some platforms can report the exact same HID interface more than
+        // once. That is a harmless duplicate. A different path or interface
+        // with the same canonical VID/PID/serial evidence is not: choosing
+        // either provider would make the Endpoint nondeterministic.
+        if (!descriptor.path.empty() &&
+            existing->second.path == descriptor.path &&
+            existing->second.interface_number == descriptor.interface_number) {
+            continue;
+        }
+        projection.descriptors.erase(existing);
+        projection.ambiguous_device_ids.insert(descriptor.id);
+    }
+    for (const auto& [device_id, descriptor] : projection.descriptors) {
+        (void)device_id;
+        projection.devices.push_back(AxtpAdapter::snapshot_from_descriptor(
+            descriptor, endpoint_delivery_mode));
+    }
+    return projection;
 }
 
 AdapterMetadata AxtpAdapter::metadata() const
@@ -758,15 +1331,49 @@ std::vector<Capability> AxtpAdapter::capabilities() const
 std::vector<DeviceSnapshot> AxtpAdapter::discover()
 {
     std::vector<DeviceSnapshot> devices;
-    if (config_.selector.kind != TransportKind::Hid) {
+    TransportSelector selector;
+    {
+        std::lock_guard<std::mutex> selector_lock(selector_mutex_);
+        selector = config_.selector;
+    }
+    if (selector.kind != TransportKind::Hid) {
         return devices;
     }
 
 #if AXENT_HAS_AXTP_HID_TRANSPORT
-    const auto hid_devices = axent::transport::enumerateHidDevices(config_.selector.vendor_id, config_.selector.product_id);
-    for (const auto& device : hid_devices) {
-        if (detail::matches_selector(config_.selector, device)) {
-            devices.push_back(snapshot_from_descriptor(detail::descriptor_from_hid_device(device)));
+    const auto hid_devices = axent::transport::enumerateHidDevices(
+        selector.vendor_id, selector.product_id);
+    auto projection = detail::project_hid_devices(
+        selector, hid_devices, config_.endpoint_delivery_mode);
+    devices = std::move(projection.devices);
+    auto& descriptors = projection.descriptors;
+    if (!device_context_) {
+        std::vector<std::pair<std::shared_ptr<DeviceContext>, TransportDescriptor>>
+            selector_updates;
+        {
+            std::lock_guard<std::mutex> lock(device_context_mutex_);
+            ambiguous_device_ids_ = projection.ambiguous_device_ids;
+            if (!descriptors.empty() || transport_descriptors_.empty() ||
+                !ambiguous_device_ids_.empty()) {
+                transport_descriptors_ = descriptors;
+            }
+            for (const auto& [device_id, descriptor] : descriptors) {
+                const auto context = device_contexts_.find(device_id);
+                if (context == device_contexts_.end() ||
+                    !context->second || !context->second->adapter) {
+                    continue;
+                }
+                context->second->descriptor = descriptor;
+                selector_updates.emplace_back(context->second, descriptor);
+            }
+        }
+        // Keep this outside the manager map lock. A leaf may be opening or
+        // recovering and serializes its selector snapshot independently.
+        for (const auto& [context, descriptor] : selector_updates) {
+            DeviceContextOperation context_operation(context);
+            if (context_operation) {
+                context->adapter->update_selector_from_descriptor(descriptor);
+            }
         }
     }
 #endif
@@ -775,6 +1382,28 @@ std::vector<DeviceSnapshot> AxtpAdapter::discover()
 
 ControlResult AxtpAdapter::call(const std::string& device_id, const std::string& method, const nlohmann::json& params)
 {
+    AdapterControlRequest request;
+    request.device_id = device_id;
+    request.method = method;
+    request.params = params;
+    return call(request);
+}
+
+ControlResult AxtpAdapter::call(const AdapterControlRequest& request)
+{
+    if (!device_context_) {
+        const auto context = device_context_for(request.device_id);
+        if (!context || !context->adapter) {
+            return {ControlStatus::NotFound,
+                    {{"error", "AXTP device is not available"}}};
+        }
+        DeviceContextOperation context_operation(context);
+        if (!context_operation) {
+            return {ControlStatus::Unavailable,
+                    {{"error", "AXTP device context is being retired"}}};
+        }
+        return context->adapter->call(request);
+    }
     // Keep the legacy synchronous Adapter entry point convenient for direct
     // users: it may establish the first physical session.  call_async must
     // not do that work, because opening a HID/AXTP session can block for a
@@ -784,11 +1413,12 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
     bool session_ready = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        session_ready = diagnostics_.open && active_device_id_ == device_id;
+        session_ready = diagnostics_.open &&
+            active_device_id_ == request.device_id;
     }
     if (!session_ready) {
         std::string error;
-        const auto status = open_session_status(device_id, error, false);
+        const auto status = open_session_status(request.device_id, error, false);
         if (status != ControlStatus::Ok) {
             return {status, {{"error", error}}};
         }
@@ -799,7 +1429,7 @@ ControlResult AxtpAdapter::call(const std::string& device_id, const std::string&
     }
     ControlCallOptions options;
     options.deadline = deadline;
-    auto operation = call_async(device_id, method, params, options);
+    auto operation = call_async(request, options);
     auto result = operation
         ? operation->wait()
         : ControlResult{
@@ -819,6 +1449,32 @@ ControlOperationPtr AxtpAdapter::call_async(
     const nlohmann::json& params,
     ControlCallOptions options)
 {
+    AdapterControlRequest request;
+    request.device_id = device_id;
+    request.method = method;
+    request.params = params;
+    return call_async(request, std::move(options));
+}
+
+ControlOperationPtr AxtpAdapter::call_async(
+    const AdapterControlRequest& routed_request,
+    ControlCallOptions options)
+{
+    if (!device_context_) {
+        const auto context = device_context_for(routed_request.device_id);
+        if (!context || !context->adapter) {
+            return make_completed_control_operation(
+                {ControlStatus::NotFound,
+                 {{"error", "AXTP device is not available"}}});
+        }
+        DeviceContextOperation context_operation(context);
+        if (!context_operation) {
+            return make_completed_control_operation(
+                {ControlStatus::Unavailable,
+                 {{"error", "AXTP device context is being retired"}}});
+        }
+        return context->adapter->call_async(routed_request, std::move(options));
+    }
     const auto accepted_at = std::chrono::steady_clock::now();
     const auto deadline = options.deadline.value_or(
         options.timeout <= std::chrono::milliseconds::zero()
@@ -847,9 +1503,13 @@ ControlOperationPtr AxtpAdapter::call_async(
     }
 
     auto request = std::make_shared<PendingControlCall>();
-    request->device_id = device_id;
-    request->method = method;
-    request->params = params.is_null() ? std::string("{}") : params.dump();
+    request->device_id = routed_request.device_id;
+    request->source_endpoint_id = routed_request.source_endpoint_id;
+    request->destination_endpoint_id = routed_request.destination_endpoint_id;
+    request->endpoint_delivery_mode = routed_request.endpoint_delivery_mode;
+    request->method = routed_request.method;
+    request->params = routed_request.params.is_null()
+        ? std::string("{}") : routed_request.params.dump();
     request->deadline = deadline;
     // The submitting thread deliberately does not inspect the active AXTP
     // session. The pump is the sole runtime owner; it validates the device
@@ -984,6 +1644,14 @@ void AxtpAdapter::process_next_control_call(const std::string& device_id)
     call_options.progress = [this, &device_id]() {
         publish_runtime_progress(device_id);
     };
+    if (request->endpoint_delivery_mode == EndpointDeliveryMode::NativeRelay) {
+        if (!request->source_endpoint_id.empty()) {
+            call_options.endpoint.src = request->source_endpoint_id;
+        }
+        if (!request->destination_endpoint_id.empty()) {
+            call_options.endpoint.dst = request->destination_endpoint_id;
+        }
+    }
     const auto body = runtime_->client->callJson(
         request->method, request->params, call_options);
     const auto last_error = runtime_->client->lastError();
@@ -1091,8 +1759,32 @@ void AxtpAdapter::cancel_control_calls(
     control_cv_.notify_all();
 }
 
-ControlResult AxtpAdapter::start_firmware_update(const std::string&, const std::string&)
+ControlResult AxtpAdapter::start_firmware_update(const std::string& device_id,
+                                                 const std::string& file_path)
 {
+    AdapterControlRequest request;
+    request.device_id = device_id;
+    request.method = "firmware.update";
+    return start_firmware_update(request, file_path);
+}
+
+ControlResult AxtpAdapter::start_firmware_update(
+    const AdapterControlRequest& request,
+    const std::string& file_path)
+{
+    if (!device_context_) {
+        const auto context = device_context_for(request.device_id);
+        if (!context || !context->adapter) {
+            return {ControlStatus::NotFound,
+                    {{"error", "AXTP device is not available"}}};
+        }
+        DeviceContextOperation context_operation(context);
+        if (!context_operation) {
+            return {ControlStatus::Unavailable,
+                    {{"error", "AXTP device context is being retired"}}};
+        }
+        return context->adapter->start_firmware_update(request, file_path);
+    }
     return {ControlStatus::Unavailable, {{"error", "AXTP firmware update skeleton only"}}};
 }
 
@@ -1130,6 +1822,27 @@ void AxtpAdapter::record_transport_trace(const std::string& event_name,
                                          bool dropped_report,
                                          const std::string& message)
 {
+    if (!device_context_) {
+        const auto contexts = device_contexts();
+        if (!contexts.empty()) {
+            for (const auto& context : contexts) {
+                if (context && context->adapter) {
+                    DeviceContextOperation context_operation(context);
+                    if (context_operation) {
+                        context->adapter->record_transport_trace(
+                            event_name,
+                            accepted_read,
+                            write_report,
+                            read_error,
+                            write_error,
+                            dropped_report,
+                            message);
+                    }
+                }
+            }
+            return;
+        }
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     diagnostics_.last_event = event_name;
     // Once a concrete HID transport snapshot is available its atomic
@@ -1252,29 +1965,241 @@ void AxtpAdapter::snapshot_transport_diagnostics_from_runtime(bool force)
 
 TransportDiagnostics AxtpAdapter::diagnostics() const
 {
+    if (!device_context_) {
+        const auto contexts = device_contexts();
+        if (!contexts.empty()) {
+            if (contexts.size() == 1 && contexts.front()->adapter) {
+                const auto& context = contexts.front();
+                DeviceContextOperation context_operation(context);
+                return context_operation ? context->adapter->diagnostics()
+                                          : TransportDiagnostics{};
+            }
+            TransportDiagnostics aggregate;
+            bool first = true;
+            for (const auto& context : contexts) {
+                if (!context || !context->adapter) {
+                    continue;
+                }
+                DeviceContextOperation context_operation(context);
+                if (!context_operation) {
+                    continue;
+                }
+                const auto current = context->adapter->diagnostics();
+                aggregate.open = aggregate.open || current.open;
+                aggregate.negotiated_input_report_size = std::max(
+                    aggregate.negotiated_input_report_size,
+                    current.negotiated_input_report_size);
+                aggregate.negotiated_output_report_size = std::max(
+                    aggregate.negotiated_output_report_size,
+                    current.negotiated_output_report_size);
+                aggregate.read_buffer_size = std::max(
+                    aggregate.read_buffer_size, current.read_buffer_size);
+                aggregate.preferred_frame_size = std::max(
+                    aggregate.preferred_frame_size, current.preferred_frame_size);
+                aggregate.read_reports += current.read_reports;
+                aggregate.write_reports += current.write_reports;
+                aggregate.read_errors += current.read_errors;
+                aggregate.write_errors += current.write_errors;
+                aggregate.dropped_reports += current.dropped_reports;
+                aggregate.queued_reports += current.queued_reports;
+                aggregate.read_bytes += current.read_bytes;
+                aggregate.write_bytes += current.write_bytes;
+                aggregate.control_queue_depth += current.control_queue_depth;
+                aggregate.control_in_flight += current.control_in_flight;
+                aggregate.control_outstanding_high_water +=
+                    current.control_outstanding_high_water;
+                aggregate.media_dispatch_queue_depth +=
+                    current.media_dispatch_queue_depth;
+                aggregate.media_dispatch_queue_high_water +=
+                    current.media_dispatch_queue_high_water;
+                aggregate.media_frames_dispatched_during_control_call +=
+                    current.media_frames_dispatched_during_control_call;
+                aggregate.active_media_streams += current.active_media_streams;
+                aggregate.health_probe_failures += current.health_probe_failures;
+                aggregate.session_recoveries += current.session_recoveries;
+                aggregate.inbound_activity_generation +=
+                    current.inbound_activity_generation;
+                aggregate.heartbeat_attempts += current.heartbeat_attempts;
+                aggregate.heartbeat_acks += current.heartbeat_acks;
+                aggregate.heartbeat_timeouts += current.heartbeat_timeouts;
+                aggregate.legacy_probe_attempts += current.legacy_probe_attempts;
+                aggregate.legacy_probe_successes += current.legacy_probe_successes;
+                aggregate.legacy_fallbacks += current.legacy_fallbacks;
+                aggregate.video_retry.configure_attempts +=
+                    current.video_retry.configure_attempts;
+                aggregate.audio_retry.configure_attempts +=
+                    current.audio_retry.configure_attempts;
+                aggregate.video_retry.next_retry_in_ms = std::max(
+                    aggregate.video_retry.next_retry_in_ms,
+                    current.video_retry.next_retry_in_ms);
+                aggregate.audio_retry.next_retry_in_ms = std::max(
+                    aggregate.audio_retry.next_retry_in_ms,
+                    current.audio_retry.next_retry_in_ms);
+                aggregate.video_retry.terminal =
+                    aggregate.video_retry.terminal || current.video_retry.terminal;
+                aggregate.audio_retry.terminal =
+                    aggregate.audio_retry.terminal || current.audio_retry.terminal;
+                if (static_cast<int>(current.session_health) >
+                    static_cast<int>(aggregate.session_health)) {
+                    aggregate.session_health = current.session_health;
+                }
+                if (first) {
+                    aggregate.requested_probe_mode = current.requested_probe_mode;
+                    aggregate.effective_probe_mode = current.effective_probe_mode;
+                    aggregate.negotiated_heartbeat_interval_ms =
+                        current.negotiated_heartbeat_interval_ms;
+                    first = false;
+                } else {
+                    if (aggregate.requested_probe_mode != current.requested_probe_mode) {
+                        aggregate.requested_probe_mode = SessionProbeMode::Auto;
+                    }
+                    if (aggregate.effective_probe_mode != current.effective_probe_mode) {
+                        aggregate.effective_probe_mode = SessionProbeMode::Auto;
+                    }
+                    if (aggregate.negotiated_heartbeat_interval_ms !=
+                        current.negotiated_heartbeat_interval_ms) {
+                        aggregate.negotiated_heartbeat_interval_ms = 0;
+                    }
+                }
+                if (!current.last_event.empty()) {
+                    aggregate.last_event = current.last_event;
+                }
+                if (!current.last_error.empty()) {
+                    aggregate.last_error = current.last_error;
+                }
+                if (!current.last_session_recovery_reason.empty()) {
+                    aggregate.last_session_recovery_reason =
+                        current.last_session_recovery_reason;
+                }
+                if (!current.legacy_fallback_reason.empty()) {
+                    aggregate.legacy_fallback_reason = current.legacy_fallback_reason;
+                }
+                if (!current.video_retry.last_error.empty()) {
+                    aggregate.video_retry.last_error = current.video_retry.last_error;
+                }
+                if (!current.audio_retry.last_error.empty()) {
+                    aggregate.audio_retry.last_error = current.audio_retry.last_error;
+                }
+            }
+            // A numeric stream ID is scoped to a physical device. It has no
+            // unambiguous meaning in the compatibility aggregate.
+            aggregate.active_video_stream_id = 0;
+            aggregate.active_audio_stream_id = 0;
+            return aggregate;
+        }
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     const_cast<AxtpAdapter*>(this)->refresh_diagnostics_locked();
     return diagnostics_;
 }
 
+TransportDiagnostics AxtpAdapter::diagnostics(const std::string& device_id) const
+{
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (!context || !context->adapter) {
+            return {};
+        }
+        DeviceContextOperation context_operation(context);
+        return context_operation ? context->adapter->diagnostics()
+                                  : TransportDiagnostics{};
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_device_id_.empty() && active_device_id_ != device_id) {
+            return {};
+        }
+    }
+    return diagnostics();
+}
+
 void AxtpAdapter::set_media_frame_callback(MediaFrameCallback callback)
 {
+    if (!device_context_) {
+        const auto state = manager_callback_state_;
+        if (!state) {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(state->mutex);
+        const auto old_generation = state->frame_generation++;
+        state->frame_callback = std::move(callback);
+        if (has_active_manager_callback(state.get())) {
+            // A callback may replace either callback kind. Waiting here can
+            // form a cross-kind cycle with another device callback doing the
+            // inverse replacement; the generation swap is still immediate.
+            return;
+        }
+        const auto locally_active = active_manager_callback_count(
+            state.get(), ManagerCallbackKind::Frame, old_generation);
+        state->cv.wait(lock, [&]() {
+            const auto found = state->frame_in_flight.find(old_generation);
+            return found == state->frame_in_flight.end() ||
+                found->second <= locally_active;
+        });
+        return;
+    }
     std::lock_guard<std::recursive_mutex> dispatch_lock(
         media_callback_dispatch_mutex_);
-    std::lock_guard<std::mutex> lock(media_callback_mutex_);
-    media_frame_callback_ = std::move(callback);
+    {
+        std::lock_guard<std::mutex> lock(media_callback_mutex_);
+        media_frame_callback_ = std::move(callback);
+    }
 }
 
 void AxtpAdapter::set_media_stream_event_callback(MediaStreamEventCallback callback)
 {
+    if (!device_context_) {
+        const auto state = manager_callback_state_;
+        if (!state) {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(state->mutex);
+        const auto old_generation = state->stream_event_generation++;
+        state->stream_event_callback = std::move(callback);
+        if (has_active_manager_callback(state.get())) {
+            return;
+        }
+        const auto locally_active = active_manager_callback_count(
+            state.get(), ManagerCallbackKind::StreamEvent, old_generation);
+        state->cv.wait(lock, [&]() {
+            const auto found =
+                state->stream_event_in_flight.find(old_generation);
+            return found == state->stream_event_in_flight.end() ||
+                found->second <= locally_active;
+        });
+        return;
+    }
     std::lock_guard<std::recursive_mutex> dispatch_lock(
         media_callback_dispatch_mutex_);
-    std::lock_guard<std::mutex> lock(media_callback_mutex_);
-    media_stream_event_callback_ = std::move(callback);
+    {
+        std::lock_guard<std::mutex> lock(media_callback_mutex_);
+        media_stream_event_callback_ = std::move(callback);
+    }
 }
 
 std::vector<MediaStreamDescriptor> AxtpAdapter::active_media_stream_descriptors() const
 {
+    if (!device_context_) {
+        const auto contexts = device_contexts();
+        if (!contexts.empty()) {
+            std::vector<MediaStreamDescriptor> descriptors;
+            for (const auto& context : contexts) {
+                if (!context || !context->adapter) {
+                    continue;
+                }
+                DeviceContextOperation context_operation(context);
+                if (!context_operation) {
+                    continue;
+                }
+                auto current = context->adapter->active_media_stream_descriptors();
+                descriptors.insert(
+                    descriptors.end(),
+                    std::make_move_iterator(current.begin()),
+                    std::make_move_iterator(current.end()));
+            }
+            return descriptors;
+        }
+    }
     std::vector<MediaStreamDescriptor> descriptors;
     std::lock_guard<std::mutex> lock(media_stream_mutex_);
     descriptors.reserve(active_media_streams_.size());
@@ -1284,10 +2209,50 @@ std::vector<MediaStreamDescriptor> AxtpAdapter::active_media_stream_descriptors(
     return descriptors;
 }
 
+std::vector<MediaStreamDescriptor> AxtpAdapter::active_media_stream_descriptors(
+    const std::string& device_id) const
+{
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (!context || !context->adapter) {
+            return {};
+        }
+        DeviceContextOperation context_operation(context);
+        return context_operation
+            ? context->adapter->active_media_stream_descriptors()
+            : std::vector<MediaStreamDescriptor>{};
+    }
+    auto descriptors = active_media_stream_descriptors();
+    descriptors.erase(
+        std::remove_if(
+            descriptors.begin(), descriptors.end(),
+            [&device_id](const MediaStreamDescriptor& descriptor) {
+                return !descriptor.device_id.empty() &&
+                    descriptor.device_id != device_id;
+            }),
+        descriptors.end());
+    return descriptors;
+}
+
 VideoStreamParamsResult AxtpAdapter::set_video_stream_params(
     const std::string& device_id,
     const VideoStreamParamsRequest& request)
 {
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (!context || !context->adapter) {
+            VideoStreamParamsResult result;
+            result.status_code = kStatusInvalidState;
+            return result;
+        }
+        DeviceContextOperation context_operation(context);
+        if (!context_operation) {
+            VideoStreamParamsResult result;
+            result.status_code = kStatusInvalidState;
+            return result;
+        }
+        return context->adapter->set_video_stream_params(device_id, request);
+    }
     VideoStreamParamsResult result;
     if ((!request.frame_rate.has_value() && !request.reset_frame_rate) ||
         (request.frame_rate.has_value() && request.reset_frame_rate) ||
@@ -1412,6 +2377,15 @@ VideoStreamParamsResult AxtpAdapter::set_video_stream_params(
 VideoStreamParamsState AxtpAdapter::video_stream_params_state(
     const std::string& device_id) const
 {
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (!context || !context->adapter) {
+            return {};
+        }
+        DeviceContextOperation context_operation(context);
+        return context_operation ? context->adapter->video_stream_params_state(device_id)
+                                  : VideoStreamParamsState{};
+    }
     bool session_active = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1430,6 +2404,17 @@ VideoStreamParamsSubscriptionPtr AxtpAdapter::subscribe_video_stream_params(
     const std::string& device_id,
     VideoStreamParamsObserver observer)
 {
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (!context || !context->adapter) {
+            return {};
+        }
+        DeviceContextOperation context_operation(context);
+        return context_operation
+            ? context->adapter->subscribe_video_stream_params(
+                  device_id, std::move(observer))
+            : VideoStreamParamsSubscriptionPtr{};
+    }
     if (!observer) {
         return {};
     }
@@ -1503,6 +2488,17 @@ void AxtpAdapter::drop_pending_media_frames_for_device(const std::string& device
 void AxtpAdapter::bind_media_delivery_session(const std::string& device_id,
                                               const std::string& session_id)
 {
+    if (!device_context_) {
+        const auto context = device_context_for(device_id);
+        if (context && context->adapter) {
+            DeviceContextOperation context_operation(context);
+            if (!context_operation) {
+                return;
+            }
+            context->adapter->bind_media_delivery_session(device_id, session_id);
+        }
+        return;
+    }
     // Advance the fence before publishing the replacement logical binding.
     // A Core stream event already decoded under the previous token must not
     // become eligible merely because its broker callback runs after this
@@ -1519,6 +2515,17 @@ void AxtpAdapter::bind_media_delivery_session(const std::string& device_id,
 void AxtpAdapter::unbind_media_delivery_session(const std::string& device_id,
                                                 const std::string& session_id)
 {
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (context && context->adapter) {
+            DeviceContextOperation context_operation(context);
+            if (!context_operation) {
+                return;
+            }
+            context->adapter->unbind_media_delivery_session(device_id, session_id);
+        }
+        return;
+    }
     // Invalidate staged and deferred frames before removing the logical lease.
     // The token check also covers frames that are still queued inside the
     // runtime Core and therefore cannot be removed by the adapter queue drain.
@@ -1638,7 +2645,6 @@ void AxtpAdapter::enqueue_media_source_state_event(MediaSourceStateEvent event)
 {
     note_inbound_activity();
     {
-        const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.last_media_source_event_id = event.event_id;
         diagnostics_.last_media_source_event_name = event.event_name;
@@ -2208,6 +3214,64 @@ void AxtpAdapter::run_pending_orphan_stream_closes(
 
 void AxtpAdapter::reset_session_for_device(const std::string& device_id)
 {
+    if (!device_context_) {
+        // Host calls this after the final lease for the device is gone. Fence
+        // first-use creation so a new leaf cannot appear while the old one is
+        // being stopped, then retire the idle worker set from the manager.
+        std::shared_ptr<DeviceContext> context;
+        bool retirement_owned = false;
+        {
+            std::lock_guard<std::mutex> creation_lock(device_creation_mutex_);
+            std::lock_guard<std::mutex> lock(device_context_mutex_);
+            const auto found = device_contexts_.find(device_id);
+            if (found != device_contexts_.end()) {
+                context = found->second;
+            }
+            if (context && context->adapter) {
+                // Mark the identity as retiring while the creation fence is
+                // held, then release that fence before waiting. This prevents
+                // a replacement leaf from being created, while allowing an
+                // in-flight callback to call back into the manager without a
+                // lock inversion.
+                if (retiring_device_ids_.find(device_id) !=
+                    retiring_device_ids_.end()) {
+                    return;
+                } else {
+                    retiring_device_ids_.insert(device_id);
+                    retirement_owned = true;
+                    std::lock_guard<std::mutex> lifecycle_lock(
+                        context->lifecycle_mutex);
+                    context->retired = true;
+                }
+            }
+        }
+        if (retirement_owned && context && context->adapter) {
+            {
+                std::unique_lock<std::mutex> lifecycle_lock(
+                    context->lifecycle_mutex);
+                context->lifecycle_cv.wait(
+                    lifecycle_lock,
+                    [&context]() { return context->in_flight == 0; });
+            }
+            context->adapter->reset_session_for_device(device_id);
+        }
+        if (retirement_owned) {
+            // Re-acquire the creation fence before publishing that a new
+            // context may be constructed for this identity.
+            std::lock_guard<std::mutex> creation_cleanup_lock(
+                device_creation_mutex_);
+            std::lock_guard<std::mutex> lock(device_context_mutex_);
+            const auto found = device_contexts_.find(device_id);
+            if (found != device_contexts_.end() && found->second == context) {
+                device_contexts_.erase(found);
+            }
+            retiring_device_ids_.erase(device_id);
+            if (fixed_selector_device_id_ == device_id) {
+                fixed_selector_device_id_.clear();
+            }
+        }
+        return;
+    }
     recovery_generation_.fetch_add(1);
     cancel_control_calls(
         device_id, std::nullopt, "AXTP session was released");
@@ -2294,6 +3358,20 @@ ControlStatus AxtpAdapter::open_session_status(const std::string& device_id,
                                                std::string& error,
                                                bool configure_media)
 {
+    if (!device_context_) {
+        const auto context = device_context_for(device_id);
+        if (!context || !context->adapter) {
+            error = "AXTP device is not available";
+            return ControlStatus::NotFound;
+        }
+        DeviceContextOperation context_operation(context);
+        if (!context_operation) {
+            error = "AXTP device context is being retired";
+            return ControlStatus::Unavailable;
+        }
+        return context->adapter->open_session_status(
+            device_id, error, configure_media);
+    }
     std::lock_guard<std::mutex> session_lock(session_mutex_);
     ControlStatus status = ControlStatus::Unavailable;
     (void)ensure_session_locked(device_id, error, status, configure_media,
@@ -2870,12 +3948,17 @@ bool AxtpAdapter::ensure_session_locked(const std::string& device_id,
     }
     clear_media_streams();
     clear_video_stream_params_session();
-    if (config_.selector.kind != TransportKind::Hid) {
+    TransportSelector selector;
+    {
+        std::lock_guard<std::mutex> selector_lock(selector_mutex_);
+        selector = config_.selector;
+    }
+    if (selector.kind != TransportKind::Hid) {
         error = "AXTP adapter is configured for a non-HID selector";
         return false;
     }
 
-    auto hid_options = detail::hid_options_from_selector(config_.selector);
+    auto hid_options = detail::hid_options_from_selector(selector);
     hid_options.reportTrace = [this](const axent::transport::HidReportTrace& trace) {
         record_transport_trace(
             trace_event_name(trace.kind),
@@ -3603,11 +4686,40 @@ bool AxtpAdapter::configure_media_stream_kind(
         return false;
     }
     const bool is_video = kind == MediaKind::Video;
+    const auto codec_text = [](MediaCodec codec) -> const char* {
+        switch (codec) {
+        case MediaCodec::H264: return "h264";
+        case MediaCodec::H265: return "h265";
+        case MediaCodec::Aac: return "aac";
+        case MediaCodec::Pcm: return "pcm";
+        case MediaCodec::Opaque: return "opaque";
+        case MediaCodec::Unknown: default: return "";
+        }
+    };
+    const bool force_video_open = is_video && std::any_of(
+        config_.video_codec_preferences.begin(),
+        config_.video_codec_preferences.end(),
+        [](MediaCodec codec) { return codec == MediaCodec::H265; });
+    const bool video_decode_bypass = is_video &&
+        config_.video_open_codec_override.has_value() &&
+        config_.video_decode_codec_override.has_value() &&
+        *config_.video_open_codec_override != *config_.video_decode_codec_override;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& retry = is_video ? diagnostics_.video_retry : diagnostics_.audio_retry;
         ++retry.configure_attempts;
         retry.next_retry_in_ms = 0;
+        if (is_video) {
+            diagnostics_.video_codec_capabilities_bypassed = false;
+            diagnostics_.video_open_request_codec.clear();
+            diagnostics_.video_decode_codec.clear();
+            diagnostics_.video_codec_decode_bypassed = video_decode_bypass;
+            diagnostics_.video_capabilities_last_status = "pending";
+            diagnostics_.video_capabilities_last_error.clear();
+            diagnostics_.video_open_last_status = "capabilities-pending";
+            diagnostics_.video_open_last_error.clear();
+            diagnostics_.video_open_last_request.clear();
+        }
     }
     const auto mark_retry_failure = [this, is_video, kind](std::string error,
                                                            bool terminal = false,
@@ -3756,32 +4868,62 @@ bool AxtpAdapter::configure_media_stream_kind(
     }
     if (!capabilities.has_value()) {
         const bool terminal = runtime_error_is_terminal(last_call_error);
-        mark_retry_failure(
-            last_call_error_message.empty()
-                ? std::string(media_kind_name(kind)) + " capabilities unavailable"
-                : last_call_error_message,
-            terminal);
+        if (!force_video_open) {
+            mark_retry_failure(
+                last_call_error_message.empty()
+                    ? std::string(media_kind_name(kind)) + " capabilities unavailable"
+                    : last_call_error_message,
+                terminal);
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.last_event =
+                std::string(media_kind_name(kind)) + "-capabilities-unavailable";
+            return false;
+        }
+        // Capabilities are an observation for the current H.265 bring-up
+        // path, not a gate.  Some peers answer this read-only RPC late or not
+        // at all while still accepting an explicit video.openStream request.
         std::lock_guard<std::mutex> lock(mutex_);
-        diagnostics_.last_event =
-            std::string(media_kind_name(kind)) + "-capabilities-unavailable";
-        return false;
-    }
-    // A successful capabilities response is a safe, read-only liveness probe
-    // for this device/session.  Keep the method that actually worked instead
-    // of inventing a transport-specific heartbeat request.
-    runtime_->health_probe_method = capabilities_method_name(kind);
-    runtime_->health_probe_params = source_params;
-    if (!capabilities_are_streamable(*capabilities, source)) {
-        mark_retry_failure(
-            std::string(media_kind_name(kind)) + " source waiting", false, true);
-        std::lock_guard<std::mutex> lock(mutex_);
-        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
-        return false;
+        diagnostics_.video_codec_capabilities_bypassed = true;
+        diagnostics_.video_capabilities_last_status = "rpc-error-bypassed";
+        diagnostics_.video_capabilities_last_error = "code=" +
+            std::to_string(static_cast<std::uint16_t>(last_call_error)) +
+            (last_call_error_message.empty() ? std::string{} :
+                " message=" + last_call_error_message);
+        diagnostics_.video_open_last_status = "capabilities-error-bypassed";
+        diagnostics_.video_open_last_error.clear();
+    } else {
+        // A successful capabilities response is a safe, read-only liveness
+        // probe for this device/session. Keep the method that actually worked
+        // instead of inventing a transport-specific heartbeat request.
+        runtime_->health_probe_method = capabilities_method_name(kind);
+        runtime_->health_probe_params = source_params;
+        if (!capabilities_are_streamable(*capabilities, source)) {
+            if (!force_video_open) {
+                mark_retry_failure(
+                    std::string(media_kind_name(kind)) + " source waiting", false, true);
+                std::lock_guard<std::mutex> lock(mutex_);
+                diagnostics_.last_event = std::string(media_kind_name(kind)) + "-source-waiting";
+                return false;
+            }
+            // Keep the response for diagnostics/frame-rate extraction, but do
+            // not prevent the explicit video.openStream request.
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.video_codec_capabilities_bypassed = true;
+            diagnostics_.video_capabilities_last_status = "source-state-bypassed";
+            diagnostics_.video_capabilities_last_error.clear();
+            diagnostics_.video_open_last_status = "source-state-bypassed";
+            diagnostics_.video_open_last_error.clear();
+        } else if (is_video) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.video_capabilities_last_status = "ok";
+            diagnostics_.video_capabilities_last_error.clear();
+        }
     }
     if (is_video) {
         std::vector<std::uint32_t> frame_rates;
         bool supports_reconfigure = true;
-        if (capabilities->contains("sources") && (*capabilities)["sources"].is_array()) {
+        if (capabilities.has_value() && capabilities->contains("sources") &&
+            (*capabilities)["sources"].is_array()) {
             for (const auto& entry : (*capabilities)["sources"]) {
                 if (!source_matches(entry, source)) {
                     continue;
@@ -3808,6 +4950,8 @@ bool AxtpAdapter::configure_media_stream_kind(
     }
 
     nlohmann::json open_params;
+    std::vector<std::string> video_codec_candidates;
+    std::vector<std::string> device_video_codecs;
     if (is_video) {
         {
             std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
@@ -3818,14 +4962,88 @@ bool AxtpAdapter::configure_media_stream_kind(
                 open_params.erase("frameRate");
                 open_params.erase("streamId");
                 open_params.erase("state");
+                const auto previous_codec = ascii_lower(
+                    json_string_or(open_params, "codec", "h264"));
+                video_codec_candidates.push_back(
+                    previous_codec == "hevc" ? "h265" : previous_codec);
             } else {
                 open_params = nlohmann::json{
                     {"source", source},
                     {"peerRole", "transmitter"},
                     {"codec", "h264"},
+                    {"transportFormat", "annexb"},
+                    {"alignment", "au"},
                     {"streamProfile", "media.video"},
                     {"cursorUnit", "timestampUs"},
                 };
+                bool codec_list_published = false;
+                if (capabilities.has_value() && capabilities->is_object() &&
+                    capabilities->contains("sources") &&
+                    (*capabilities)["sources"].is_array()) {
+                    for (const auto& entry : (*capabilities)["sources"]) {
+                        if (!source_matches(entry, source)) continue;
+                        if (entry.contains("codecs") && entry["codecs"].is_array()) {
+                            codec_list_published = true;
+                            for (const auto& value : entry["codecs"]) {
+                                if (!value.is_string()) continue;
+                                auto available = ascii_lower(value.get<std::string>());
+                                if (available == "hevc") available = "h265";
+                                if ((available == "h264" || available == "h265") &&
+                                    std::find(device_video_codecs.begin(), device_video_codecs.end(),
+                                              available) == device_video_codecs.end()) {
+                                    device_video_codecs.push_back(std::move(available));
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (!codec_list_published && capabilities.has_value()) {
+                    // Old peers did not publish a codec list and are defined
+                    // by the compatibility contract to support H.264 only.
+                    device_video_codecs.push_back("h264");
+                }
+                // H.265 bring-up may deliberately ignore the advertised
+                // codec list.  For the legacy H.264 path retain the existing
+                // capability intersection behavior.
+                const auto codec_preferences = config_.video_codec_preferences.empty()
+                    ? std::vector<MediaCodec>{MediaCodec::H264}
+                    : config_.video_codec_preferences;
+                for (const auto preference : codec_preferences) {
+                    const std::string candidate = preference == MediaCodec::H265 ? "h265" :
+                        preference == MediaCodec::H264 ? "h264" : "";
+                    const auto sourceSupports = [&](const std::string& value) {
+                        return std::find(device_video_codecs.begin(), device_video_codecs.end(),
+                                         value) != device_video_codecs.end();
+                    };
+                    if (!candidate.empty() &&
+                        (force_video_open || sourceSupports(candidate))) {
+                        video_codec_candidates.push_back(candidate);
+                    }
+                }
+                if (video_codec_candidates.empty()) {
+                    {
+                        std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                        diagnostics_.device_video_codecs = device_video_codecs;
+                        diagnostics_.requested_video_codec.clear();
+                        diagnostics_.negotiated_video_codec.clear();
+                        diagnostics_.video_codec_fallback_reason.clear();
+                    }
+                    mark_retry_failure("video-codec-unsupported", true);
+                    return false;
+                }
+                {
+                    std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                    diagnostics_.video_codec_capabilities_bypassed = force_video_open;
+                    diagnostics_.device_video_codecs = device_video_codecs;
+                    diagnostics_.requested_video_codec.clear();
+                    diagnostics_.negotiated_video_codec.clear();
+                    diagnostics_.video_codec_fallback_reason =
+                        !codec_preferences.empty() &&
+                        codec_preferences.front() == MediaCodec::H265 &&
+                        video_codec_candidates.front() != "h265"
+                            ? "device-unsupported" : "";
+                }
             }
             if (video_open_frame_rate.has_value()) {
                 open_params["frameRate"] = *video_open_frame_rate;
@@ -3856,30 +5074,152 @@ bool AxtpAdapter::configure_media_stream_kind(
         }
     }
 
-    const auto response = call_json(open_stream_method_name(kind), open_params);
-    if (!response.has_value()) {
-        const bool terminal = runtime_error_is_terminal(last_call_error);
-        const auto errorText = ascii_lower(last_call_error_message);
-        const bool source_waiting = !terminal &&
-            (errorText.find("source waiting") != std::string::npos ||
-             errorText.find("source unavailable") != std::string::npos ||
-             errorText.find("source disconnected") != std::string::npos);
-        mark_retry_failure(
-            last_call_error_message.empty()
-                ? std::string(media_kind_name(kind)) + " open failed"
-                : last_call_error_message,
-            terminal,
-            source_waiting);
-        std::lock_guard<std::mutex> lock(mutex_);
-        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-failed";
+    std::optional<nlohmann::json> response;
+    std::uint32_t stream_id = 0;
+    std::string requested_video_codec;
+    std::string open_failure;
+    bool open_failure_terminal = false;
+    bool open_failure_source_waiting = false;
+    bool video_codec_fallback = false;
+    std::string negotiated_video_codec;
+    const auto open_candidate = [&](const std::string& video_codec) {
+        const std::string open_request_codec = is_video && video_decode_bypass
+            ? codec_text(*config_.video_open_codec_override)
+            : video_codec;
+        if (is_video) {
+            open_params["codec"] = open_request_codec;
+            requested_video_codec = video_codec;
+            std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+            ++diagnostics_.video_open_stream_attempts;
+            diagnostics_.requested_video_codec = video_codec;
+            diagnostics_.video_open_request_codec = open_request_codec;
+            diagnostics_.video_decode_codec = video_decode_bypass
+                ? codec_text(*config_.video_decode_codec_override) : video_codec;
+            diagnostics_.video_open_last_status = "requesting";
+            diagnostics_.video_open_last_error.clear();
+            diagnostics_.video_open_last_request = open_params.dump();
+        }
+        response = call_json(open_stream_method_name(kind), open_params);
+        if (!response.has_value()) {
+            open_failure_terminal = runtime_error_is_terminal(last_call_error);
+            const auto errorText = ascii_lower(last_call_error_message);
+            open_failure_source_waiting = !open_failure_terminal &&
+                (errorText.find("source waiting") != std::string::npos ||
+                 errorText.find("source unavailable") != std::string::npos ||
+                 errorText.find("source disconnected") != std::string::npos);
+            open_failure = last_call_error_message.empty()
+                ? std::string(media_kind_name(kind)) + " open failed code=" +
+                    std::to_string(static_cast<std::uint16_t>(last_call_error))
+                : last_call_error_message;
+            if (is_video) {
+                std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                diagnostics_.video_open_last_status = open_failure_source_waiting
+                    ? "source-waiting" : open_failure_terminal ? "terminal-error" : "rpc-error";
+                diagnostics_.video_open_last_error = open_failure;
+            }
+            return false;
+        }
+
+        stream_id = json_u32_or(*response, "streamId", 0);
+        if (stream_id == 0) {
+            open_failure = std::string(media_kind_name(kind)) +
+                " open returned no stream id";
+            if (is_video) {
+                std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                diagnostics_.video_open_last_status = "invalid-response";
+                diagnostics_.video_open_last_error = open_failure;
+            }
+            response.reset();
+            return false;
+        }
+
+        if (!is_video) return true;
+
+        const auto response_codec_text = ascii_lower(
+            json_string_or(*response, "codec", json_string_or(*response, "format")));
+        const auto effective_codec = response_codec_text.empty()
+            ? (video_codec == "h264" ? MediaCodec::H264 : MediaCodec::Unknown)
+            : codec_for_open_result(kind, *response);
+        const auto requested_codec = video_codec == "h265"
+            ? MediaCodec::H265 : MediaCodec::H264;
+        const auto open_contract_codec = open_request_codec == "h265"
+            ? MediaCodec::H265 : MediaCodec::H264;
+        if (effective_codec == open_contract_codec &&
+            (video_decode_bypass || effective_codec == requested_codec)) {
+            negotiated_video_codec = codec_text(effective_codec);
+            if (requested_codec == MediaCodec::H265) {
+                const auto transport_format = ascii_lower(json_string_or(
+                    *response, "transportFormat", json_string_or(
+                        open_params, "transportFormat", "annexb")));
+                const auto alignment = ascii_lower(json_string_or(
+                    *response, "alignment", json_string_or(open_params, "alignment", "au")));
+                const auto reorder_depth = json_u32_or(
+                    *response, "reorderDepth", json_u32_or(open_params, "reorderDepth", 0));
+                if ((!transport_format.empty() && transport_format != "annexb") ||
+                    (!alignment.empty() && alignment != "au") || reorder_depth != 0) {
+                    call_json(std::string(media_kind_name(kind)) + ".closeStream",
+                        nlohmann::json{{"streamId", stream_id}});
+                    stream_id = 0;
+                    response.reset();
+                    open_failure = "video-codec-contract-unsupported";
+                    std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                    diagnostics_.video_open_last_status = "contract-rejected";
+                    diagnostics_.video_open_last_error = open_failure;
+                    return false;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+                diagnostics_.video_open_last_status = "accepted";
+                diagnostics_.video_open_last_error.clear();
+            }
+            return true;
+        }
+
+        // A peer stream with an absent or mismatched codec is never published.
+        // H.264 alone keeps the legacy missing-codec compatibility above;
+        // H.265 must always be explicitly confirmed by the response.
+        call_json(std::string(media_kind_name(kind)) + ".closeStream",
+            nlohmann::json{{"streamId", stream_id}});
+        stream_id = 0;
+        response.reset();
+        open_failure = "video-codec-negotiation-mismatch";
+        {
+            std::lock_guard<std::mutex> diagnostics_lock(mutex_);
+            diagnostics_.video_open_last_status = "codec-mismatch";
+            diagnostics_.video_open_last_error = open_failure;
+        }
         return false;
+    };
+
+    if (is_video) {
+        for (std::size_t index = 0; index < video_codec_candidates.size(); ++index) {
+            const auto& candidate = video_codec_candidates[index];
+            if (open_candidate(candidate)) break;
+            const bool can_fallback = candidate == "h265" &&
+                (!open_failure_terminal || last_call_error == axtp::ErrorCode::NotSupported) &&
+                !open_failure_source_waiting &&
+                index + 1 < video_codec_candidates.size();
+            if (!can_fallback) break;
+            std::lock_guard<std::mutex> lock(mutex_);
+            diagnostics_.last_event = "video-codec-fallback-h265-to-h264";
+            diagnostics_.video_codec_fallback_reason = open_failure.empty()
+                ? "h265-open-rejected" : open_failure;
+            video_codec_fallback = true;
+        }
+    } else {
+        open_candidate({});
     }
 
-    const auto stream_id = json_u32_or(*response, "streamId", 0);
-    if (stream_id == 0) {
-        mark_retry_failure(std::string(media_kind_name(kind)) + " open returned no stream id");
+    if (!response.has_value()) {
+        mark_retry_failure(
+            open_failure.empty()
+                ? std::string(media_kind_name(kind)) + " open failed"
+                : open_failure,
+            open_failure_terminal,
+            open_failure_source_waiting);
         std::lock_guard<std::mutex> lock(mutex_);
-        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-no-stream-id";
+        diagnostics_.last_event = std::string(media_kind_name(kind)) + "-open-failed";
         return false;
     }
 
@@ -3933,10 +5273,16 @@ bool AxtpAdapter::configure_media_stream_kind(
     descriptor.key.stream_id = stream_id;
     descriptor.device_id = device_id;
     descriptor.kind = kind;
-    descriptor.codec = codec_for_open_result(kind, *response);
+    descriptor.codec = is_video
+        ? (video_decode_bypass
+            ? *config_.video_decode_codec_override
+            : codec_for_open_result(kind, *response))
+        : codec_for_open_result(kind, *response);
     descriptor.source = json_string_or(*response, "source", source);
     descriptor.transport_format = json_string_or(
         *response, "transportFormat", json_string_or(open_params, "transportFormat"));
+    descriptor.alignment = json_string_or(
+        *response, "alignment", json_string_or(open_params, "alignment", "au"));
     descriptor.stream_profile = json_string_or(
         *response, "streamProfile", json_string_or(open_params, "streamProfile"));
     descriptor.cursor_unit = json_string_or(
@@ -3951,6 +5297,8 @@ bool AxtpAdapter::configure_media_stream_kind(
         *response, "height", json_u32_or(open_params, "height", 0));
     descriptor.frame_rate = json_u32_or(
         *response, "frameRate", json_u32_or(open_params, "frameRate", 0));
+    descriptor.reorder_depth = json_u32_or(
+        *response, "reorderDepth", json_u32_or(open_params, "reorderDepth", 0));
     std::optional<MediaStreamDescriptor> replaced_descriptor;
     std::uint32_t active_stream_count = 0;
     {
@@ -3992,7 +5340,9 @@ bool AxtpAdapter::configure_media_stream_kind(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (update_retry_state) {
-            diagnostics_.last_event = std::string(media_kind_name(kind)) + "-stream-open";
+            diagnostics_.last_event = video_codec_fallback
+                ? "video-codec-fallback-h265-to-h264"
+                : std::string(media_kind_name(kind)) + "-stream-open";
         }
         auto& retry = is_video ? diagnostics_.video_retry : diagnostics_.audio_retry;
         retry.last_error.clear();
@@ -4000,6 +5350,11 @@ bool AxtpAdapter::configure_media_stream_kind(
         retry.terminal = false;
         if (kind == MediaKind::Video) {
             diagnostics_.active_video_stream_id = stream_id;
+            diagnostics_.requested_video_codec = requested_video_codec;
+            diagnostics_.negotiated_video_codec = negotiated_video_codec.empty()
+                ? requested_video_codec : negotiated_video_codec;
+            diagnostics_.video_decode_codec = codec_text(descriptor.codec);
+            diagnostics_.video_codec_decode_bypassed = video_decode_bypass;
         } else {
             diagnostics_.active_audio_stream_id = stream_id;
         }
@@ -4025,7 +5380,8 @@ bool AxtpAdapter::configure_media_stream_kind(
     if (kind == MediaKind::Video) {
         std::lock_guard<std::mutex> lock(runtime_->video_params_mutex);
         runtime_->active_video_open_params = open_params;
-        for (const char* key : {"source", "peerRole", "codec", "streamProfile",
+        for (const char* key : {"source", "peerRole", "codec", "transportFormat",
+                                "alignment", "reorderDepth", "streamProfile",
                                 "cursorUnit", "syncGroupId", "castSessionId"}) {
             if (response->contains(key)) {
                 runtime_->active_video_open_params[key] = (*response)[key];
@@ -4125,6 +5481,23 @@ void AxtpAdapter::handle_stream_payload(const std::string& device_id,
                                         std::vector<std::uint8_t> data,
                                         std::uint64_t ingress_token)
 {
+    if (!device_context_) {
+        const auto context = find_device_context(device_id);
+        if (context && context->adapter) {
+            DeviceContextOperation context_operation(context);
+            if (!context_operation) {
+                return;
+            }
+            context->adapter->handle_stream_payload(
+                device_id,
+                stream_id,
+                sequence_id,
+                cursor,
+                std::move(data),
+                ingress_token);
+        }
+        return;
+    }
     note_inbound_activity();
     // This must happen at ingress, rather than during commit.  poll() queues
     // source-state events for later reconciliation, so by commit time a
@@ -4141,6 +5514,14 @@ void AxtpAdapter::handle_stream_payload(const std::string& device_id,
 
 bool AxtpAdapter::is_current_media_frame(const MediaFrame& frame) const
 {
+    if (!device_context_) {
+        const auto context = find_device_context(frame.device_id);
+        if (!context || !context->adapter) {
+            return false;
+        }
+        DeviceContextOperation context_operation(context);
+        return context_operation && context->adapter->is_current_media_frame(frame);
+    }
     // A physical stream generation can outlive several logical Host leases.
     // The session id captured when the frame entered staging is therefore a
     // second, independent lifetime fence.  Without this check a frame that
@@ -4395,6 +5776,14 @@ void AxtpAdapter::refresh_diagnostics_locked()
 
 void testing::AxtpAdapterTestSeam::disconnect_session(AxtpAdapter& adapter)
 {
+    if (!adapter.device_context_) {
+        for (const auto& context : adapter.device_contexts()) {
+            if (context && context->adapter) {
+                disconnect_session(*context->adapter);
+            }
+        }
+        return;
+    }
     std::lock_guard<std::mutex> client_lock(adapter.client_mutex_);
     if (adapter.runtime_->client != nullptr) {
         adapter.runtime_->client->close();
@@ -4418,6 +5807,14 @@ void testing::AxtpAdapterTestSeam::release_session(
 
 void testing::AxtpAdapterTestSeam::stop_session_pump(AxtpAdapter& adapter)
 {
+    if (!adapter.device_context_) {
+        for (const auto& context : adapter.device_contexts()) {
+            if (context && context->adapter) {
+                stop_session_pump(*context->adapter);
+            }
+        }
+        return;
+    }
     std::thread pump;
     {
         std::lock_guard<std::mutex> lock(adapter.mutex_);
@@ -4444,6 +5841,13 @@ void testing::AxtpAdapterTestSeam::reopen_media_streams(
     AxtpAdapter& adapter,
     const std::string& device_id)
 {
+    if (!adapter.device_context_) {
+        const auto context = adapter.find_device_context(device_id);
+        if (context && context->adapter) {
+            reopen_media_streams(*context->adapter, device_id);
+        }
+        return;
+    }
     std::lock_guard<std::mutex> session_lock(adapter.session_mutex_);
     std::lock_guard<std::mutex> client_lock(adapter.client_mutex_);
     // Exercise an explicit same-ID receiver-pull replacement. Production
@@ -4470,6 +5874,14 @@ void testing::AxtpAdapterTestSeam::reopen_media_streams(
 
 void testing::AxtpAdapterTestSeam::drain_media_callbacks(AxtpAdapter& adapter)
 {
+    if (!adapter.device_context_) {
+        for (const auto& context : adapter.device_contexts()) {
+            if (context && context->adapter) {
+                drain_media_callbacks(*context->adapter);
+            }
+        }
+        return;
+    }
     // Tests that stop the pump can explicitly advance its normally-owned
     // ingress-to-dispatch boundary before draining callbacks.
     adapter.commit_pending_media_batch();
@@ -4481,6 +5893,25 @@ bool testing::AxtpAdapterTestSeam::is_current_media_frame(
     const MediaFrame& frame)
 {
     return adapter.is_current_media_frame(frame);
+}
+
+bool testing::AxtpAdapterTestSeam::hold_device_context_operation(
+    AxtpAdapter& adapter,
+    const std::string& device_id,
+    const std::function<void()>& callback)
+{
+    if (adapter.device_context_) {
+        return false;
+    }
+    const auto context = adapter.find_device_context(device_id);
+    AxtpAdapter::DeviceContextOperation operation(context);
+    if (!operation) {
+        return false;
+    }
+    if (callback) {
+        callback();
+    }
+    return true;
 }
 
 } // namespace axent

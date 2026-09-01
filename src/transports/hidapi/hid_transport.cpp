@@ -23,6 +23,91 @@ extern "C" {
 namespace axent::transport {
 namespace {
 
+// hidapi's public init/exit pair is process-wide rather than handle-scoped.
+// Calling hid_exit() from one adapter while another adapter still owns an
+// open handle can invalidate enumeration state (and, on some backends, the
+// handles themselves).  Keep one reference for every live HidApiBackend and
+// release the process lifetime only after the final handle/enumeration is
+// gone.  The mutex also serializes init/exit transitions when devices are
+// opened concurrently by separate AXTP leaf adapters.
+class HidApiLifetime final {
+public:
+    static bool acquire(std::string& error)
+    {
+        auto& state = lifetime_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.references == 0) {
+            if (hid_init() != 0) {
+                error = "hid_init failed";
+                return false;
+            }
+            state.initialized = true;
+        }
+        ++state.references;
+        return true;
+    }
+
+    static void release() noexcept
+    {
+        auto& state = lifetime_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.references == 0) {
+            return;
+        }
+        --state.references;
+        if (state.references == 0 && state.initialized) {
+            hid_exit();
+            state.initialized = false;
+        }
+    }
+
+private:
+    struct State {
+        std::mutex mutex;
+        std::size_t references = 0;
+        bool initialized = false;
+    };
+
+    static State& lifetime_state()
+    {
+        static State state;
+        return state;
+    }
+};
+
+class HidApiReference final {
+public:
+    HidApiReference() = default;
+    ~HidApiReference()
+    {
+        release();
+    }
+
+    HidApiReference(const HidApiReference&) = delete;
+    HidApiReference& operator=(const HidApiReference&) = delete;
+
+    bool acquire(std::string& error)
+    {
+        if (held_) {
+            return true;
+        }
+        held_ = HidApiLifetime::acquire(error);
+        return held_;
+    }
+
+    void release() noexcept
+    {
+        if (!held_) {
+            return;
+        }
+        HidApiLifetime::release();
+        held_ = false;
+    }
+
+private:
+    bool held_ = false;
+};
+
 bool isHighSurrogate(std::uint32_t codePoint) {
     return codePoint >= 0xD800 && codePoint <= 0xDBFF;
 }
@@ -228,11 +313,11 @@ public:
             pathToOpen = *resolvedPath;
         }
 
-        if (hid_init() != 0) {
-            setLastError("hid_init failed");
+        std::string initError;
+        if (!_apiLifetime.acquire(initError)) {
+            setLastError(std::move(initError));
             return false;
         }
-        _initialized = true;
 
         if (!pathToOpen.empty()) {
             _handle = hid_open_path(pathToOpen.c_str());
@@ -274,10 +359,7 @@ public:
 #if defined(_WIN32)
         _reportLengths = {};
 #endif
-        if (_initialized) {
-            hid_exit();
-            _initialized = false;
-        }
+        _apiLifetime.release();
     }
 
     bool writeReport(const Byte* data, std::size_t size) override {
@@ -338,7 +420,7 @@ private:
     }
 
     hid_device* _handle = nullptr;
-    bool _initialized = false;
+    HidApiReference _apiLifetime;
     std::uint8_t _reportId = 0;
     HidReportLengths _reportLengths;
     mutable std::mutex _lastErrorMutex;
@@ -349,7 +431,9 @@ private:
 
 std::vector<HidDeviceInfo> enumerateHidDevices(std::uint16_t vendorId, std::uint16_t productId) {
     std::vector<HidDeviceInfo> devices;
-    if (hid_init() != 0) {
+    std::string initError;
+    HidApiReference apiLifetime;
+    if (!apiLifetime.acquire(initError)) {
         return devices;
     }
 
@@ -370,7 +454,6 @@ std::vector<HidDeviceInfo> enumerateHidDevices(std::uint16_t vendorId, std::uint
         devices.push_back(std::move(info));
     }
     hid_free_enumeration(list);
-    hid_exit();
     return devices;
 }
 

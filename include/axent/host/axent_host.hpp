@@ -48,6 +48,13 @@ struct SessionLease {
     ControlStatus status = ControlStatus::Ok;
 };
 
+struct EndpointControlRequest {
+    std::string source_endpoint_id;
+    std::string destination_endpoint_id;
+    std::string method;
+    nlohmann::json params = nlohmann::json::object();
+};
+
 class MediaConsumer {
 public:
     std::optional<MediaFrame> read();
@@ -80,7 +87,11 @@ public:
     bool running() const;
 
     std::vector<DeviceSnapshot> discover_devices() const;
+    std::vector<DeviceSnapshot> refresh_devices();
     TransportDiagnostics transport_diagnostics() const;
+    // Return diagnostics for one physical device.  The no-argument form is
+    // retained for compatibility and returns the adapter's aggregate view.
+    TransportDiagnostics transport_diagnostics(const std::string& device_id) const;
     void upsert_device(DeviceSnapshot snapshot);
     SessionLease acquire_session(const SessionAcquireRequest& request);
     void release_session(const std::string& session_id, const std::string& reason);
@@ -114,6 +125,9 @@ public:
         const std::string& session_id,
         const std::string& method,
         const nlohmann::json& params,
+        ControlCallOptions options = {});
+    ControlOperationPtr call_endpoint(
+        EndpointControlRequest request,
         ControlCallOptions options = {});
 
     // AxentHost serializes its own lifecycle/session/media state. The returned

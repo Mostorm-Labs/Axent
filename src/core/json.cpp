@@ -40,7 +40,7 @@ const char* control_status_name(ControlStatus status)
 
 nlohmann::json to_json(const DeviceSnapshot& device)
 {
-    return {
+    nlohmann::json result = {
         {"id", device.id},
         {"adapter", device.adapter},
         {"identity", {
@@ -57,6 +57,12 @@ nlohmann::json to_json(const DeviceSnapshot& device)
         }},
         {"status", {{"health", device.status.health}}}
     };
+    // Emit Endpoint identity only for an explicit stable/projected binding.
+    // Unbound legacy devices intentionally retain only their provider-local ID.
+    if (!device.endpoint_id.empty()) {
+        result["endpointId"] = device.endpoint_id;
+    }
+    return result;
 }
 
 nlohmann::json to_json(const Capability& capability)
